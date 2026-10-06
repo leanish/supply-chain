@@ -16,7 +16,8 @@
  *     (compatibility), and resolves it at or above the floor, by Gradle's
  *     ordering. The inventory's declared dependencies come from Gradle itself,
  *     catalog versions included, so no build file is parsed.
- *   - npm: the `overrides` entry at the selector's path (`a>b` for nested) in
+ *   - npm: the `overrides` entry at each selector path (a list of keys,
+ *     `["aws-cdk-lib", "brace-expansion"]`; a string for a top-level key) in
  *     `declaredIn` (a package.json) pins the floor or above (`x`, `^x`, `~x`,
  *     `>=x`), and every locked copy in its lockfile is at or above it. Every
  *     override must have a floor entry.
@@ -41,8 +42,10 @@ export interface Floor {
   readonly version: string;
   /** The file that declares it: a Gradle build file, or the package.json with the override. */
   readonly declaredIn: string;
-  /** Gradle: the configuration locations it must hold in; npm: the overrides key paths (`a>b`). */
-  readonly selector: ReadonlyArray<string>;
+  /** Gradle: the configuration locations it must hold in (`:checkstyle`). */
+  readonly locations: ReadonlyArray<string>;
+  /** npm: the `overrides` key paths that pin it, each a list of keys (`["aws-cdk-lib", "brace-expansion"]`). */
+  readonly overridePaths: ReadonlyArray<ReadonlyArray<string>>;
   readonly purpose: "security" | "compatibility";
   readonly advisories: ReadonlyArray<string>;
   readonly reason: string;
@@ -74,8 +77,18 @@ export function parseFloors(raw: unknown): Floor[] {
     if (purpose !== "security" && purpose !== "compatibility") throw new Error(`${at}.purpose must be security or compatibility`);
     const selectorValue = entry["selector"];
     const selector = typeof selectorValue === "string" ? [selectorValue] : selectorValue;
-    if (!Array.isArray(selector) || selector.length === 0 || selector.some((item) => typeof item !== "string" || item.trim() === "")) {
-      throw new Error(`${at}.selector must be a nonempty string or list of strings`);
+    if (!Array.isArray(selector) || selector.length === 0) throw new Error(`${at}.selector must be a nonempty string or list`);
+    const nonempty = (item: unknown) => typeof item === "string" && item.trim() !== "";
+    let locations: string[] = [];
+    let overridePaths: string[][] = [];
+    if (ecosystem === "Maven") {
+      if (!selector.every(nonempty)) throw new Error(`${at}.selector must list Gradle configuration locations`);
+      locations = selector as string[];
+    } else {
+      overridePaths = selector.map((item: unknown) => (typeof item === "string" ? [item] : item)) as string[][];
+      if (!overridePaths.every((path) => Array.isArray(path) && path.length > 0 && path.every(nonempty))) {
+        throw new Error(`${at}.selector must list overrides key paths (a key, or a list of keys)`);
+      }
     }
     const advisories = entry["advisories"] ?? [];
     if (!Array.isArray(advisories) || advisories.some((id) => typeof id !== "string" || !ADVISORY_ID.test(id))) {
@@ -90,15 +103,19 @@ export function parseFloors(raw: unknown): Floor[] {
       package: text("package"),
       version: text("version"),
       declaredIn: text("declaredIn"),
-      selector: selector as string[],
+      locations,
+      overridePaths,
       purpose,
       advisories: advisories as string[],
       reason: text("reason"),
       added,
     };
-    const key = `${floor.ecosystem}|${floor.package}|${floor.declaredIn}`;
-    if (seen.has(key)) throw new Error(`${at} duplicates an earlier floor for ${floor.package} in ${floor.declaredIn}`);
-    seen.add(key);
+    // Two floors for one package in one file can't claim the same configuration or override.
+    for (const claim of [...floor.locations, ...floor.overridePaths.map((path) => JSON.stringify(path))]) {
+      const key = `${floor.ecosystem}|${floor.package}|${floor.declaredIn}|${claim}`;
+      if (seen.has(key)) throw new Error(`${at} duplicates an earlier floor for ${floor.package} in ${floor.declaredIn} (${claim})`);
+      seen.add(key);
+    }
     return floor;
   });
 }
@@ -128,7 +145,7 @@ function gradleFloorProblems(floor: Floor, inventory: Inventory, label: string):
   if (inventory.gradle === undefined) return [`${label}: the tree has no Gradle build`];
   const [group, name] = floor.package.split(":");
   const problems: string[] = [];
-  for (const location of floor.selector) {
+  for (const location of floor.locations) {
     const configuration = inventory.gradle.builds
       .flatMap((build) => build.configurations.map((config) => ({ location: gradleLocation(build.build, config.id), config })))
       .find((candidate) => candidate.location === location)?.config;
@@ -166,15 +183,20 @@ async function npmFloorProblems(floor: Floor, inventory: Inventory, tree: Tree, 
   const manifest = await readJson(tree, floor.declaredIn);
   const overrides = isObject(manifest) ? manifest["overrides"] : undefined;
   const problems: string[] = [];
-  for (const path of floor.selector) {
+  for (const path of floor.overridePaths) {
+    const shown = path.join(" > ");
+    if (overrideTarget(path) !== floor.package) {
+      problems.push(`${label}: the override ${shown} is for ${overrideTarget(path)}, not ${floor.package}`);
+      continue;
+    }
     const spec = overrideAt(overrides, path);
     if (spec === undefined) {
-      problems.push(`${label}: ${floor.declaredIn} has no override at ${path}`);
+      problems.push(`${label}: ${floor.declaredIn} has no override at ${shown}`);
       continue;
     }
     const base = /^(?:\^|~|>=\s*)?v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec(spec.trim())?.[1];
-    if (base === undefined) problems.push(`${label}: the override ${path} is "${spec}"; a floor needs x, ^x, ~x or >=x`);
-    else if (scheme.compare(base, floor.version) < 0) problems.push(`${label}: the override ${path} is "${spec}", below the floor`);
+    if (base === undefined) problems.push(`${label}: the override ${shown} is "${spec}"; a floor needs x, ^x, ~x or >=x`);
+    else if (scheme.compare(base, floor.version) < 0) problems.push(`${label}: the override ${shown} is "${spec}", below the floor`);
   }
   const dir = dirname(floor.declaredIn);
   const lockfile = inventory.npm.find((candidate) => dirname(candidate.path) === dir);
@@ -187,10 +209,17 @@ async function npmFloorProblems(floor: Floor, inventory: Inventory, tree: Tree, 
   return problems;
 }
 
-/** The override spec at `a>b` (a nested override's own version is its `.` key). */
-function overrideAt(overrides: unknown, path: string): string | undefined {
+/** The package an override path pins: its last key, without a version qualifier (`child@^2` → `child`). */
+function overrideTarget(path: ReadonlyArray<string>): string {
+  const key = path.at(-1)!;
+  const at = key.indexOf("@", 1);
+  return at === -1 ? key : key.slice(0, at);
+}
+
+/** The override spec at a key path (a nested override's own version is its `.` key). */
+function overrideAt(overrides: unknown, path: ReadonlyArray<string>): string | undefined {
   let node: unknown = overrides;
-  for (const key of path.split(">")) {
+  for (const key of path) {
     if (!isObject(node)) return undefined;
     node = node[key];
   }
@@ -206,32 +235,46 @@ async function unrecordedOverrides(floors: ReadonlyArray<Floor>, inventory: Inve
     const manifest = await readJson(tree, manifestPath);
     const overrides = isObject(manifest) ? manifest["overrides"] : undefined;
     for (const path of overridePaths(overrides, [])) {
-      const recorded = floors.some((floor) => floor.ecosystem === "npm" && floor.declaredIn === manifestPath && floor.selector.includes(path));
-      if (!recorded) problems.push(`${manifestPath} overrides ${path} without an entry in ${FLOORS_PATH}`);
+      const recorded = floors.some(
+        (floor) =>
+          floor.ecosystem === "npm" &&
+          floor.declaredIn === manifestPath &&
+          floor.package === overrideTarget(path) &&
+          floor.overridePaths.some((claimed) => JSON.stringify(claimed) === JSON.stringify(path)),
+      );
+      if (!recorded) problems.push(`${manifestPath} overrides ${path.join(" > ")} without an entry in ${FLOORS_PATH}`);
     }
   }
   return problems;
 }
 
-function overridePaths(node: unknown, prefix: string[]): string[] {
+function overridePaths(node: unknown, prefix: string[]): string[][] {
   if (!isObject(node)) return [];
   return Object.entries(node).flatMap(([key, value]) => {
-    if (key === ".") return [prefix.join(">")];
-    if (typeof value === "string") return [[...prefix, key].join(">")];
+    if (key === ".") return [prefix];
+    if (typeof value === "string") return [[...prefix, key]];
     return overridePaths(value, [...prefix, key]);
   });
 }
 
+/**
+ * Gradle declarations with a `because(...)` that no floor entry covers (same
+ * package and version, in that configuration): noted, since a plugin can
+ * inject them.
+ */
 function unrecordedGradleFloors(floors: ReadonlyArray<Floor>, inventory: Inventory): string[] {
   if (inventory.gradle === undefined) return [];
   const notes = new Set<string>();
   for (const build of inventory.gradle.builds) {
     for (const configuration of build.configurations) {
+      const location = gradleLocation(build.build, configuration.id);
       for (const dependency of configuration.declared) {
-        if (dependency.reason === undefined || !/\b(?:GHSA-|CVE-\d)/i.test(dependency.reason)) continue;
+        if (dependency.reason === undefined || dependency.reason.trim() === "") continue;
         const name = `${dependency.group}:${dependency.name}`;
-        if (floors.some((floor) => floor.ecosystem === "Maven" && floor.package === name)) continue;
-        notes.add(`${name}:${dependency.version ?? "?"} is declared because "${dependency.reason}" without an entry in ${FLOORS_PATH}`);
+        const covered = floors.some(
+          (floor) => floor.ecosystem === "Maven" && floor.package === name && floor.version === dependency.version && floor.locations.includes(location),
+        );
+        if (!covered) notes.add(`${name}:${dependency.version ?? "?"} is declared in ${location} because "${dependency.reason}" without an entry in ${FLOORS_PATH}`);
       }
     }
   }
