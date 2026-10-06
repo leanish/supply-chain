@@ -117,6 +117,7 @@ interface BuildOutput {
 async function readRun(out: string, requested: string): Promise<Map<string, BuildOutput>> {
   const configurations = new Map<string, GradleConfiguration[]>();
   const projects = new Map<string, Set<string>>();
+  const settings = new Set<string>();
   const manifests = new Map<string, { projects: string[]; nestedBuilds: string[] }>();
   for (const file of (await readdir(out)).filter((name) => name.endsWith(".json")).sort()) {
     const content: unknown = JSON.parse(await readFile(join(out, file), "utf8"));
@@ -134,12 +135,15 @@ async function readRun(out: string, requested: string): Promise<Map<string, Buil
     }
     if (!Array.isArray(content["configurations"])) throw new Error(`Gradle inventory of build ${requested}: ${file} has no configurations`);
     configurations.set(label, [...(configurations.get(label) ?? []), ...content["configurations"].map((config) => parseConfiguration(config, `${requested}/${file}`))]);
-    if (content["project"] !== "settings") projects.set(label, (projects.get(label) ?? new Set()).add(content["project"]));
+    if (content["project"] === "settings") settings.add(label);
+    else projects.set(label, (projects.get(label) ?? new Set()).add(content["project"]));
   }
   const builds = new Map<string, BuildOutput>();
   for (const [label, configs] of configurations) {
     const manifest = manifests.get(label);
     if (manifest === undefined) throw new Error(`Gradle inventory of build ${label} wrote no manifest`);
+    // The settings classpath (settings plugins) comes in its own file, even when empty.
+    if (!settings.has(label)) throw new Error(`Gradle inventory of build ${label} wrote no settings output`);
     const missing = manifest.projects.filter((project) => !projects.get(label)?.has(project));
     if (missing.length > 0) throw new Error(`Gradle inventory of build ${label} has no output for project(s) ${missing.join(", ")}`);
     builds.set(label, { configurations: configs, nestedBuilds: manifest.nestedBuilds });
