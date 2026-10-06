@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { actionChanges, actionGaps, actionsLocated, resolveUses } from "../src/actions-changes.ts";
 import { ActionsGitHub } from "../src/actions-github.ts";
-import { type ActionsInventory, parseUses, readActionsInventory } from "../src/actions-inventory.ts";
+import { type ActionsInventory, type ActionUse, parseUses, readActionsInventory } from "../src/actions-inventory.ts";
 import { parseConfig } from "../src/config.ts";
 import type { Tree } from "../src/tree.ts";
 import { fakeFetch, type FakeResponse } from "./fake-fetch.ts";
@@ -158,8 +158,8 @@ describe("resolving uses", () => {
 });
 
 describe("occurrences and edge cases", () => {
-  const use = (ref: string, comment: string | undefined, file = "ci.yml") => ({ name: "actions/checkout", path: undefined, ref, comment, file });
-  const inventory = (...uses: ReturnType<typeof use>[]): ActionsInventory => ({ uses, docker: [], files: ["ci.yml"], gaps: [] });
+  const use = (ref: string, comment: string | undefined, file = "ci.yml"): ActionUse => ({ name: "actions/checkout", path: undefined, ref, comment, file });
+  const inventory = (...uses: ActionUse[]): ActionsInventory => ({ uses, docker: [], files: ["ci.yml"], gaps: [] });
 
   it("judges each occurrence: a dropped comment, or an unpinned ref copied to another workflow, is a change", async () => {
     const gh = github();
@@ -174,6 +174,23 @@ describe("occurrences and edge cases", () => {
     expect((await actionChanges(base, copied, resolutions, gh, config)).problems).toEqual([
       "actions/checkout@v6 (release.yml) is new or changed, so it must be pinned to a full commit SHA with a `# vX.Y.Z` comment",
     ]);
+  });
+
+  it("counts a duplicate step and a switched subpath as changes, and reads alias keys", async () => {
+    const gh = github();
+    const config = parseConfig({});
+    const base = inventory(use("v6", undefined));
+    const duplicated = inventory(use("v6", undefined), use("v6", undefined));
+    const subpath = inventory({ ...use("v6", undefined), path: "two" });
+    const resolutions = await resolveUses([base, duplicated, subpath], gh);
+    expect((await actionChanges(base, duplicated, resolutions, gh, config)).problems).toEqual([
+      "actions/checkout@v6 (ci.yml) is new or changed, so it must be pinned to a full commit SHA with a `# vX.Y.Z` comment",
+    ]);
+    expect((await actionChanges(base, subpath, resolutions, gh, config)).problems).toEqual([
+      "actions/checkout/two@v6 (ci.yml) is new or changed, so it must be pinned to a full commit SHA with a `# vX.Y.Z` comment",
+    ]);
+    const aliased = parseUses("steps:\n  - &key uses: acme/old@v1\n  - *key : acme/new@v1\n", "ci.yml");
+    expect(aliased.uses.map((found) => found.name)).toEqual(["acme/old", "acme/new"]);
   });
 
   it("won't take a floating major tag as the version", async () => {

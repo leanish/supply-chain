@@ -55,7 +55,8 @@ export function parseUses(text: string, file: string): { uses: ActionUse[]; loca
     visited.add(node);
     if (isMap(node)) {
       for (const pair of node.items) {
-        if (isScalar(pair.key) && pair.key.value === "uses") {
+        const key = resolve(pair.key);
+        if (isScalar(key) && key.value === "uses") {
           const value = resolve(pair.value);
           if (!isScalar(value) || typeof value.value !== "string") throw new Error(`${file}: a \`uses:\` isn't a string`);
           const comment = (isScalar(pair.value) ? pair.value.comment : undefined) ?? (isAlias(pair.value) ? pair.value.comment : undefined) ?? value.comment;
@@ -137,9 +138,9 @@ export function resolutionKey(use: ActionUse): string {
   return `${use.name}@${use.ref}#${commentTag(use) ?? ""}`;
 }
 
-/** One occurrence: where, what and how it's annotated; a changed comment or a new file is a change. */
+/** One occurrence: where, exactly what (subpath included) and how it's annotated; a changed comment or a new file is a change. */
 export function occurrenceKey(use: ActionUse): string {
-  return `${use.file}|${use.name}@${use.ref}|${use.comment ?? ""}`;
+  return `${use.file}|${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}|${use.comment ?? ""}`;
 }
 
 /** Whether a use is pinned to a commit whose comment names a tag that GitHub says points at it. */
