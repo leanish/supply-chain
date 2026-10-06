@@ -205,6 +205,21 @@ jobs:
     expect(read.files).toEqual([".github/workflows/ci.yml", ".github/workflows/shell.yml"]);
     expect(read.gaps).toEqual(["GitHub Actions local action ./missing-action (.github/workflows/ci.yml) has no action.yml, so what it uses isn't read"]);
   });
+
+  it("reads a local reusable workflow once, as the workflow it is, and reports one that doesn't exist", async () => {
+    const caller = `on: push
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+  gone:
+    uses: ./.github/workflows/gone.yml
+`;
+    const ci = `on: workflow_call\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@${CHECKOUT_SHA} # v7.0.1\n`;
+    const read = await readActionsInventory(tree({ ".github/workflows/ci.yml": ci, ".github/workflows/publish.yml": caller }));
+    expect(read.files).toEqual([".github/workflows/ci.yml", ".github/workflows/publish.yml"]);
+    expect(read.uses.map((found) => [found.name, found.file])).toEqual([["actions/checkout", ".github/workflows/ci.yml"]]);
+    expect(read.gaps).toEqual(["GitHub Actions local workflow ./.github/workflows/gone.yml (.github/workflows/publish.yml) doesn't exist, so what it uses isn't read"]);
+  });
 });
 
 describe("GitHub's advisory database", () => {

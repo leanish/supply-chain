@@ -49,7 +49,8 @@ async function inventory(sides: Array<"base" | "head">, gradle: Array<"base" | "
 function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls: string[] = [], recorded: string[] = []): RescanSteps {
   return {
     record: async (recordedPr, result) => {
-      recorded.push(`#${recordedPr.number} ${result.state} ${result.description}`);
+      const pair = result.compared === undefined ? "" : ` ${result.compared.base.slice(0, 1)}..${result.compared.head.slice(0, 1)}`;
+      recorded.push(`#${recordedPr.number} ${result.state}${pair} ${result.description}`);
     },
     prepare: async () => {
       calls.push("prepare");
@@ -70,8 +71,8 @@ function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls:
   };
 }
 
-const pass: RescanOutcome = { completed: true, verdict: "pass", failures: [], warnings: [], gaps: [], notes: [] };
-const fail: RescanOutcome = { completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [], gaps: [], notes: [] };
+const pass: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "pass", failures: [], warnings: [], gaps: [], notes: [] };
+const fail: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [], gaps: [], notes: [] };
 
 async function rescan(rescanSteps: RescanSteps, fetch: ReturnType<typeof github>) {
   const log: string[] = [];
@@ -116,7 +117,8 @@ describe("rescan", () => {
     const recorded: string[] = [];
     await rescan(steps({ ...pass, warnings: ["inherited: x"], gaps: ["no repo for y", "no repo for z"] }, [], [], recorded), github({}, posts));
     expect(posts[0]!.body).toMatchObject({ state: "success", description: "Daily rescan: pass, 1 inherited finding(s), 2 coverage gap(s)" });
-    expect(recorded).toEqual(["#7 success Daily rescan: pass, 1 inherited finding(s), 2 coverage gap(s)"]);
+    // The merged pair the gate checked, not the PR's own base and head.
+    expect(recorded).toEqual(["#7 success b..c Daily rescan: pass, 1 inherited finding(s), 2 coverage gap(s)"]);
   });
 
   it("checks the PR again right before posting, in case it moved during the scan", async () => {
@@ -159,9 +161,11 @@ describe("rescan", () => {
     await inventory(["base"]);
     const missing: Array<{ url: string; body: unknown }> = [];
     const calls: string[] = [];
-    await rescan(steps(pass, [], calls), github({}, missing));
+    const recorded: string[] = [];
+    await rescan(steps(pass, [], calls, recorded), github({}, missing));
     expect(missing[0]!.body).toMatchObject({ state: "failure", description: "Daily rescan didn't complete: the head inventory didn't complete" });
     expect(calls).toEqual(["reset"]);
+    expect(recorded).toEqual(["#7 failure Daily rescan didn't complete: the head inventory didn't complete"]);
     await inventory(["head"]);
     const thrown: Array<{ url: string; body: unknown }> = [];
     await rescan(steps(new Error("OSV is down")), github({}, thrown));

@@ -13,10 +13,12 @@ export interface Report {
   readonly schemaVersion: number;
   readonly mode: "compare" | "scan";
   readonly tool: { readonly commit: string | undefined; readonly osvScanner: string | undefined };
-  /** sha256 of supply-chain.json as read, or `default` without one. */
+  /** sha256 of supply-chain.json as read, `default` without one, or `unknown` when the run stopped before reading it. */
   readonly configDigest: string;
   readonly baseSha: string | undefined;
   readonly headSha: string;
+  /** The PR's own head, set by the daily rescan, whose `headSha` is that head merged onto the base's tip. */
+  readonly prHeadSha: string | undefined;
   readonly startedAt: string;
   readonly completedAt: string;
   readonly completed: boolean;

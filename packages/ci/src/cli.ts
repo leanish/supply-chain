@@ -27,7 +27,7 @@ import { parseArgs } from "node:util";
 import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess, withoutCredentials } from "./process.ts";
-import type { Fetch } from "./http.ts";
+import { type Fetch, namingFailures } from "./http.ts";
 import { configDigest, emitReport, REPORT_SCHEMA_VERSION, type Report } from "./report.ts";
 import { parsePlan, planRescan, type RescanSteps, runRescan } from "./rescan.ts";
 import { gitTree, type Tree, workingTree } from "./tree.ts";
@@ -99,7 +99,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   }
   const gate: GateEnvironment = {
     run: runProcess,
-    fetch: (url, init) => fetch(url, init),
+    fetch: namingFailures((url, init) => fetch(url, init)),
     now: () => new Date(),
     osvScanner: env["OSV_SCANNER"] ?? "osv-scanner",
     githubToken: env["GITHUB_TOKEN"] ?? env["GH_TOKEN"],
@@ -129,6 +129,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     configDigest: configDigest(outcome?.configText),
     baseSha: base?.id,
     headSha: head?.id ?? values.head ?? "HEAD",
+    prHeadSha: undefined,
     startedAt: startedAt.toISOString(),
     completedAt: new Date().toISOString(),
     completed,
@@ -251,7 +252,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       return value;
     };
     if (token === undefined) throw new Error(`${command} needs GITHUB_TOKEN`);
-    const fetcher: Fetch = (url, init) => fetch(url, init);
+    const fetcher: Fetch = namingFailures((url, init) => fetch(url, init));
     if (command === "rescan-plan") {
       const only = values.pr === undefined || values.pr === "" ? undefined : Number(values.pr);
       const plan = await planRescan({ fetch: fetcher, token, repository: required("github-repo") }, only);
@@ -282,6 +283,8 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       async compare(baseRev, headRev, gradle) {
         const outcome = await compareTrees(await gitTree(repo, baseRev, runProcess), await gitTree(repo, headRev, runProcess), gate, gradle, repo);
         return {
+          osvScannerVersion: outcome.osvScannerVersion,
+          configDigest: configDigest(outcome.configText),
           completed: true,
           verdict: outcome.failures.length === 0 ? "pass" : "fail",
           failures: outcome.failures,
@@ -301,10 +304,12 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
         const report: Report = {
           schemaVersion: REPORT_SCHEMA_VERSION,
           mode: "compare",
-          tool: { commit: env["SUPPLY_CHAIN_COMMIT"], osvScanner: undefined },
-          configDigest: "rescan",
-          baseSha: pr.base,
-          headSha: pr.head,
+          tool: { commit: env["SUPPLY_CHAIN_COMMIT"], osvScanner: outcome?.osvScannerVersion },
+          configDigest: outcome?.configDigest ?? "unknown",
+          // The pair the gate checked: the PR merged onto its base's tip (or the PR head against its merge base).
+          baseSha: result.compared?.base,
+          headSha: result.compared?.head ?? pr.head,
+          prHeadSha: pr.head,
           startedAt: values["started-at"]!,
           completedAt: new Date().toISOString(),
           completed: outcome?.completed ?? false,
