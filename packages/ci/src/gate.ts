@@ -60,9 +60,31 @@ export async function readSettings(head: Tree): Promise<Settings> {
   };
 }
 
-/** What a tree has to inventory under its own settings: the CLI uses it to know which Gradle builds to run. */
+/** What head has to inventory under its own settings: the CLI uses it to know which Gradle builds to run. */
 export async function treeSources(head: Tree): Promise<Sources> {
   return sourcesOf(head, (await readSettings(head)).config);
+}
+
+/**
+ * What base has, under base's own settings. A base config that doesn't parse
+ * (the PR may be fixing it) falls back to the defaults, so it can't block the
+ * comparison; base lockfiles are read as listed by either side, missing ones
+ * as empty.
+ */
+export async function baseSources(base: Tree, head: Sources): Promise<Sources> {
+  const own = await lenientSources(base);
+  return { lockfiles: [...new Set([...head.lockfiles, ...own.lockfiles])], gradleBuilds: own.gradleBuilds };
+}
+
+/** A tree's sources under its own settings, or the defaults when they don't parse; empty is fine. */
+export async function lenientSources(tree: Tree): Promise<Sources> {
+  let config: Config;
+  try {
+    config = (await readSettings(tree)).config;
+  } catch {
+    config = DEFAULT_CONFIG;
+  }
+  return sourcesOf(tree, config, true);
 }
 
 function parseJson(text: string, path: string): unknown {
@@ -93,7 +115,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const { config, configText, exceptions } = await readSettings(head);
   const sources = await sourcesOf(head, config);
   const headInventory = await readInventory(head, sources, { gradle: gradle.head });
-  const baseInventory = await readInventory(base, sources, { missingLockfilesAreEmpty: true, gradle: gradle.base });
+  const baseInventory = await readInventory(base, await baseSources(base, sources), { missingLockfilesAreEmpty: true, gradle: gradle.base });
   const baseLocated = located(baseInventory);
   const headLocated = located(headInventory);
   const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env));

@@ -22,7 +22,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 
-import { type GateEnvironment, type GateOutcome, runCompare, runScan, treeSources } from "./gate.ts";
+import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess } from "./process.ts";
 import { configDigest, emitReport, REPORT_SCHEMA_VERSION, type Report } from "./report.ts";
@@ -84,11 +84,12 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   let error: string | undefined;
   try {
     head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
-    const headBuilds = (await treeSources(head)).gradleBuilds;
-    const headGradle = await gradleInput(values["head-gradle"], head, headBuilds, repo);
+    const headSources = await treeSources(head);
+    const headGradle = await gradleInput(values["head-gradle"], head, headSources.gradleBuilds, "head", repo);
     if (command === "compare") {
       base = await gitTree(repo, values.base!, runProcess);
-      const baseGradle = await gradleInput(values["base-gradle"], base, headBuilds.length > 0 ? undefined : [], repo);
+      const baseBuilds = (await baseSources(base, headSources)).gradleBuilds;
+      const baseGradle = await gradleInput(values["base-gradle"], base, baseBuilds, "base", repo);
       outcome = await runCompare(base, head, gate, { base: baseGradle, head: headGradle });
     } else {
       outcome = await runScan(head, gate, { head: headGradle });
@@ -126,22 +127,23 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
 
 /**
  * The Gradle inventory for a tree: read from `file` (checked against the
- * tree's commit and, when given, its builds), made inline for the working
- * tree, or none when the tree has no Gradle builds. `builds` undefined: any
- * set (base may have had other builds than head).
+ * tree's commit and builds), made inline for the working tree, or none when
+ * the tree has no Gradle builds.
  */
 async function gradleInput(
   file: string | undefined,
   tree: Tree,
-  builds: ReadonlyArray<string> | undefined,
+  builds: ReadonlyArray<string>,
+  side: "base" | "head",
   repo: string,
 ): Promise<GradleInventory | undefined> {
+  if (builds.length === 0) {
+    if (file !== undefined) throw new Error(`${tree.id} has no Gradle builds, but --${side}-gradle was given`);
+    return undefined;
+  }
   if (file !== undefined) return parseGradleInventory(JSON.parse(await readFile(file, "utf8")), tree.id, builds);
-  if (builds !== undefined && builds.length === 0) return undefined;
-  if (tree.id === "worktree") return runGradleInventory(repo, builds ?? (await treeSources(tree)).gradleBuilds, "worktree", runProcess);
-  throw new Error(`${tree.id} has Gradle builds: make its inventory with \`gradle-inventory\` on a checkout and pass it with --${
-    builds === undefined ? "base" : "head"
-  }-gradle`);
+  if (tree.id === "worktree") return runGradleInventory(repo, builds, "worktree", runProcess);
+  throw new Error(`${tree.id} has Gradle builds: make its inventory with \`gradle-inventory\` on a checkout and pass it with --${side}-gradle`);
 }
 
 /** Runs the Gradle inventory on the checkout at `repo` (clean, at its HEAD commit) and writes it to `out`. */
@@ -152,8 +154,12 @@ async function gradleInventoryCommand(repo: string, out: string): Promise<number
     if (dirty.code !== 0 || dirty.stdout.trim() !== "") {
       throw new Error("the checkout has changes to tracked files: the inventory wouldn't describe its commit");
     }
-    const builds = (await treeSources(head)).gradleBuilds;
-    if (builds.length === 0) throw new Error(`${head.id} has no Gradle builds to inventory`);
+    const builds = (await lenientSources(head)).gradleBuilds;
+    if (builds.length === 0) {
+      // A base before the first Gradle build: nothing to write, and compare won't ask for it.
+      console.log(`gradle-inventory: ${head.id} has no Gradle builds; nothing written`);
+      return 0;
+    }
     const inventory = await runGradleInventory(repo, builds, head.id, runProcess);
     await writeFile(out, `${JSON.stringify(inventory)}\n`);
     console.log(`gradle-inventory: ${inventory.builds.length} build(s) of ${head.id} written to ${out}`);

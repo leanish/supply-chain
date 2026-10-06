@@ -49,6 +49,34 @@ export class MavenDates {
   }
 }
 
+/**
+ * The versions `pkg` replaces: where head resolves it (a configuration),
+ * whatever base resolved there that head no longer does at that location. A
+ * version head keeps elsewhere still counts (upgraded at runtime, kept in
+ * tests). Where none of its locations existed in base, any version base had
+ * that head no longer has anywhere.
+ */
+function replacedAt(pkg: Located, base: ReadonlyArray<Located>, head: ReadonlyArray<Located>, kept: ReadonlySet<string>): string[] {
+  const versionsAt = (side: ReadonlyArray<Located>) => {
+    const at = new Map<string, Set<string>>();
+    for (const entry of side) {
+      if (entry.ecosystem !== "Maven" || entry.name !== pkg.name) continue;
+      for (const location of entry.locations) at.set(location, (at.get(location) ?? new Set()).add(entry.version));
+    }
+    return at;
+  };
+  const before = versionsAt(base);
+  const after = versionsAt(head);
+  const replaced = new Set<string>();
+  for (const location of pkg.locations) {
+    for (const version of before.get(location) ?? []) if (!after.get(location)?.has(version)) replaced.add(version);
+  }
+  if (replaced.size === 0 && !pkg.locations.some((location) => before.has(location))) {
+    for (const old of base) if (old.ecosystem === "Maven" && old.name === pkg.name && !kept.has(`${old.name}@${old.version}`)) replaced.add(old.version);
+  }
+  return [...replaced];
+}
+
 /** Release-age problems of the Maven versions `head` has and `base` doesn't. */
 export async function mavenChangeProblems(
   base: ReadonlyArray<Located>,
@@ -66,15 +94,7 @@ export async function mavenChangeProblems(
       problems.push(`${label(pkg)} isn't in ${context.config.maven.repositories.join(" or ")}, so the gate can't check its release age`);
       continue;
     }
-    // Versions of this package that base resolved and head no longer does.
-    const replaced = [
-      ...new Set(
-        base
-          .filter((old) => old.ecosystem === "Maven" && old.name === pkg.name && !kept.has(`${old.name}@${old.version}`))
-          .map((old) => old.version),
-      ),
-    ];
-    const problem = releaseAgeProblem(pkg, published, replaced, context);
+    const problem = releaseAgeProblem(pkg, published, replacedAt(pkg, base, head, kept), context);
     if (problem !== undefined) problems.push(problem);
   }
   return problems;

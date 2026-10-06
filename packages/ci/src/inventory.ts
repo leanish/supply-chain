@@ -4,10 +4,11 @@
  * inventory made from it, merged into located package versions for the
  * advisory scan.
  *
- * Which sources a repository has is decided once, from head: configured
- * lockfiles and builds, or else `package-lock.json` and the root Gradle build
- * when the tree has them, so an ecosystem present in the repository is never
- * skipped for lack of configuration.
+ * Which sources a tree has: configured lockfiles and builds, or else
+ * `package-lock.json` and the root Gradle build when the tree has them, so an
+ * ecosystem present in the repository is never skipped for lack of
+ * configuration. Base and head each have their own: head may add the first
+ * Gradle build, or remove the last one.
  */
 import { dirname } from "node:path";
 
@@ -38,14 +39,18 @@ export interface Sources {
 
 const GRADLE_ROOT_FILES = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"];
 
-export async function sourcesOf(tree: Tree, config: Config): Promise<Sources> {
+/**
+ * The lockfiles and Gradle builds `tree` has under `config`. A tree with
+ * neither fails, unless `allowEmpty` (a base that predates them).
+ */
+export async function sourcesOf(tree: Tree, config: Config, allowEmpty = false): Promise<Sources> {
   const lockfiles = config.npm.lockfiles ?? ((await tree.read("package-lock.json")) === undefined ? [] : ["package-lock.json"]);
   let gradleBuilds = config.gradle.builds;
   if (gradleBuilds === undefined) {
     const found = await Promise.all(GRADLE_ROOT_FILES.map(async (file) => (await tree.read(file)) !== undefined));
     gradleBuilds = found.some(Boolean) ? ["."] : [];
   }
-  if (lockfiles.length === 0 && gradleBuilds.length === 0) {
+  if (lockfiles.length === 0 && gradleBuilds.length === 0 && !allowEmpty) {
     throw new Error(`${tree.id} has no package-lock.json or Gradle build, and supply-chain.json lists none`);
   }
   return { lockfiles, gradleBuilds };

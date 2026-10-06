@@ -42,8 +42,9 @@ describe("Gradle inventory files", () => {
 
   it("rejects another commit, other builds, other schemas and malformed entries", () => {
     expect(() => parseGradleInventory(valid, "def456", ["."])).toThrow("made from abc123, not def456");
-    expect(() => parseGradleInventory(valid, "abc123", [".", "buildSrc"])).toThrow("covers builds ., but supply-chain.json lists ., buildSrc");
-    expect(parseGradleInventory(valid, "abc123", undefined).builds).toHaveLength(1);
+    expect(() => parseGradleInventory(valid, "abc123", [".", "build-logic"])).toThrow("covers builds ., missing build-logic from supply-chain.json");
+    expect(parseGradleInventory({ ...valid, builds: [...valid.builds, { build: "buildSrc", configurations: [] }] }, "abc123", ["."]).builds).toHaveLength(2);
+    expect(() => parseGradleInventory({ ...valid, builds: [...valid.builds, ...valid.builds] }, "abc123", ["."])).toThrow("lists a build twice");
     expect(() => parseGradleInventory({ ...valid, schemaVersion: 2 }, "abc123", ["."])).toThrow("schemaVersion must be 1");
     const broken = (config: object) => ({ ...valid, builds: [{ build: ".", configurations: [config] }] });
     expect(() => parseGradleInventory(broken({ id: ":x", kind: "weird" }), "abc123", ["."])).toThrow("malformed configuration");
@@ -62,7 +63,7 @@ describe("Gradle inventory files", () => {
         ],
       },
       "abc123",
-      undefined,
+      ["."],
     );
     expect(gradleLocated(inventory)[0]!.locations).toEqual(["buildSrc/:compileClasspath"]);
     expect(gradleResolutionProblems(inventory, [])).toEqual([
@@ -85,20 +86,26 @@ describe("running the Gradle inventory", () => {
     await rm(repo, { recursive: true, force: true });
   });
 
-  /** A fake gradlew that writes outputs for `builds` (labels relative to the requested build). */
-  function gradlew(builds: string[], calls: string[][] = []): RunProcess {
+  /**
+   * A fake gradlew writing outputs for `builds` (labels relative to the requested build): one project
+   * each, plus a manifest listing `nested` as the root build's nested builds.
+   */
+  function gradlew(builds: string[], calls: string[][] = [], nested: string[] = ["tools/conventions"]): RunProcess {
     return async (_command, args) => {
       calls.push([...args]);
       const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
       for (const build of builds) {
-        const file = `${build === "." ? "" : `${build.replaceAll("/", "~")}~`}project.json`;
-        await writeFile(join(out, file), JSON.stringify({ schemaVersion: 1, build, project: ":", configurations: [configuration(":runtimeClasspath", [])] }));
+        const file = (project: string) => join(out, `${encodeURIComponent(`${build}|${project}`)}.json`);
+        await writeFile(file(":"), JSON.stringify({ schemaVersion: 1, build, project: ":", configurations: [configuration(":runtimeClasspath", [])] }));
+        const requested = args[args.indexOf("-p") + 1];
+        const manifest = { projects: [":"], nestedBuilds: build === "." && requested === "." ? nested : [] };
+        await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 1, build, project: "manifest", manifest }));
       }
       return { code: 0, stdout: "", stderr: "" };
     };
   }
 
-  it("collects nested builds the run configured, and fails on one that's missing", async () => {
+  it("collects nested builds the run configured, and fails on one Gradle's model lists that's missing", async () => {
     const calls: string[][] = [];
     const inventory = await runGradleInventory(repo, ["."], "worktree", gradlew([".", "tools/conventions"], calls));
     expect(inventory.builds.map((build) => build.build)).toEqual([".", "tools/conventions"]);
@@ -108,6 +115,27 @@ describe("running the Gradle inventory", () => {
     );
     const listed = await runGradleInventory(repo, [".", "tools/conventions"], "worktree", gradlew(["."]));
     expect(listed.builds.map((build) => build.build)).toEqual([".", "tools/conventions"]);
+    // Only Gradle's model counts: a commented-out includeBuild in the settings file is no build.
+    await writeFile(join(repo, "settings.gradle.kts"), `rootProject.name = "x"\n// includeBuild("old-build")\n`);
+    expect((await runGradleInventory(repo, ["."], "worktree", gradlew(["."], [], []))).builds.map((build) => build.build)).toEqual(["."]);
+  });
+
+  it("fails when a project in the manifest wrote nothing, or a build wrote no manifest", async () => {
+    const missingProject: RunProcess = async (command, args, options) => {
+      const result = await gradlew(["."], [], [])(command, args, options);
+      const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
+      const manifest = { projects: [":", ":a:b"], nestedBuilds: [] };
+      await writeFile(join(out, `${encodeURIComponent(".|manifest")}.json`), JSON.stringify({ schemaVersion: 1, build: ".", project: "manifest", manifest }));
+      return result;
+    };
+    await expect(runGradleInventory(repo, ["."], "worktree", missingProject)).rejects.toThrow("Gradle inventory of build . has no output for project(s) :a:b");
+    const noManifest: RunProcess = async (command, args, options) => {
+      const result = await gradlew(["."], [], [])(command, args, options);
+      const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
+      await rm(join(out, `${encodeURIComponent(".|manifest")}.json`));
+      return result;
+    };
+    await expect(runGradleInventory(repo, ["."], "worktree", noManifest)).rejects.toThrow("Gradle inventory of build . wrote no manifest");
   });
 
   it("fails on a failed Gradle run, a build without output, a missing wrapper or build directory", async () => {
@@ -165,6 +193,31 @@ describe("Maven release age", () => {
     const exceptions = parseExceptions({
       releaseAge: [
         { ecosystem: "Maven", package: "org.xerial.snappy:snappy-java", version: "1.1.10.10", advisory: "CVE-2026-90559", reason: "fix", expires: "2026-10-20" },
+      ],
+    });
+    const problems = await mavenChangeProblems(base, head, {
+      snapshot: snapshot({ "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory] }, [...base, ...head]),
+      exceptions,
+      config,
+      now: NOW,
+      dates: new MavenDates(fetch, config.maven.repositories),
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it("binds a young fix's advisory to the configuration it replaces a version in, though another keeps the old one", async () => {
+    // Upgraded at runtime, still the old version in tests: runtime's 1.1.10.8 is what 1.1.10.10 replaces.
+    const base = [maven("org.xerial.snappy:snappy-java", "1.1.10.8", [":runtimeClasspath", ":testRuntimeClasspath"])];
+    const head = [
+      maven("org.xerial.snappy:snappy-java", "1.1.10.10", [":runtimeClasspath"]),
+      maven("org.xerial.snappy:snappy-java", "1.1.10.8", [":testRuntimeClasspath"]),
+    ];
+    const fetch = fakeFetch({ [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } } });
+    const advisory: Advisory = { id: "GHSA-wmgv-28fv-894x", ids: ["GHSA-wmgv-28fv-894x"], source: "repository", malicious: false, summary: undefined, severity: "HIGH" };
+    const config = parseConfig({});
+    const exceptions = parseExceptions({
+      releaseAge: [
+        { ecosystem: "Maven", package: "org.xerial.snappy:snappy-java", version: "1.1.10.10", advisory: "GHSA-wmgv-28fv-894x", reason: "fix", expires: "2026-10-20" },
       ],
     });
     const problems = await mavenChangeProblems(base, head, {

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { gradleLocated, gradleResolutionProblems, type GradleInventory, runGradleInventory } from "../src/gradle.ts";
+import { gradleLocated, gradleResolutionProblems, type GradleInventory, parseGradleInventory, runGradleInventory } from "../src/gradle.ts";
 import { runProcess } from "../src/process.ts";
 
 const WRAPPER = fileURLToPath(new URL("./fixtures/gradle-wrapper", import.meta.url));
@@ -33,6 +33,9 @@ const MODULES: Record<string, string[]> = {
   "fixture:sub-runtime:1.0": [],
   "fixture:buildsrc-dep:1.0": [],
   "fixture:included-dep:1.0": [],
+  "fixture:plugin-build-dep:1.0": [],
+  "fixture:ab-colon:1.0": [],
+  "fixture:ab-underscore:1.0": [],
 };
 
 function pom(coordinates: string, dependencies: string[]): string {
@@ -65,15 +68,34 @@ describe.skipIf(process.env["SUPPLY_CHAIN_GRADLE_TESTS"] !== "1")("Gradle invent
     const build = join(root, "build");
     await cp(WRAPPER, build, { recursive: true });
     const repository = `repositories { maven { url = uri("${repo}") } }`;
-    await write(build, "settings.gradle", `pluginManagement { ${repository} }
+    // A settings plugin from an included plugin build: that build is evaluated before the root's settings finish.
+    await write(build, "settings.gradle", `pluginManagement {
+  includeBuild("build-logic")
+  ${repository}
+}
 buildscript {
   ${repository}
   dependencies { classpath "fixture:settings-dep:1.0" }
 }
+plugins { id "fixture.settings" }
 rootProject.name = "fixture"
-include "sub"
+include "sub", "a:b", "a_b"
 includeBuild "included"
 `);
+    await write(build, "build-logic/settings.gradle", `rootProject.name = "build-logic"\n`);
+    await write(build, "build-logic/build.gradle", `plugins { id "java-gradle-plugin" }
+${repository}
+dependencies { implementation "fixture:plugin-build-dep:1.0" }
+gradlePlugin { plugins { settingsPlugin { id = "fixture.settings"; implementationClass = "fixture.SettingsPlugin" } } }
+`);
+    await write(build, "build-logic/src/main/java/fixture/SettingsPlugin.java", `package fixture;
+public class SettingsPlugin implements org.gradle.api.Plugin<org.gradle.api.initialization.Settings> {
+  public void apply(org.gradle.api.initialization.Settings settings) {}
+}
+`);
+    // Two projects whose paths once mapped to the same file name.
+    await write(build, "a/b/build.gradle", `plugins { id "java" }\n${repository}\ndependencies { implementation "fixture:ab-colon:1.0" }\n`);
+    await write(build, "a_b/build.gradle", `plugins { id "java" }\n${repository}\ndependencies { implementation "fixture:ab-underscore:1.0" }\n`);
     await write(build, "build.gradle", `buildscript {
   ${repository}
   dependencies { classpath "fixture:buildscript-dep:1.0" }
@@ -135,8 +157,9 @@ dependencies { implementation "fixture:included-dep:1.0" }
     expect(locations("fixture:settings-dep:1.0")).toEqual(["settings.classpath"]);
   });
 
-  it("covers buildSrc and included builds, under their own location prefix", () => {
-    expect(inventory.builds.map((build) => build.build).sort()).toEqual([".", "buildSrc", "included"]);
+  it("covers buildSrc, included and plugin builds, under their own location prefix", () => {
+    expect(inventory.builds.map((build) => build.build).sort()).toEqual([".", "build-logic", "buildSrc", "included"]);
+    expect(locations("fixture:plugin-build-dep:1.0")).toEqual(expect.arrayContaining(["build-logic/:runtimeClasspath"]));
     expect(locations("fixture:buildsrc-dep:1.0")).toEqual(expect.arrayContaining(["buildSrc/:compileClasspath", "buildSrc/:runtimeClasspath"]));
     expect(locations("fixture:included-dep:1.0")).toEqual(expect.arrayContaining(["included/:runtimeClasspath"]));
   });
@@ -156,9 +179,17 @@ dependencies { implementation "fixture:included-dep:1.0" }
     expect(gradleResolutionProblems(inventory, [])).toEqual([]);
   });
 
-  it("inventories an included build Gradle configures from the root build, without listing it", async () => {
+  it("keeps projects apart whose paths look alike", () => {
+    expect(locations("fixture:ab-colon:1.0")).toEqual(expect.arrayContaining([":a:b:runtimeClasspath"]));
+    expect(locations("fixture:ab-underscore:1.0")).toEqual(expect.arrayContaining([":a_b:runtimeClasspath"]));
+  });
+
+  it("inventories included builds Gradle configures from the root build without listing them, in a form compare accepts", async () => {
     const rootOnly = await runGradleInventory(join(root, "build"), ["."], "worktree", runProcess);
-    expect(rootOnly.builds.map((build) => build.build).sort()).toEqual([".", "buildSrc", "included"]);
+    expect(rootOnly.builds.map((build) => build.build).sort()).toEqual([".", "build-logic", "buildSrc", "included"]);
+    // What `gradle-inventory` writes, read back as `compare` reads it, against the default sources.
+    const reread = parseGradleInventory(JSON.parse(JSON.stringify(rootOnly)), "worktree", ["."]);
+    expect(gradleLocated(reread)).toEqual(gradleLocated(rootOnly));
   }, 600_000);
 
   it("reports a dependency that doesn't resolve", async () => {

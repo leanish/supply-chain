@@ -75,7 +75,10 @@ function environment(affected: Record<string, string[]>, scans: string[][]): Gat
       headers: { "last-modified": "Mon, 01 Jun 2026 00:00:00 GMT" },
       text: "<project></project>",
     },
-    "https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/1.1.10.8/snappy-java-1.1.10.8.pom": { text: "<project></project>" },
+    "https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/1.1.10.8/snappy-java-1.1.10.8.pom": {
+      headers: { "last-modified": "Sat, 19 Jul 2025 21:17:47 GMT" },
+      text: "<project></project>",
+    },
   });
   return { run, fetch, now: () => NOW, osvScanner: "osv-scanner", githubToken: undefined };
 }
@@ -180,6 +183,40 @@ describe("gate", () => {
     await expect(runCompare(baseTree, headTree, environment(affected, []))).rejects.toThrow(
       "has Gradle builds (.), but no Gradle inventory was given for it",
     );
+  });
+
+  it("gives each side its own sources: head may add the first Gradle build, or remove the last", async () => {
+    const npmOnly = await commit({ "package-lock.json": lock({ stable: "1.0.0" }) });
+    const withGradle = await commit({ "build.gradle.kts": "plugins { java }\n" });
+    const inventory = (tree: string): GradleInventory => ({
+      schemaVersion: 1,
+      tree,
+      builds: [
+        {
+          build: ".",
+          configurations: [
+            {
+              id: ":runtimeClasspath",
+              kind: "project",
+              resolved: [{ group: "org.xerial.snappy", name: "snappy-java", version: "1.1.10.8" }],
+              unresolved: [],
+              declared: [],
+              error: undefined,
+            },
+          ],
+        },
+      ],
+    });
+    const affected = { "org.xerial.snappy:snappy-java@1.1.10.8": ["GHSA-wmgv-28fv-894x"] };
+    const npmTree = await gitTree(repo, npmOnly, runProcess);
+    const gradleTree = await gitTree(repo, withGradle, runProcess);
+    // Adding the first build: no base inventory exists, nor is one needed; its findings are new.
+    const added = await runCompare(npmTree, gradleTree, environment(affected, []), { head: inventory(withGradle) });
+    expect(added.failures).toEqual(["new: org.xerial.snappy:snappy-java@1.1.10.8: GHSA-wmgv-28fv-894x has no exception"]);
+    // Removing the last build: base's inventory still counts, so what it had is fixed.
+    const removed = await runCompare(gradleTree, npmTree, environment(affected, []), { base: inventory(withGradle) });
+    expect(removed.notes).toEqual(["fixed: org.xerial.snappy:snappy-java@1.1.10.8: GHSA-wmgv-28fv-894x GHSA-wmgv-28fv-894x summary"]);
+    await expect(runCompare(gradleTree, npmTree, environment(affected, []))).rejects.toThrow("no Gradle inventory was given for it");
   });
 
   it("names a revision git can't resolve", async () => {

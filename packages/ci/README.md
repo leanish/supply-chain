@@ -46,9 +46,10 @@ A package with no GitHub source repository, an unreadable repository, and a rang
 
 `gradle-inventory` runs [`gradle/supply-chain-inventory.init.gradle`](gradle/supply-chain-inventory.init.gradle) on a clean checkout and records, for every project, **every resolvable configuration**: runtime, compile and test classpaths, annotation processors, tool configurations (checkstyle, pitest, jacoco…), the buildscript classpath (where `plugins {}` and `buildscript {}` put plugins) and the settings classpath. Each configuration lists what resolution selected, what it couldn't resolve, and the external dependencies it declares or inherits, with Gradle's `because(...)` reason.
 
-- `buildSrc`, and included builds Gradle configures from the root build, are covered by the same run, under their own location prefix (`buildSrc/:compileClasspath`). Any other `includeBuild(...)` has to be listed in `gradle.builds`, or the run fails.
+- `buildSrc`, included builds and plugin builds (`pluginManagement { includeBuild(...) }`) that Gradle configures from the root build are covered by the same run, under their own location prefix (`buildSrc/:compileClasspath`). Each build also writes a manifest from Gradle's own model (its projects and nested builds), so a project without output, or a nested build the run didn't export, fails the run; such a build has to be listed in `gradle.builds`.
 - A configuration that doesn't resolve fails the run on either side: a hole in the inventory would read as clean. `gradle.ignoreConfigurations` names locations to leave out, explicitly.
-- The inventory names the commit it was made from, and `compare`/`scan` check it matches.
+- The inventory names the commit it was made from, and `compare`/`scan` check it matches and covers the builds the tree lists.
+- Base and head each have their own sources: a PR can add a repository's first Gradle build (base needs no inventory) or remove its last one (base's inventory still counts, and what it had shows as fixed).
 - A plugin's injected dependencies show up in its consumers' builds, which run this gate themselves (for example, java-conventions' checkstyle and errorprone dependencies in sqs-codec).
 - Gradle runs the build's own code, so a malicious build script or plugin can alter its own inventory; keeping that job apart keeps it from touching the comparison and its credentials, not from lying about itself.
 
@@ -65,7 +66,7 @@ After a scriptless `npm ci --ignore-scripts`, `npm audit signatures` verifies re
 
 ## Release age (Maven)
 
-Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix needs a `releaseAge` exception (with `"ecosystem": "Maven"`), checked against the snapshot like npm's.
+Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix needs a `releaseAge` exception (with `"ecosystem": "Maven"`), checked against the snapshot like npm's. What a version replaces is read per configuration: upgraded at runtime while tests keep the old version, it still replaces the runtime one.
 
 ## Configuration: `.github/supply-chain.json`
 

@@ -62,9 +62,10 @@ export interface GradleInventory {
 
 /**
  * Runs the init script in every listed build and collects what it wrote,
- * nested builds included (buildSrc, and included builds Gradle configured).
- * Every buildSrc and `includeBuild(...)` must end up inventoried: one Gradle
- * didn't configure in a listed build's run has to be listed itself.
+ * nested builds included (buildSrc, included builds, plugin builds Gradle
+ * configured in the run). Each build's manifest, from Gradle's own model,
+ * must be matched: every project exported, and every nested build exported
+ * (one the run didn't configure has to be listed in `gradle.builds` itself).
  */
 export async function runGradleInventory(
   repoRoot: string,
@@ -74,6 +75,7 @@ export async function runGradleInventory(
 ): Promise<GradleInventory> {
   if (!(await exists(join(repoRoot, "gradlew")))) throw new Error("supply-chain.json lists Gradle builds, but the repository has no ./gradlew");
   const collected = new Map<string, GradleConfiguration[]>();
+  const nested = new Set<string>();
   for (const build of builds) {
     if (!(await exists(join(repoRoot, build)))) throw new Error(`supply-chain.json lists Gradle build ${build}, which doesn't exist`);
     if (collected.has(normalize(build))) continue;
@@ -85,22 +87,17 @@ export async function runGradleInventory(
         const tail = result.stderr.trim().split("\n").slice(-5).join(" / ");
         throw new Error(`Gradle inventory of build ${build} failed with exit code ${result.code}: ${tail}`);
       }
-      const written = new Map<string, GradleConfiguration[]>();
-      for (const file of (await readdir(out)).filter((name) => name.endsWith(".json")).sort()) {
-        const content: unknown = JSON.parse(await readFile(join(out, file), "utf8"));
-        if (!isObject(content) || typeof content["build"] !== "string" || !Array.isArray(content["configurations"])) {
-          throw new Error(`Gradle inventory of build ${build}: ${file} is malformed`);
-        }
-        const label = normalize(join(build, content["build"]));
-        written.set(label, [...(written.get(label) ?? []), ...content["configurations"].map((config) => parseConfiguration(config, `${build}/${file}`))]);
-      }
+      const written = await readRun(out, build);
       if (!written.has(normalize(build))) throw new Error(`Gradle inventory of build ${build} wrote no output for it`);
-      for (const [label, configurations] of written) if (!collected.has(label)) collected.set(label, configurations);
+      for (const [label, output] of written) {
+        for (const child of output.nestedBuilds) nested.add(child);
+        if (!collected.has(label)) collected.set(label, output.configurations);
+      }
     } finally {
       await rm(out, { recursive: true, force: true });
     }
   }
-  const missing = (await nestedBuilds(repoRoot, [...collected.keys()])).filter((build) => !collected.has(build));
+  const missing = [...nested].filter((build) => !collected.has(build)).sort();
   if (missing.length > 0) {
     throw new Error(`Gradle builds that weren't inventoried (list them in supply-chain.json gradle.builds): ${missing.join(", ")}`);
   }
@@ -111,27 +108,47 @@ export async function runGradleInventory(
   };
 }
 
-/** buildSrc directories and `includeBuild(...)` targets of these builds, recursively. */
-async function nestedBuilds(repoRoot: string, builds: ReadonlyArray<string>): Promise<string[]> {
-  const found = new Set<string>();
-  const queue = [...builds];
-  while (queue.length > 0) {
-    const build = queue.shift()!;
-    const dir = join(repoRoot, build);
-    const candidates: string[] = [];
-    if (await exists(join(dir, "buildSrc"))) candidates.push(normalize(join(build, "buildSrc")));
-    for (const settings of ["settings.gradle.kts", "settings.gradle"]) {
-      const text = await readFile(join(dir, settings), "utf8").catch(() => undefined);
-      if (text === undefined) continue;
-      for (const match of text.matchAll(/includeBuild\s*\(?\s*["']([^"']+)["']/g)) candidates.push(normalize(join(build, match[1]!)));
+interface BuildOutput {
+  readonly configurations: GradleConfiguration[];
+  readonly nestedBuilds: ReadonlyArray<string>;
+}
+
+/** The files one Gradle run wrote, grouped by build (relative to the repository), each checked against its manifest. */
+async function readRun(out: string, requested: string): Promise<Map<string, BuildOutput>> {
+  const configurations = new Map<string, GradleConfiguration[]>();
+  const projects = new Map<string, Set<string>>();
+  const manifests = new Map<string, { projects: string[]; nestedBuilds: string[] }>();
+  for (const file of (await readdir(out)).filter((name) => name.endsWith(".json")).sort()) {
+    const content: unknown = JSON.parse(await readFile(join(out, file), "utf8"));
+    if (!isObject(content) || typeof content["build"] !== "string" || typeof content["project"] !== "string") {
+      throw new Error(`Gradle inventory of build ${requested}: ${file} is malformed`);
     }
-    for (const candidate of candidates) {
-      if (found.has(candidate)) continue;
-      found.add(candidate);
-      queue.push(candidate);
+    const label = normalize(join(requested, content["build"]));
+    if (content["project"] === "manifest") {
+      const manifest = content["manifest"];
+      const listed = isObject(manifest) ? manifest["projects"] : undefined;
+      const children = isObject(manifest) ? manifest["nestedBuilds"] : undefined;
+      if (!isStrings(listed) || !isStrings(children)) throw new Error(`Gradle inventory of build ${requested}: ${file} has a malformed manifest`);
+      manifests.set(label, { projects: listed, nestedBuilds: children.map((child) => normalize(join(requested, child))) });
+      continue;
     }
+    if (!Array.isArray(content["configurations"])) throw new Error(`Gradle inventory of build ${requested}: ${file} has no configurations`);
+    configurations.set(label, [...(configurations.get(label) ?? []), ...content["configurations"].map((config) => parseConfiguration(config, `${requested}/${file}`))]);
+    if (content["project"] !== "settings") projects.set(label, (projects.get(label) ?? new Set()).add(content["project"]));
   }
-  return [...found].sort();
+  const builds = new Map<string, BuildOutput>();
+  for (const [label, configs] of configurations) {
+    const manifest = manifests.get(label);
+    if (manifest === undefined) throw new Error(`Gradle inventory of build ${label} wrote no manifest`);
+    const missing = manifest.projects.filter((project) => !projects.get(label)?.has(project));
+    if (missing.length > 0) throw new Error(`Gradle inventory of build ${label} has no output for project(s) ${missing.join(", ")}`);
+    builds.set(label, { configurations: configs, nestedBuilds: manifest.nestedBuilds });
+  }
+  return builds;
+}
+
+function isStrings(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function normalize(path: string): string {
@@ -147,11 +164,11 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Reads an inventory written by `gradle-inventory`, checking its shape and
- * its commit, and, when `builds` is given, that it covers exactly those
- * (head's; base may have had other builds).
+ * Reads an inventory written by `gradle-inventory`, checking its shape, its
+ * commit, and that it covers every build the tree's sources list (it may
+ * cover more: the nested builds the run exported).
  */
-export function parseGradleInventory(raw: unknown, tree: string, builds: ReadonlyArray<string> | undefined): GradleInventory {
+export function parseGradleInventory(raw: unknown, tree: string, builds: ReadonlyArray<string>): GradleInventory {
   if (!isObject(raw) || raw["schemaVersion"] !== GRADLE_INVENTORY_SCHEMA_VERSION) {
     throw new Error(`Gradle inventory: schemaVersion must be ${GRADLE_INVENTORY_SCHEMA_VERSION}`);
   }
@@ -166,9 +183,11 @@ export function parseGradleInventory(raw: unknown, tree: string, builds: Readonl
     return { build, configurations: entry["configurations"].map((config) => parseConfiguration(config, build)) };
   });
   const names = parsed.map((build) => build.build);
-  if (builds !== undefined && (names.length !== builds.length || builds.some((build) => !names.includes(build)))) {
-    throw new Error(`Gradle inventory covers builds ${names.join(", ") || "none"}, but supply-chain.json lists ${builds.join(", ")}`);
+  const missing = builds.filter((build) => !names.includes(build));
+  if (missing.length > 0) {
+    throw new Error(`Gradle inventory covers builds ${names.join(", ") || "none"}, missing ${missing.join(", ")} from supply-chain.json`);
   }
+  if (new Set(names).size !== names.length) throw new Error("Gradle inventory lists a build twice");
   return { schemaVersion: GRADLE_INVENTORY_SCHEMA_VERSION, tree, builds: parsed };
 }
 
