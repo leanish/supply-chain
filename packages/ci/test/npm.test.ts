@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG, parseConfig, type Config } from "../src/config.ts";
 import { NO_EXCEPTIONS, parseExceptions, type Exceptions } from "../src/exceptions.ts";
 import type { Fetch } from "../src/http.ts";
-import { npmChangeProblems } from "../src/npm-changes.ts";
+import { NpmCatalog } from "../src/catalogs.ts";
+import { npmChanges } from "../src/npm-changes.ts";
+import { isYoung, releaseAgeProblems } from "../src/release-age.ts";
+import { gatherCandidates } from "../src/young-fixes.ts";
 import { bundleProblems, changedPackages, lockedPackages, sourceProblems } from "../src/npm-lock.ts";
 import { NpmRegistry } from "../src/npm-registry.ts";
 import { type Advisory, Snapshot } from "../src/snapshot.ts";
@@ -81,10 +84,13 @@ function fake(options: { times?: Record<string, Record<string, string>>; sources
 
 const registry = (body: unknown): Fetch => async () => respond({ ok: true, status: 200, body });
 
-/** A snapshot from `name@version` → advisories; every version not listed has none. */
-function snapshot(affecting: Record<string, Advisory[]>, ...packages: ReadonlyArray<ReturnType<typeof pkgs>>): Snapshot {
+/** A snapshot from `name@version` → advisories; every version not listed (and every candidate) has none. */
+function snapshot(
+  affecting: Record<string, Advisory[]>,
+  packages: ReadonlyArray<{ name: string; version: string }>,
+): Snapshot {
   const map = new Map<string, Advisory[]>();
-  for (const pkg of packages.flat()) map.set(`npm|${pkg.name}|${pkg.version}`, []);
+  for (const pkg of packages) map.set(`npm|${pkg.name}|${pkg.version}`, []);
   for (const [key, advisories] of Object.entries(affecting)) {
     const at = key.lastIndexOf("@");
     map.set(`npm|${key.slice(0, at)}|${key.slice(at + 1)}`, advisories);
@@ -102,19 +108,23 @@ const advisory = (id: string, options: Partial<Advisory> = {}): Advisory => ({
   ...options,
 });
 
-function changes(
+/** The npm half of `compare`: source and identity problems, then the release-age rule over one snapshot. */
+async function changes(
   base: ReturnType<typeof pkgs>,
   head: ReturnType<typeof pkgs>,
   fetch: Fetch,
   options: { exceptions?: Exceptions; config?: Config; affecting?: Record<string, Advisory[]> } = {},
 ) {
-  return npmChangeProblems(base, head, {
-    registry: new NpmRegistry(fetch),
-    snapshot: snapshot(options.affecting ?? {}, base, head),
-    exceptions: options.exceptions ?? NO_EXCEPTIONS,
-    config: options.config ?? DEFAULT_CONFIG,
-    now: NOW,
-  });
+  const config = options.config ?? DEFAULT_CONFIG;
+  const exceptions = options.exceptions ?? NO_EXCEPTIONS;
+  const registry = new NpmRegistry(fetch);
+  const npm = await npmChanges(base, head, { registry, exceptions, config, now: NOW });
+  const young = npm.changes.filter((change) => isYoung(change, config, NOW));
+  const catalogs = { npm: new NpmCatalog(registry), Maven: new NpmCatalog(registry) };
+  const candidates = await gatherCandidates(young, catalogs, config);
+  const snap = snapshot(options.affecting ?? {}, [...base, ...head, ...candidates.versions]);
+  const age = await releaseAgeProblems(young, { snapshot: snap, exceptions, config, now: NOW, catalogs, candidates: candidates.byChange });
+  return [...npm.problems, ...age];
 }
 
 describe("lockfile reading", () => {
@@ -243,7 +253,7 @@ describe("release age", () => {
   it("passes versions at least 7 days old (boundary included) and fails younger ones, transitive or not", async () => {
     const fetch = fake({ times: { old: { "1.0.0": "2026-09-27T12:00:00Z" }, young: { "2.0.0": "2026-10-02T00:00:00Z" } } });
     expect(await changes([], pkgs({ old: "1.0.0", young: "2.0.0" }), fetch)).toEqual([
-      "young@2.0.0 was published 2026-10-02T00:00:00.000Z (2.5 days ago, under 7)",
+      "young@2.0.0 was published 2026-10-02T00:00:00.000Z (2.5 days ago, under 7), and it isn't the security fix the version rule would take: it's new here, not a fix of an earlier version",
     ]);
   });
 
@@ -262,7 +272,9 @@ describe("release age", () => {
   it("checks the age of a bundle's shipping package, not of what it bundles", async () => {
     const cdk = (version: string) => pkgs({ cdk: version }, { "node_modules/cdk/node_modules/minimatch": { version: "10.2.5", inBundle: true } });
     const fetch = fake({ times: { cdk: { "2.0.0": "2026-01-01T00:00:00Z", "2.1.0": "2026-10-03T00:00:00Z" } } });
-    expect(await changes(cdk("2.0.0"), cdk("2.1.0"), fetch)).toEqual(["cdk@2.1.0 was published 2026-10-03T00:00:00.000Z (1.5 days ago, under 7)"]);
+    expect(await changes(cdk("2.0.0"), cdk("2.1.0"), fetch)).toEqual([
+      "cdk@2.1.0 was published 2026-10-03T00:00:00.000Z (1.5 days ago, under 7), and it isn't the security fix the version rule would take: it fixes no advisory affecting 2.0.0",
+    ]);
   });
 
   it("fails a package from another allowed registry, and needs a reviewed identity exception even for an own one", async () => {
@@ -288,10 +300,20 @@ describe("release age", () => {
     const exception = (advisoryId: string, expires = "2026-10-31") =>
       parseExceptions({ releaseAge: [{ package: "lib", version: "1.0.1", advisory: advisoryId, reason: "fixes it", expires }] });
 
-    it("accepts a young version that fixes an advisory affecting the version it replaces, by any alias", async () => {
+    it("accepts a young version the version rule picks, with no exception", async () => {
       const affecting = { "lib@1.0.0": [advisory("GHSA-fix", { ids: ["GHSA-fix", "CVE-2026-1"] })] };
-      expect(await changes(base, head, fetch, { exceptions: exception("GHSA-fix"), affecting })).toEqual([]);
-      expect(await changes(base, head, fetch, { exceptions: exception("CVE-2026-1"), affecting })).toEqual([]);
+      expect(await changes(base, head, fetch, { affecting })).toEqual([]);
+    });
+
+    it("accepts a young version by an exception naming any alias of an advisory it fixes, where the proof can't", async () => {
+      // An aged 1.0.2 fixes it too, so the rule picks 1.0.2: only a reviewed exception can justify the young 1.0.1.
+      const withAged = fake({ times: { lib: { "1.0.1": "2026-10-03T00:00:00Z", "1.0.2": "2026-09-01T00:00:00Z" } } });
+      const affecting = { "lib@1.0.0": [advisory("GHSA-fix", { ids: ["GHSA-fix", "CVE-2026-1"] })] };
+      expect(await changes(base, head, withAged, { affecting })).toEqual([
+        "lib@1.0.1 was published 2026-10-03T00:00:00.000Z (1.5 days ago, under 7), and it isn't the security fix the version rule would take: 1.0.2 fixes GHSA-fix too and is at least 7 days old (line 1)",
+      ]);
+      expect(await changes(base, head, withAged, { exceptions: exception("GHSA-fix"), affecting })).toEqual([]);
+      expect(await changes(base, head, withAged, { exceptions: exception("CVE-2026-1"), affecting })).toEqual([]);
     });
 
     it("rejects an advisory that doesn't affect the replaced version, still affects the new one, or is malware", async () => {
@@ -310,7 +332,7 @@ describe("release age", () => {
 
     it("rejects an expired exception and an exception for a version that removes nothing", async () => {
       const affecting = { "lib@1.0.0": [advisory("GHSA-fix")] };
-      expect(await changes(base, head, fetch, { exceptions: exception("GHSA-fix", "2026-10-03"), affecting })).toEqual([
+      expect(await changes(base, head, fetch, { exceptions: exception("GHSA-old", "2026-10-03") })).toEqual([
         "lib@1.0.1: its release-age exception expired on 2026-10-03",
       ]);
       expect(await changes([], head, fetch, { exceptions: exception("GHSA-fix"), affecting })).toEqual([
