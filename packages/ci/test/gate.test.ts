@@ -256,6 +256,14 @@ describe("gate", () => {
     ]);
   });
 
+  it("reads workflows from git objects whatever their names, and takes a shell-only workflow as something to check", async () => {
+    const head = await commit({ ".github/workflows/déploiement ✓.yml": "on: push\njobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n" });
+    const tree = await gitTree(repo, head, runProcess);
+    expect(await tree.list(".github/workflows")).toEqual([".github/workflows/déploiement ✓.yml"]);
+    const outcome = await runScan(tree, environment({}, []));
+    expect(outcome.failures).toEqual([]);
+  });
+
   it("names a revision git can't resolve", async () => {
     await expect(gitTree(repo, "nope", runProcess)).rejects.toThrow("git can't resolve nope to a commit");
   });
