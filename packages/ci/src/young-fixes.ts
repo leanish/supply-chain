@@ -27,8 +27,8 @@ const DAY_MS = 86_400_000;
 
 /** Where a package's versions and their publish times come from. */
 export interface VersionCatalog {
-  /** Every version the registry has, in any order. */
-  versions(pkg: PackageName): Promise<ReadonlyArray<string>>;
+  /** Every version the registry has, in any order; undefined when it can't list them. */
+  versions(pkg: PackageName): Promise<ReadonlyArray<string> | undefined>;
   /** When `pkg` was published; undefined when the registry can't say. */
   published(pkg: PackageVersion): Promise<Date | undefined>;
 }
@@ -93,8 +93,11 @@ export async function gatherCandidates(
   const byChange = new Map<string, Map<string, ReadonlyArray<string>>>();
   for (const change of young) {
     if (change.replaced.length === 0) continue;
+    const listed = await catalogs[change.pkg.ecosystem].versions(change.pkg);
+    // No listing, no proof: the young version alone would look like the only fix.
+    if (listed === undefined) continue;
     // The young version itself, even if the registry's listing lags behind.
-    const all = [...(await catalogs[change.pkg.ecosystem].versions(change.pkg)), change.pkg.version];
+    const all = [...listed, change.pkg.version];
     const perReplaced = new Map<string, ReadonlyArray<string>>();
     for (const from of change.replaced) {
       const found = candidateVersions(config, change.pkg, from, change.pkg.version, all);
@@ -124,6 +127,7 @@ export async function youngFixProblem(
     new Set(snapshot.advisories({ ecosystem: pkg.ecosystem, name: pkg.name, version }).map((advisory) => snapshot.group(advisory.id)));
   const malicious = (version: string) => snapshot.advisories({ ecosystem: pkg.ecosystem, name: pkg.name, version }).some((advisory) => advisory.malicious);
   if (young.replaced.length === 0) return "it's new here, not a fix of an earlier version";
+  if (candidates.size === 0) return `the registry doesn't list ${pkg.name}'s versions, so the rule can't be checked`;
   const reasons: string[] = [];
   for (const from of young.replaced) {
     const before = groups(from);
@@ -147,7 +151,13 @@ export async function youngFixProblem(
     }
     const firstLine = compatibleLine(config, pkg, fixing[0]!);
     const inLine = fixing.filter((version) => compatibleLine(config, pkg, version) === firstLine);
-    const chosen = await lowestAged(inLine, pkg, catalog, config, now);
+    const ages = await agesOf(inLine, pkg, catalog, now);
+    const undated = inLine.filter((version, i) => ages[i] === undefined && version !== pkg.version);
+    if (undated.length > 0) {
+      reasons.push(`the publish time of ${undated.join(", ")} (fixing too, line ${firstLine}) is unknown, so an older fix can't be ruled out`);
+      continue;
+    }
+    const chosen = inLine.find((_, i) => ages[i]! >= config.releaseAgeDays);
     const expected = chosen ?? inLine[0]!;
     if (expected === pkg.version) return undefined;
     reasons.push(
@@ -159,16 +169,12 @@ export async function youngFixProblem(
   return reasons.join("; ");
 }
 
-async function lowestAged(
-  versions: ReadonlyArray<string>,
-  pkg: PackageName,
-  catalog: VersionCatalog,
-  config: Config,
-  now: Date,
-): Promise<string | undefined> {
+/** Each version's age in days, undefined where the registry can't say. */
+async function agesOf(versions: ReadonlyArray<string>, pkg: PackageName, catalog: VersionCatalog, now: Date): Promise<Array<number | undefined>> {
+  const ages: Array<number | undefined> = [];
   for (const version of versions) {
     const published = await catalog.published({ ...pkg, version });
-    if (published !== undefined && (now.getTime() - published.getTime()) / DAY_MS >= config.releaseAgeDays) return version;
+    ages.push(published === undefined ? undefined : (now.getTime() - published.getTime()) / DAY_MS);
   }
-  return undefined;
+  return ages;
 }

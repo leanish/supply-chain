@@ -11,18 +11,21 @@ const LIB: PackageName = { ecosystem: "npm", name: "lib" };
 
 const advisory = (id: string, malicious = false): Advisory => ({ id, ids: [id], source: "osv", malicious, summary: undefined, severity: undefined });
 
-/** Versions with their age in days and advisory ids (`MAL-…` ids are malware). */
-type Registry = Record<string, { days: number; advisories?: string[] }>;
+/** Versions with their age in days (undefined: the registry can't say) and advisory ids (`MAL-…` ids are malware). */
+type Registry = Record<string, { days: number | undefined; advisories?: string[] }>;
 
-function catalog(registry: Registry): VersionCatalog {
+function catalog(registry: Registry, listed = true): VersionCatalog {
   return {
-    versions: async () => Object.keys(registry),
-    published: async (pkg) => (registry[pkg.version] === undefined ? undefined : new Date(NOW.getTime() - registry[pkg.version]!.days * DAY)),
+    versions: async () => (listed ? Object.keys(registry) : undefined),
+    published: async (pkg) => {
+      const days = registry[pkg.version]?.days;
+      return days === undefined ? undefined : new Date(NOW.getTime() - days * DAY);
+    },
   };
 }
 
-async function verdict(registry: Registry, from: string, to: string, config: Config = parseConfig({}), pkg: PackageName = LIB) {
-  const cat = catalog(registry);
+async function verdict(registry: Registry, from: string, to: string, config: Config = parseConfig({}), pkg: PackageName = LIB, listed = true) {
+  const cat = catalog(registry, listed);
   const young = { pkg: { ...pkg, version: to } as PackageVersion, replaced: [from] };
   const candidates = await gatherCandidates([young], { npm: cat, Maven: cat }, config);
   const map = new Map<string, Advisory[]>();
@@ -30,7 +33,7 @@ async function verdict(registry: Registry, from: string, to: string, config: Con
     const ids = registry[version]?.advisories ?? [];
     map.set(`${pkg.ecosystem}|${pkg.name}|${version}`, ids.map((id) => advisory(id, id.startsWith("MAL-"))));
   }
-  return youngFixProblem(young, candidates.byChange.get(`${pkg.ecosystem}|${pkg.name}|${to}`)!, new Snapshot(map, [], NOW), cat, config, NOW);
+  return youngFixProblem(young, candidates.byChange.get(`${pkg.ecosystem}|${pkg.name}|${to}`) ?? new Map(), new Snapshot(map, [], NOW), cat, config, NOW);
 }
 
 describe("young-fix proof", () => {
@@ -83,6 +86,16 @@ describe("young-fix proof", () => {
     expect(await verdict({ "1.9.4": { days: 400, advisories: ["MAL-2026-2"] }, "1.9.5": { days: 1 } }, "1.9.4", "1.9.5")).toBe(
       "it fixes no advisory affecting 1.9.4",
     );
+  });
+
+  it("can't prove anything without the registry's listing, or while a fixing version's age is unknown", async () => {
+    const registry = { "1.0.0": vulnerable, "1.0.1": { days: 1 }, "1.0.2": { days: undefined } };
+    expect(await verdict(registry, "1.0.0", "1.0.1", parseConfig({}), LIB, false)).toBe("the registry doesn't list lib's versions, so the rule can't be checked");
+    expect(await verdict(registry, "1.0.0", "1.0.1")).toBe(
+      "the publish time of 1.0.2 (fixing too, line 1) is unknown, so an older fix can't be ruled out",
+    );
+    // An undated version that doesn't fix doesn't matter.
+    expect(await verdict({ ...registry, "1.0.2": { days: undefined, advisories: ["GHSA-a"] } }, "1.0.0", "1.0.1")).toBeUndefined();
   });
 
   it("uses configured compatible lines", async () => {

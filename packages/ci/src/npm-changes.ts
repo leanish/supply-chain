@@ -43,6 +43,8 @@ export async function npmChanges(
       continue;
     }
     problems.push(...(await context.registry.identityProblems(pkg, identityBaseline(pkg.name, base, head), context.exceptions, today)));
+    // Own packages skip only the wait: their identity is checked, their publish time isn't needed.
+    if (isOwnPackage(context.config.ownPackages, pkg)) continue;
     const published = publishTime(await context.registry.packument(pkg.name), pkg.name, pkg.version);
     changes.push({ pkg: { ecosystem: "npm", name: pkg.name, version: pkg.version }, published, replaced: replacedVersions(pkg.name, base, head) });
   }

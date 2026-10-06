@@ -1,8 +1,8 @@
 /**
  * Version catalogs for the young-fix proof: every version a registry has,
  * and when each was published. npm reads the packument (already fetched for
- * the age and identity checks); Maven reads `maven-metadata.xml` from the
- * first configured repository that has it, and publish times from POM
+ * the age and identity checks); Maven joins `maven-metadata.xml` of every
+ * configured repository that has it, and reads publish times from POM
  * `Last-Modified`.
  */
 import type { Fetch } from "./http.ts";
@@ -19,7 +19,7 @@ export class NpmCatalog implements VersionCatalog {
     this.registry = registry;
   }
 
-  async versions(pkg: PackageName): Promise<ReadonlyArray<string>> {
+  async versions(pkg: PackageName): Promise<ReadonlyArray<string> | undefined> {
     return Object.keys((await this.registry.packument(pkg.name)).versions);
   }
 
@@ -45,8 +45,10 @@ export class MavenCatalog implements VersionCatalog {
     this.dates = dates;
   }
 
-  async versions(pkg: PackageName): Promise<ReadonlyArray<string>> {
+  /** The union of every configured repository's listing; undefined when none lists the package. */
+  async versions(pkg: PackageName): Promise<ReadonlyArray<string> | undefined> {
     const [group, artifact] = mavenCoordinates(pkg.name);
+    let found: Set<string> | undefined;
     for (const repository of this.repositories) {
       const url = `${repository}/${group.replaceAll(".", "/")}/${artifact}/maven-metadata.xml`;
       const response = await this.fetch(url);
@@ -54,9 +56,10 @@ export class MavenCatalog implements VersionCatalog {
       if (!response.ok) throw new Error(`Maven metadata ${url} failed with HTTP ${response.status}`);
       const block = /<versions>([\s\S]*?)<\/versions>/.exec(await response.text())?.[1];
       if (block === undefined) throw new Error(`Maven metadata ${url} has no <versions>`);
-      return [...block.matchAll(/<version>\s*([^<\s]+)\s*<\/version>/g)].map((match) => match[1]!);
+      found ??= new Set();
+      for (const match of block.matchAll(/<version>\s*([^<\s]+)\s*<\/version>/g)) found.add(match[1]!);
     }
-    return [];
+    return found === undefined ? undefined : [...found];
   }
 
   published(pkg: PackageVersion): Promise<Date | undefined> {
