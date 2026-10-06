@@ -19,14 +19,14 @@
  * GH_TOKEN for the GitHub API, GITHUB_STEP_SUMMARY and GITHUB_ACTIONS in CI,
  * SUPPLY_CHAIN_COMMIT to record the tool's own commit.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
-import { runProcess } from "./process.ts";
+import { runProcess, withoutCredentials } from "./process.ts";
 import type { Fetch } from "./http.ts";
 import { configDigest, emitReport, REPORT_SCHEMA_VERSION, type Report } from "./report.ts";
 import { parsePlan, planRescan, type RescanSteps, runRescan } from "./rescan.ts";
@@ -40,7 +40,7 @@ const USAGE = `usage:
   supply-chain gradle-inventory --out <file> [--repo <dir>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
-  supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --started-at <iso> [--repo <dir>] [--target-url <url>]`;
+  supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --started-at <iso> [--repo <dir>] [--reports <dir>] [--target-url <url>]`;
 
 interface Options {
   base?: string;
@@ -54,6 +54,7 @@ interface Options {
   pr?: string;
   plan?: string;
   inventories?: string;
+  reports?: string;
   context?: string;
   "started-at"?: string;
   "target-url"?: string;
@@ -77,6 +78,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
         pr: { type: "string" },
         plan: { type: "string" },
         inventories: { type: "string" },
+        reports: { type: "string" },
         context: { type: "string" },
         "started-at": { type: "string" },
         "target-url": { type: "string" },
@@ -206,13 +208,6 @@ async function gradleInventoryCommand(repo: string, out: string): Promise<number
   }
 }
 
-/** Credentials no tool the gate runs needs, kept out of its environment (a PR's `.npmrc` can expand variables). */
-const CREDENTIALS = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_FETCH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"];
-
-export function withoutCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([key]) => !CREDENTIALS.includes(key)));
-}
-
 /**
  * After the gate passed: `npm ci --ignore-scripts` next to every lockfile the
  * tree lists (no package code runs), then `npm audit signatures`, which checks
@@ -272,6 +267,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       osvScanner: env["OSV_SCANNER"] ?? "osv-scanner",
       githubToken: token,
     };
+    if (values.reports !== undefined) await mkdir(values.reports, { recursive: true });
     const steps: RescanSteps = {
       async prepare(pr) {
         const result = await runProcess(PREPARE_PR, [String(pr.number), pr.head, pr.base], {
@@ -285,12 +281,47 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       },
       async compare(baseRev, headRev, gradle) {
         const outcome = await compareTrees(await gitTree(repo, baseRev, runProcess), await gitTree(repo, headRev, runProcess), gate, gradle, repo);
-        return { completed: true, verdict: outcome.failures.length === 0 ? "pass" : "fail", failures: outcome.failures, warnings: outcome.warnings };
+        return {
+          completed: true,
+          verdict: outcome.failures.length === 0 ? "pass" : "fail",
+          failures: outcome.failures,
+          warnings: outcome.warnings,
+          gaps: outcome.gaps,
+          notes: outcome.notes,
+        };
       },
       signatures: () => npmSignatures(repo),
       async reset() {
         await runProcess("git", ["reset", "--hard", "--quiet"], { cwd: repo });
         await runProcess("git", ["clean", "-ffdxq"], { cwd: repo });
+      },
+      // Each PR's full report (gaps and notes included) as a file and in the step summary: for people, not an input.
+      async record(pr, result) {
+        const outcome = result.outcome;
+        const report: Report = {
+          schemaVersion: REPORT_SCHEMA_VERSION,
+          mode: "compare",
+          tool: { commit: env["SUPPLY_CHAIN_COMMIT"], osvScanner: undefined },
+          configDigest: "rescan",
+          baseSha: pr.base,
+          headSha: pr.head,
+          startedAt: values["started-at"]!,
+          completedAt: new Date().toISOString(),
+          completed: outcome?.completed ?? false,
+          verdict: result.state === "success" ? "pass" : "fail",
+          failures: outcome?.failures ?? [],
+          warnings: outcome?.warnings ?? [],
+          notes: outcome?.notes ?? [],
+          gaps: outcome?.gaps ?? [],
+          error: result.error,
+        };
+        console.log(`#${pr.number} (${pr.baseRef} ← ${pr.head.slice(0, 12)}):`);
+        await emitReport(report, {
+          reportPath: values.reports === undefined ? undefined : join(values.reports, `report-${pr.number}.json`),
+          summaryPath: env["GITHUB_STEP_SUMMARY"],
+          annotations: false,
+          log: (line) => console.log(`  ${line}`),
+        });
       },
     };
     const posted = await runRescan(plan, required("inventories"), steps, {

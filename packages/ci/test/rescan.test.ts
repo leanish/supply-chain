@@ -46,8 +46,11 @@ async function inventory(sides: Array<"base" | "head">, gradle: Array<"base" | "
   }
 }
 
-function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls: string[] = []): RescanSteps {
+function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls: string[] = [], recorded: string[] = []): RescanSteps {
   return {
+    record: async (recordedPr, result) => {
+      recorded.push(`#${recordedPr.number} ${result.state} ${result.description}`);
+    },
     prepare: async () => {
       calls.push("prepare");
       return { base: BASE, head: MERGE };
@@ -67,8 +70,8 @@ function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls:
   };
 }
 
-const pass: RescanOutcome = { completed: true, verdict: "pass", failures: [], warnings: [] };
-const fail: RescanOutcome = { completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [] };
+const pass: RescanOutcome = { completed: true, verdict: "pass", failures: [], warnings: [], gaps: [], notes: [] };
+const fail: RescanOutcome = { completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [], gaps: [], notes: [] };
 
 async function rescan(rescanSteps: RescanSteps, fetch: ReturnType<typeof github>) {
   const log: string[] = [];
@@ -105,6 +108,41 @@ describe("rescan", () => {
     const passed: Array<{ url: string; body: unknown }> = [];
     await rescan(steps(pass), github({}, passed));
     expect(passed[0]!.body).toMatchObject({ state: "success", description: "Daily rescan: clean" });
+  });
+
+  it("says a pass came with inherited findings or coverage gaps, and records every PR's result", async () => {
+    await inventory(["base", "head"]);
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const recorded: string[] = [];
+    await rescan(steps({ ...pass, warnings: ["inherited: x"], gaps: ["no repo for y", "no repo for z"] }, [], [], recorded), github({}, posts));
+    expect(posts[0]!.body).toMatchObject({ state: "success", description: "Daily rescan: pass, 1 inherited finding(s), 2 coverage gap(s)" });
+    expect(recorded).toEqual(["#7 success Daily rescan: pass, 1 inherited finding(s), 2 coverage gap(s)"]);
+  });
+
+  it("checks the PR again right before posting, in case it moved during the scan", async () => {
+    await inventory(["base", "head"]);
+    let reads = 0;
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const moving = github(
+      {
+        [`${API}/pulls/7`]: {},
+      },
+      posts,
+    );
+    const fetch: typeof moving = async (url, init) => {
+      if (url === `${API}/pulls/7`) {
+        reads++;
+        const head = reads === 1 ? HEAD : "f".repeat(40);
+        const body = { state: "open", head: { sha: head }, base: { ref: "main" } };
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => body, text: async () => JSON.stringify(body) };
+      }
+      return moving(url, init);
+    };
+    const { posted, log } = await rescan(steps(fail), fetch);
+    expect(reads).toBe(2);
+    expect(posted).toBe(0);
+    expect(posts).toEqual([]);
+    expect(log.join("\n")).toContain("closed or changed");
   });
 
   it("fails on npm signature problems even when the comparison passes", async () => {
@@ -194,14 +232,14 @@ describe("rescan plan and verdicts", () => {
 
   it("summarizes outcomes for the status description", () => {
     expect(verdictSummary({ completed: true, verdict: "pass", failures: [], warnings: [] })).toBe("clean");
-    expect(verdictSummary({ completed: true, verdict: "pass", failures: [], warnings: ["a", "b"] })).toBe("pass, 2 inherited warning(s)");
+    expect(verdictSummary({ completed: true, verdict: "pass", failures: [], warnings: ["a", "b"] })).toBe("pass, 2 inherited finding(s)");
     expect(verdictSummary({ completed: false, verdict: "fail", failures: [], warnings: [] })).toBe("didn't complete");
   });
 });
 
 describe("tool environments", () => {
   it("keep no credentials", async () => {
-    const { withoutCredentials } = await import("../src/cli.ts");
+    const { withoutCredentials } = await import("../src/process.ts");
     expect(
       withoutCredentials({ PATH: "/bin", GITHUB_TOKEN: "a", GH_TOKEN: "b", GIT_FETCH_TOKEN: "c", ACTIONS_RUNTIME_TOKEN: "d", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "e" }),
     ).toEqual({ PATH: "/bin" });

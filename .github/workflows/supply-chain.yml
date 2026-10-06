@@ -286,4 +286,12 @@ jobs:
         run: |
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
           node tool/packages/ci/src/cli.ts rescan --repo repo --github-repo "$REPOSITORY" --plan "$RUNNER_TEMP/plan.json" \
-            --inventories "$RUNNER_TEMP/inventories" --context "$CONTEXT" --started-at "$STARTED" --target-url "$RUN_URL"
+            --inventories "$RUNNER_TEMP/inventories" --reports "$RUNNER_TEMP/reports" --context "$CONTEXT" \
+            --started-at "$STARTED" --target-url "$RUN_URL"
+      - name: Keep each PR's report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rescan-reports
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: ignore

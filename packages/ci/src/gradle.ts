@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { Located } from "./findings.ts";
 import { isObject } from "./json.ts";
 import { versionKey } from "./package-version.ts";
-import type { RunProcess } from "./process.ts";
+import { type RunProcess, withoutCredentials } from "./process.ts";
 
 export const GRADLE_INVENTORY_SCHEMA_VERSION = 1;
 const INIT_SCRIPT = fileURLToPath(new URL("../gradle/supply-chain-inventory.init.gradle", import.meta.url));
@@ -82,7 +82,8 @@ export async function runGradleInventory(
     const out = await mkdtemp(join(tmpdir(), "supply-chain-gradle-"));
     try {
       const args = ["-p", build, "--init-script", INIT_SCRIPT, `-DsupplyChain.out=${out}`, "--no-configuration-cache", "--quiet", "supplyChainInventory"];
-      const result = await run(join(repoRoot, "gradlew"), args, { cwd: repoRoot });
+      // The build is the repository's own code: it gets no credentials.
+      const result = await run(join(repoRoot, "gradlew"), args, { cwd: repoRoot, env: withoutCredentials(process.env) });
       if (result.code !== 0) {
         const tail = result.stderr.trim().split("\n").slice(-5).join(" / ");
         throw new Error(`Gradle inventory of build ${build} failed with exit code ${result.code}: ${tail}`);
