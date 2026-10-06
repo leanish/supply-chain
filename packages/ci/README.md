@@ -217,6 +217,18 @@ What runs where:
 
 **Updating the pin:** a PR that changes the SHA (and its `# vX.Y.Z` comment); bump-it does it like any other action update.
 
+## Picking a fix: `candidates`
+
+`supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]` prints, as JSON, the version the rule above picks for every version a full scan fails on: what secure-it moves to. It reuses the rule's code, so what it picks is what the gate then accepts.
+
+- **Targets:** the version's failing advisory groups (an excepted one stays as it is). A target no listed version fixes is reported as `unfixable` and left: fixing A and leaving B is allowed.
+- **Candidates:** every version above it the registry lists, in any line, scanned in one snapshot together with the version itself.
+- **The choice:** the rule's first line, lowest aged fix, else lowest fix; a choice outside the version's own line is flagged `major`, for the agent to adapt the code. Own packages skip the wait.
+- **Malware:** the nearest clean version at least `releaseAgeDays` old: newer in its line first, then older in its line (a downgrade), then a newer line.
+- **No choice:** each entry says why (no version fixes, an older fix's publish time is unknown, the registry can't list the versions).
+
+On sqs-codec today it picks Guava 33.7.2-jre for 33.5.0-jre and 33.7.1-jre, and snappy-java 1.1.10.10 (young, the lowest that fixes all seven advisories) for 1.1.10.8.
+
 ## Coming next
 
-A `candidates` command for secure-it and bump-it.
+The bump rule for bump-it: per direct dependency, the highest version at least `releaseAgeDays` old that adds no finding, minors and patches apart from majors.
