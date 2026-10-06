@@ -91,7 +91,7 @@ function gradleInventory(configurations: Partial<GradleConfiguration>[]): Invent
       },
     ],
   };
-  return { tree: "head", npm: [], gradle, actions: { uses: [], docker: [] } };
+  return { tree: "head", npm: [], gradle, actions: { uses: [], docker: [], files: [], gaps: [] } };
 }
 
 describe("Gradle floors", () => {
@@ -146,7 +146,7 @@ describe("npm floors", () => {
     tree: "head",
     npm: [{ path: "package-lock.json", packages: lock(copies), bundleProblems: [] }],
     gradle: undefined,
-    actions: { uses: [], docker: [] },
+    actions: { uses: [], docker: [], files: [], gaps: [] },
   });
   const floor = {
     ecosystem: "npm",
