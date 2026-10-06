@@ -261,15 +261,27 @@ export interface Interval {
  * bound runs to infinity). A bare version followed by an upper bound is a
  * lower bound (`4.0.0 < 4.1.2`); a bare partial npm version is its X-range
  * (`6` and `6.x` are 6.x, also in `6 <=6.1.8`); any other bare version is a single point.
- * `,`, `;` and `||` all separate. That reading gives the same answer for both
- * comma conventions whenever the range is well formed. Undefined when
- * anything in it doesn't parse.
+ * `,` and `;` separate bounds; `||` also ends any open interval. That reading
+ * gives the same answer for both comma conventions whenever the range is well
+ * formed (an inverted interval, `>= 2.0.0, < 1.0.0`, reads as both open
+ * ends). Undefined when anything in it doesn't parse.
  */
 export function parseAdvisoryRange(range: string, partialsAreXRanges = false): Interval[] | undefined {
-  const normalized = range
+  const segments = range.split("||");
+  const intervals: Interval[] = [];
+  for (const segment of segments) {
+    const parsed = parseSegment(segment, partialsAreXRanges);
+    if (parsed === undefined) return undefined;
+    intervals.push(...parsed);
+  }
+  return intervals.length === 0 ? undefined : intervals;
+}
+
+/** One `||`-separated part: commas, semicolons and spaces inside it follow the interval reading above. */
+function parseSegment(segment: string, partialsAreXRanges: boolean): Interval[] | undefined {
+  const normalized = segment
     .replaceAll("≤", "<=")
     .replaceAll("≥", ">=")
-    .replaceAll("||", " ")
     .replace(/(\S+)\s+-\s+(\S+)/g, ">=$1 <=$2")
     .replace(/[,;]/g, " ")
     .replace(/([0-9A-Za-z])(<=|>=|<|>)/g, "$1 $2")
@@ -317,12 +329,26 @@ export function parseAdvisoryRange(range: string, partialsAreXRanges = false): I
   return intervals;
 }
 
+/**
+ * An interval whose lower bound is above its upper one (`>= 2.0.0, < 1.0.0`)
+ * only makes sense with the comma as OR: it reads as both open intervals.
+ */
+function splitInverted(scheme: VersionScheme): (interval: Interval) => Interval[] {
+  return (interval) =>
+    interval.lower !== undefined && interval.upper !== undefined && scheme.compare(interval.lower.version, interval.upper.version) > 0
+      ? [
+          { lower: interval.lower, upper: undefined },
+          { lower: undefined, upper: interval.upper },
+        ]
+      : [interval];
+}
+
 /** Whether `version` falls in the advisory range; undefined when the range doesn't parse (a coverage gap). */
 export function inAdvisoryRange(scheme: VersionScheme, range: string, version: string): boolean | undefined {
   const intervals = parseAdvisoryRange(range, scheme === SEMVER);
   if (intervals === undefined) return undefined;
   try {
-    return intervals.some(({ lower, upper }) => {
+    return intervals.flatMap(splitInverted(scheme)).some(({ lower, upper }) => {
       const aboveLower = lower === undefined || (lower.inclusive ? scheme.compare(version, lower.version) >= 0 : scheme.compare(version, lower.version) > 0);
       const belowUpper = upper === undefined || (upper.inclusive ? scheme.compare(version, upper.version) <= 0 : scheme.compare(version, upper.version) < 0);
       return aboveLower && belowUpper;

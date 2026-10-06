@@ -196,6 +196,16 @@ describe("advisory ranges", () => {
     expect(inAdvisoryRange(npm, "≥ 3.0.0, ≤ 3.4.1", "3.4.1")).toBe(true);
   });
 
+  it("keeps `||` a hard boundary and reads an inverted interval as both open ends", () => {
+    expect(inAdvisoryRange(npm, ">=2.0.0 || <1.0.0", "2.1.0")).toBe(true);
+    expect(inAdvisoryRange(npm, ">=2.0.0 || <1.0.0", "0.5.0")).toBe(true);
+    expect(inAdvisoryRange(npm, ">=2.0.0 || <1.0.0", "1.5.0")).toBe(false);
+    expect(inAdvisoryRange(npm, ">= 2.0.0, < 1.0.0", "0.5.0")).toBe(true);
+    expect(inAdvisoryRange(npm, ">= 2.0.0, < 1.0.0", "2.5.0")).toBe(true);
+    expect(inAdvisoryRange(npm, ">= 2.0.0, < 1.0.0", "1.5.0")).toBe(false);
+    expect(inAdvisoryRange(npm, "<1.0.0 ||", "0.5.0")).toBeUndefined();
+  });
+
   it("returns undefined for what it can't read", () => {
     expect(inAdvisoryRange(npm, "", "1.0.0")).toBeUndefined();
     expect(inAdvisoryRange(npm, "~> 1.2", "1.0.0")).toBeUndefined();

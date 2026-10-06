@@ -23,14 +23,14 @@ function scanner(vulnerabilities: Record<string, Array<{ id: string; aliases?: s
   };
 }
 
-function repositoryAdvisory(ghsa: string, range: string) {
+function repositoryAdvisory(ghsa: string, range: string, cweIds: string[] = []) {
   return {
     ghsa_id: ghsa,
     cve_id: null,
     state: "published",
     withdrawn_at: null,
     severity: "medium",
-    cwe_ids: [],
+    cwe_ids: cweIds,
     vulnerabilities: [{ package: { ecosystem: "npm", name: "vite" }, vulnerable_version_range: range, patched_versions: "8.3.3" }],
   };
 }
@@ -43,7 +43,9 @@ describe("advisory snapshot", () => {
         body: [repositoryAdvisory("GHSA-new-only-repo", ">=8.3.0,<=8.3.2"), repositoryAdvisory("GHSA-known-to-osv", ">=8.0.0")],
       },
       // OSV has the second one and lists vite, so OSV-Scanner's silence on 8.3.1 is the verdict.
-      "https://api.osv.dev/v1/vulns/GHSA-known-to-osv": { body: { id: "GHSA-known-to-osv", affected: [{ package: { ecosystem: "npm", name: "vite" } }] } },
+      "https://api.osv.dev/v1/vulns/GHSA-known-to-osv": {
+        body: { id: "GHSA-known-to-osv", modified: "2026-10-06T19:00:00Z", affected: [{ package: { ecosystem: "npm", name: "vite" } }] },
+      },
     });
     const snapshot = await takeSnapshot([VITE], {
       osv: { binary: "osv-scanner", run: scanner({}) },
@@ -62,7 +64,9 @@ describe("advisory snapshot", () => {
       "https://api.github.com/repos/vitejs/vite/security-advisories?state=published&per_page=100": {
         body: [repositoryAdvisory("GHSA-partly-known", ">=8.3.0,<=8.3.2")],
       },
-      "https://api.osv.dev/v1/vulns/GHSA-partly-known": { body: { id: "GHSA-partly-known", affected: [{ package: { ecosystem: "npm", name: "vite-plus" } }] } },
+      "https://api.osv.dev/v1/vulns/GHSA-partly-known": {
+        body: { id: "GHSA-partly-known", modified: "2026-10-06T19:00:00Z", affected: [{ package: { ecosystem: "npm", name: "vite-plus" } }] },
+      },
     });
     const snapshot = await takeSnapshot([VITE], {
       osv: { binary: "osv-scanner", run: scanner({ "vite@8.3.1": [{ id: "GHSA-from-osv", aliases: ["CVE-2026-5"] }] }) },
@@ -73,5 +77,35 @@ describe("advisory snapshot", () => {
     });
     expect(snapshot.advisories(VITE).map((advisory) => advisory.id)).toEqual(["GHSA-from-osv", "GHSA-partly-known"]);
     expect(snapshot.group("CVE-2026-5")).toBe("GHSA-from-osv");
+  });
+
+  it("keeps a repository advisory OSV only learned about after the scan started, and malware whatever OSV says", async () => {
+    const osvRecord = (id: string, modified: string) => ({
+      body: { id, modified, affected: [{ package: { ecosystem: "npm", name: "vite" } }] },
+    });
+    const fetch = fakeFetch({
+      "https://registry.npmjs.org/vite/8.3.1": { body: { repository: "github:vitejs/vite" } },
+      "https://api.github.com/repos/vitejs/vite/security-advisories?state=published&per_page=100": {
+        body: [
+          repositoryAdvisory("GHSA-imported-just-now", ">=8.0.0"),
+          repositoryAdvisory("GHSA-malware-in-repo", ">=8.0.0", ["CWE-506"]),
+        ],
+      },
+      // OSV-Scanner ran before this record existed (or changed), so its silence proves nothing.
+      "https://api.osv.dev/v1/vulns/GHSA-imported-just-now": osvRecord("GHSA-imported-just-now", "2026-10-06T20:00:05Z"),
+      // OSV has it from before, but doesn't call it malware: the repository's classification wins.
+      "https://api.osv.dev/v1/vulns/GHSA-malware-in-repo": osvRecord("GHSA-malware-in-repo", "2026-10-01T00:00:00Z"),
+    });
+    const snapshot = await takeSnapshot([VITE], {
+      osv: { binary: "osv-scanner", run: scanner({}) },
+      sourceRepos: { fetch, overrides: new Map(), mavenRepositories: [MAVEN_CENTRAL] },
+      repositoryAdvisories: { fetch, token: undefined },
+      fetch,
+      now: () => TAKEN,
+    });
+    expect(snapshot.advisories(VITE).map((advisory) => [advisory.id, advisory.malicious])).toEqual([
+      ["GHSA-imported-just-now", false],
+      ["GHSA-malware-in-repo", true],
+    ]);
   });
 });

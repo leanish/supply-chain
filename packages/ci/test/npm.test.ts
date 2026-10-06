@@ -130,8 +130,13 @@ describe("lockfile reading", () => {
     expect(parsed.map((pkg) => `${pkg.name}@${pkg.version}`)).toEqual(["left@1.0.0", "@scope/pkg@2.0.0", "inner@0.1.0", "real-name@3.0.0"]);
   });
 
-  it("rejects old lockfile formats and entries without a version", () => {
+  it("rejects old lockfile formats, malformed maps and entries, and entries without a version", () => {
     expect(() => lockedPackages({ lockfileVersion: 1, dependencies: {} })).toThrow(/lockfileVersion 2 or 3/);
+    for (const packages of [[], false, 42, null, "x"]) {
+      expect(() => lockedPackages({ lockfileVersion: 3, packages })).toThrow(/lockfileVersion 2 or 3 with a `packages` map/);
+    }
+    expect(() => lockedPackages(null)).toThrow(/lockfileVersion 2 or 3/);
+    expect(() => lockedPackages({ lockfileVersion: 3, packages: { "node_modules/x": "1.0.0" } })).toThrow(/node_modules\/x isn't an object/);
     expect(() => lockedPackages({ lockfileVersion: 3, packages: { "node_modules/x": {} } })).toThrow(/has no version/);
   });
 
@@ -260,14 +265,20 @@ describe("release age", () => {
     expect(await changes(cdk("2.0.0"), cdk("2.1.0"), fetch)).toEqual(["cdk@2.1.0 was published 2026-10-03T00:00:00.000Z (1.5 days ago, under 7)"]);
   });
 
-  it("fails a package from another allowed registry, whose age it can't check, unless it's an own package", async () => {
+  it("fails a package from another allowed registry, and needs a reviewed identity exception even for an own one", async () => {
     const head = pkgs({}, { "node_modules/@acme/x": { version: "1.0.0", resolved: "https://npm.acme.dev/@acme/x/-/x-1.0.0.tgz" } });
     const registries = ["https://registry.npmjs.org", "https://npm.acme.dev"];
     expect(await changes([], head, fake({}), { config: parseConfig({ npm: { registries } }) })).toEqual([
-      "@acme/x@1.0.0 comes from https://npm.acme.dev/@acme/x/-/x-1.0.0.tgz, where the gate can't check its release age",
+      "@acme/x@1.0.0 comes from https://npm.acme.dev/@acme/x/-/x-1.0.0.tgz, where the gate can't check its release age or publisher identity",
     ]);
     const own = parseConfig({ npm: { registries }, ownPackages: { npm: { scopes: ["@acme"] } } });
-    expect(await changes([], head, fake({}), { config: own })).toEqual([]);
+    expect(await changes([], head, fake({}), { config: own })).toEqual([
+      "@acme/x@1.0.0 comes from https://npm.acme.dev/@acme/x/-/x-1.0.0.tgz, where the gate can't check its publisher identity; an identity exception records the review",
+    ]);
+    const reviewed = (expires: string) =>
+      parseExceptions({ identity: [{ package: "@acme/x", version: "1.0.0", reason: "our CI published it", expires }] });
+    expect(await changes([], head, fake({}), { config: own, exceptions: reviewed("2026-10-04") })).toEqual([]);
+    expect(await changes([], head, fake({}), { config: own, exceptions: reviewed("2026-10-03") })).toHaveLength(1);
   });
 
   describe("security exception", () => {

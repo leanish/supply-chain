@@ -39,10 +39,7 @@ export async function npmChangeProblems(
   const changed = changedPackages(base, head).filter((pkg) => fromRegistry(pkg, context.config.npm.registries));
   for (const pkg of uniqueVersions(changed.map((locked) => ({ ...locked, ecosystem: "npm" as const })))) {
     if (!pkg.resolved!.startsWith(`${NPM_REGISTRY}/`)) {
-      // Another allowed registry: no publish time or identity source the gate trusts.
-      if (!isOwnPackage(context.config.ownPackages, pkg)) {
-        problems.push(`${pkg.name}@${pkg.version} comes from ${pkg.resolved}, where the gate can't check its release age`);
-      }
+      problems.push(...otherRegistryProblems(pkg, context, today));
       continue;
     }
     problems.push(...(await context.registry.identityProblems(pkg, identityBaseline(pkg.name, base, head), context.exceptions, today)));
@@ -50,6 +47,24 @@ export async function npmChangeProblems(
     if (age !== undefined) problems.push(age);
   }
   return problems;
+}
+
+/**
+ * Another allowed registry has no publish time or identity source the gate
+ * trusts: an own package still skips only the wait, so its identity needs an
+ * unexpired `identity` exception recording a review; anything else fails.
+ */
+function otherRegistryProblems(pkg: LockedPackage, context: NpmChangeContext, today: string): string[] {
+  const label = `${pkg.name}@${pkg.version}`;
+  if (!isOwnPackage(context.config.ownPackages, { ecosystem: "npm", name: pkg.name })) {
+    return [`${label} comes from ${pkg.resolved}, where the gate can't check its release age or publisher identity`];
+  }
+  const reviewed = context.exceptions.identity.find(
+    (entry) => entry.package === pkg.name && entry.version === pkg.version && entry.expires >= today,
+  );
+  return reviewed === undefined
+    ? [`${label} comes from ${pkg.resolved}, where the gate can't check its publisher identity; an identity exception records the review`]
+    : [];
 }
 
 async function ageProblem(pkg: LockedPackage, replaced: ReadonlyArray<string>, context: NpmChangeContext): Promise<string | undefined> {

@@ -1,8 +1,10 @@
 /**
  * Takes the advisory snapshot for a set of package versions: OSV-Scanner
  * over all of them in one run, plus the published advisories of each one's
- * source repository that OSV doesn't cover yet (when OSV has the advisory for
- * that package, OSV-Scanner's verdict on the version stands).
+ * source repository that OSV didn't cover at scan time (when OSV's record for
+ * the advisory names that package and predates the scan, OSV-Scanner's
+ * verdict on the version stands). A repository advisory marked as malware is
+ * always kept: OSV might not classify it the same way.
  */
 import type { Fetch } from "./http.ts";
 import { OsvRecords } from "./osv-records.ts";
@@ -35,9 +37,9 @@ export async function takeSnapshot(packages: ReadonlyArray<PackageVersion>, opti
     const key = versionKey(pkg);
     const fromRepositories: Advisory[] = [];
     for (const advisory of repository.affecting.get(key) ?? []) {
-      const ids = [advisory.ghsaId, ...(advisory.cveId === undefined ? [] : [advisory.cveId])];
-      const covered = await Promise.all(ids.map((id) => records.covers(id, pkg)));
-      if (!covered.some(Boolean)) fromRepositories.push(fromRepository(advisory));
+      const converted = fromRepository(advisory);
+      const covered = converted.malicious ? [] : await Promise.all(converted.ids.map((id) => records.coveredAtScan(id, pkg, takenAt)));
+      if (!covered.some(Boolean)) fromRepositories.push(converted);
     }
     affecting.set(key, [...(osv.get(key) ?? []).map(fromOsv), ...fromRepositories]);
   }

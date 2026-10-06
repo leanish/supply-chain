@@ -35,20 +35,28 @@ interface LockEntry {
 
 /** Packages from an npm lockfile (v2/v3 `packages` map); workspace links and the root are skipped. */
 export function lockedPackages(lock: unknown): LockedPackage[] {
-  const { lockfileVersion, packages } = lock as { lockfileVersion?: number; packages?: Record<string, LockEntry> };
-  if ((lockfileVersion !== 2 && lockfileVersion !== 3) || packages === undefined) {
+  const { lockfileVersion, packages } = (lock ?? {}) as { lockfileVersion?: number; packages?: unknown };
+  if ((lockfileVersion !== 2 && lockfileVersion !== 3) || !isPlainObject(packages)) {
     throw new Error("package-lock.json must be lockfileVersion 2 or 3 with a `packages` map");
   }
-  return Object.entries(packages).flatMap(([path, entry]) => {
+  for (const [path, entry] of Object.entries(packages)) {
+    if (!isPlainObject(entry)) throw new Error(`lockfile entry ${path || "(root)"} isn't an object`);
+  }
+  const entries = packages as Record<string, LockEntry>;
+  return Object.entries(entries).flatMap(([path, entry]) => {
     const marker = path.lastIndexOf("node_modules/");
     if (marker === -1 || entry.link === true) return [];
     if (entry.version === undefined) throw new Error(`lockfile entry ${path} has no version`);
     // An npm alias (`"x": "npm:y@1"`) is installed under the alias; its entry names the real package.
     const name = entry.name ?? path.slice(marker + "node_modules/".length);
     const bundled = entry.inBundle === true;
-    if (bundled) bundlingAncestor(packages, path);
+    if (bundled) bundlingAncestor(entries, path);
     return [{ name, version: entry.version, path, resolved: entry.resolved, bundled, integrity: entry.integrity }];
   });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
