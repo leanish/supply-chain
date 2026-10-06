@@ -7,57 +7,36 @@ on:
   push:
     branches: [main]
   schedule:
-    # Daily: a dependency already on main can be flagged as malicious or vulnerable later.
+    # Daily: main's full scan, and a fresh rescan of every open PR.
     - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Rescan only this open PR now (its status lands right away instead of with the daily run)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
-  # The gate on this repository's own lockfile, run from the code under review. Required by the `main` ruleset.
-  # It needs its one runtime dependency (yaml) installed first, without lifecycle scripts; repositories that adopt
-  # the gate run it from a pinned commit of this repository instead, with this repository's lockfile.
+  # The gate on this repository itself, from the code under review: the same reusable workflow adopters call.
+  # Its `supply-chain / supply-chain` check is required by the `main` ruleset.
   supply-chain:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-      - name: Install the pinned OSV-Scanner
-        run: echo "OSV_SCANNER=$(packages/ci/scripts/install-osv-scanner.sh "$RUNNER_TEMP/tools")" >> "$GITHUB_ENV"
-      - name: Install dependencies without lifecycle scripts
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Gate dependency changes and findings
-        env:
-          EVENT: ${{ github.event_name }}
-          GITHUB_TOKEN: ${{ github.token }}
-          SUPPLY_CHAIN_COMMIT: ${{ github.sha }}
-        run: |
-          # The checked-out merge commit's first parent is the base the PR builds on.
-          if [ "$EVENT" = "pull_request" ]; then
-            node packages/ci/src/cli.ts compare --base HEAD^1 --head HEAD --report "$RUNNER_TEMP/supply-chain.json"
-          else
-            node packages/ci/src/cli.ts scan --head HEAD --report "$RUNNER_TEMP/supply-chain.json"
-          fi
-      - name: Verify registry signatures and provenance attestations
-        run: npm audit signatures
-      - name: Keep the report
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: supply-chain-report
-          path: ${{ runner.temp }}/supply-chain.json
-          if-no-files-found: ignore
+    uses: ./.github/workflows/supply-chain.yml
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
 
   check:
     needs: supply-chain
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24

@@ -158,6 +158,62 @@ Malware ids can't be excepted.
 
 `--report <file>` writes JSON: `schemaVersion`, `mode`, the gate's commit and OSV-Scanner version, a digest of the config, `baseSha`, `headSha`, `startedAt` (the snapshot's time), `completedAt`, `completed`, `verdict`, and the failures, warnings, notes and gaps.
 
+## Adopting the gate
+
+The reusable workflow [`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml) runs all of it. Call it from a workflow of your own, pinned to a full commit SHA of this repository (the gate is checked out from the same commit, so that's the only pin):
+
+```yaml
+# .github/workflows/supply-chain.yml
+name: supply-chain
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *" # an odd minute: GitHub delays or drops scheduled runs on the hour
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Rescan only this open PR now
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    uses: leanish/supply-chain/.github/workflows/supply-chain.yml@<full commit SHA> # v0.1.0
+    permissions:
+      contents: read
+      pull-requests: read # the daily rescan lists open PRs
+      statuses: write # the daily rescan posts its verdicts
+    with:
+      java-version: "25" # for Gradle builds; several lines for several JDKs, the last one runs Gradle
+```
+
+What runs where:
+
+- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check.
+- **On pushes to the default branch and daily:** the full `scan`.
+- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts), inventoried, and compared, with today's advisories. A publisher job that runs no code from the repository re-reads each PR (still open, same head, same base, no newer status) and posts the verdict as a commit status on the PR's head, named like the required check. A rescan that didn't complete posts a failure.
+
+**GitHub settings**
+
+- A ruleset (or branch protection) on the default branch requiring the check `supply-chain / supply-chain` (`<your job id> / supply-chain`; pass `required-check` if you call the job something else), from GitHub Actions. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
+- Actions enabled, allowing the actions this workflow uses (actions/checkout, setup-node, setup-java, upload-artifact, download-artifact).
+- The dependency graph and Dependabot **alerts** on; Dependabot version and security updates off (secure-it and bump-it make those PRs, with this gate's rules).
+
+**Limits**
+
+- **Fork PRs:** their workflow runs from the fork's own files, with a read-only token and no secrets, so their check is only as trustworthy as the PR: review workflow and build changes, require approval for outside contributors' runs, and don't merge before the daily rescan's status lands (or trigger it with `workflow_dispatch`, `pr` input).
+- **Scheduled runs** are best effort: GitHub may delay or skip them under load, and disables them in a public repository after 60 days without activity.
+- The Gradle inventory comes from running the build, so a malicious build script or plugin can alter its own inventory; the job split keeps it from touching the comparison and the publishing credentials, not from lying about itself.
+
+**Updating the pin:** a PR that changes the SHA (and its `# vX.Y.Z` comment); bump-it does it like any other action update.
+
 ## Coming next
 
-A `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.
+A `candidates` command for secure-it and bump-it.
