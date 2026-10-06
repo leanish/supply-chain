@@ -10,6 +10,22 @@ export type Fetch = (
   text(): Promise<string>;
 }>;
 
+/**
+ * `fetch` whose network errors name the request: undici's own message is just
+ * "fetch failed", with the reason (a reset, a DNS error) in its `cause`.
+ */
+export function namingFailures(fetch: Fetch): Fetch {
+  return async (url, init) => {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      const cause = (err as Error).cause;
+      const reason = cause instanceof Error ? cause.message : (err as Error).message;
+      throw new Error(`${init?.method ?? "GET"} ${url} failed: ${reason}`, { cause: err });
+    }
+  };
+}
+
 /** Runs `work` over `items` with at most `limit` in flight, keeping input order in the result. */
 export async function mapLimited<T, R>(items: ReadonlyArray<T>, limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);

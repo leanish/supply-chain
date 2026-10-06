@@ -5,8 +5,9 @@
  *
  * Files are parsed as YAML (comments kept, so `uses: owner/repo@<sha> #
  * v7.0.1` gives the version), every `uses:` key in the document counts, and a
- * file that doesn't parse fails the run. Local `./` uses are followed to their
- * `action.yml`; `docker://` uses are coverage gaps.
+ * file that doesn't parse fails the run. Local `./` uses are followed: to the
+ * workflow file for a reusable workflow (`./.github/workflows/x.yml`), else to
+ * the action's `action.yml`; `docker://` uses are coverage gaps.
  *
  * A use resolves to a version when its ref is a full commit SHA and its
  * comment names a tag that points at that commit (checked with GitHub).
@@ -34,11 +35,13 @@ export interface ActionsInventory {
   readonly docker: ReadonlyArray<string>;
   /** Every workflow and action file read, even one without any `uses:`. */
   readonly files: ReadonlyArray<string>;
-  /** Local actions a workflow uses that have no `action.yml`. */
+  /** Local actions a workflow uses that have no `action.yml`, and local reusable workflows that don't exist. */
   readonly gaps: ReadonlyArray<string>;
 }
 
 const USES = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(\/[^@\s]+)?@([^@\s]+)$/;
+/** A local reusable workflow: GitHub only calls them from `.github/workflows` itself. */
+const LOCAL_WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
 
 /** The `uses:` of one workflow or action file; YAML aliases are followed, keeping the anchor's comment. */
 export function parseUses(text: string, file: string): { uses: ActionUse[]; local: string[]; docker: string[] } {
@@ -82,10 +85,11 @@ export function parseUses(text: string, file: string): { uses: ActionUse[]; loca
 
 /** Every `uses:` in the tree's workflows and actions, local actions followed. */
 export async function readActionsInventory(tree: Tree): Promise<ActionsInventory> {
-  const queue: Array<{ files: string[]; from: string | undefined }> = [
-    ...(await tree.list(".github/workflows")).filter((path) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)).map((file) => ({ files: [file], from: undefined })),
-    ...(await tree.list(".github/actions")).filter((path) => /\/action\.ya?ml$/.test(path)).map((file) => ({ files: [file], from: undefined })),
-    { files: ["action.yml", "action.yaml"], from: undefined },
+  // `missing`: the gap to report when none of `files` exists (only for files a `uses:` points at).
+  const queue: Array<{ files: string[]; missing: string | undefined }> = [
+    ...(await tree.list(".github/workflows")).filter((path) => LOCAL_WORKFLOW.test(path)).map((file) => ({ files: [file], missing: undefined })),
+    ...(await tree.list(".github/actions")).filter((path) => /\/action\.ya?ml$/.test(path)).map((file) => ({ files: [file], missing: undefined })),
+    { files: ["action.yml", "action.yaml"], missing: undefined },
   ];
   const seen = new Set<string>();
   const uses: ActionUse[] = [];
@@ -93,7 +97,7 @@ export async function readActionsInventory(tree: Tree): Promise<ActionsInventory
   const files: string[] = [];
   const gaps: string[] = [];
   while (queue.length > 0) {
-    const { files: candidates, from } = queue.shift()!;
+    const { files: candidates, missing } = queue.shift()!;
     let found = false;
     for (const file of candidates) {
       if (seen.has(file)) {
@@ -108,12 +112,16 @@ export async function readActionsInventory(tree: Tree): Promise<ActionsInventory
       const parsed = parseUses(text, file);
       uses.push(...parsed.uses);
       docker.push(...parsed.docker);
-      for (const dir of parsed.local) {
-        const base = dir.replace(/^\.\//, "").replace(/\/+$/, "");
-        queue.push({ files: [`${base}/action.yml`, `${base}/action.yaml`], from: `${dir} (${file})` });
+      for (const local of parsed.local) {
+        const path = local.replace(/^\.\//, "").replace(/\/+$/, "");
+        queue.push(
+          LOCAL_WORKFLOW.test(path)
+            ? { files: [path], missing: `GitHub Actions local workflow ${local} (${file}) doesn't exist, so what it uses isn't read` }
+            : { files: [`${path}/action.yml`, `${path}/action.yaml`], missing: `GitHub Actions local action ${local} (${file}) has no action.yml, so what it uses isn't read` },
+        );
       }
     }
-    if (!found && from !== undefined) gaps.push(`GitHub Actions local action ${from} has no action.yml, so what it uses isn't read`);
+    if (!found && missing !== undefined) gaps.push(missing);
   }
   return { uses, docker, files, gaps };
 }
