@@ -129,6 +129,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     configDigest: configDigest(outcome?.configText),
     baseSha: base?.id,
     headSha: head?.id ?? values.head ?? "HEAD",
+    prHeadSha: undefined,
     startedAt: startedAt.toISOString(),
     completedAt: new Date().toISOString(),
     completed,
@@ -282,6 +283,8 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       async compare(baseRev, headRev, gradle) {
         const outcome = await compareTrees(await gitTree(repo, baseRev, runProcess), await gitTree(repo, headRev, runProcess), gate, gradle, repo);
         return {
+          osvScannerVersion: outcome.osvScannerVersion,
+          configDigest: configDigest(outcome.configText),
           completed: true,
           verdict: outcome.failures.length === 0 ? "pass" : "fail",
           failures: outcome.failures,
@@ -301,10 +304,12 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
         const report: Report = {
           schemaVersion: REPORT_SCHEMA_VERSION,
           mode: "compare",
-          tool: { commit: env["SUPPLY_CHAIN_COMMIT"], osvScanner: undefined },
-          configDigest: "rescan",
-          baseSha: pr.base,
-          headSha: pr.head,
+          tool: { commit: env["SUPPLY_CHAIN_COMMIT"], osvScanner: outcome?.osvScannerVersion },
+          configDigest: outcome?.configDigest ?? "unknown",
+          // The pair the gate checked: the PR merged onto its base's tip (or the PR head against its merge base).
+          baseSha: result.compared?.base,
+          headSha: result.compared?.head ?? pr.head,
+          prHeadSha: pr.head,
           startedAt: values["started-at"]!,
           completedAt: new Date().toISOString(),
           completed: outcome?.completed ?? false,

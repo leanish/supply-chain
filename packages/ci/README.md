@@ -157,7 +157,7 @@ Malware ids can't be excepted.
 
 ## Report
 
-`--report <file>` writes JSON: `schemaVersion`, `mode`, the gate's commit and OSV-Scanner version, a digest of the config, `baseSha`, `headSha`, `startedAt` (the snapshot's time), `completedAt`, `completed`, `verdict`, and the failures, warnings, notes and gaps.
+`--report <file>` writes JSON: `schemaVersion`, `mode`, the gate's commit and OSV-Scanner version, a digest of the config, `baseSha`, `headSha` (the daily rescan's reports also carry `prHeadSha`, the PR's own head, since its `headSha` is that head merged onto the base's tip), `startedAt` (the snapshot's time), `completedAt`, `completed`, `verdict`, and the failures, warnings, notes and gaps.
 
 ## Adopting the gate
 

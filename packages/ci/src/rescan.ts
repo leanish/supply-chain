@@ -116,11 +116,26 @@ export interface RescanSteps {
   signatures(): Promise<string[]>;
   /** Back to a clean checkout before the next PR. */
   reset(): Promise<void>;
-  /** Keeps what the rescan found on one PR (a report file, the step summary); called whether or not it's posted. */
-  record(pr: PlannedPr, result: { state: "success" | "failure"; description: string; outcome: RescanOutcome | undefined; error: string | undefined }): Promise<void>;
+  /**
+   * Keeps what the rescan found on one PR (a report file, the step summary); called whether or not it's posted.
+   * `compared` is the merged pair the gate checked, once `prepare` returned one.
+   */
+  record(
+    pr: PlannedPr,
+    result: {
+      state: "success" | "failure";
+      description: string;
+      compared: { base: string; head: string } | undefined;
+      outcome: RescanOutcome | undefined;
+      error: string | undefined;
+    },
+  ): Promise<void>;
 }
 
 export interface RescanOutcome {
+  readonly osvScannerVersion: string;
+  /** As in the report: sha256 of the head's supply-chain.json, or `default`. */
+  readonly configDigest: string;
   readonly completed: boolean;
   readonly verdict: "pass" | "fail";
   readonly failures: ReadonlyArray<string>;
@@ -158,15 +173,16 @@ export async function runRescan(
     if (!(await stillAsPlanned(pr, api, options))) continue;
     let state: "success" | "failure";
     let description: string;
+    let compared: { base: string; head: string } | undefined;
     let outcome: RescanOutcome | undefined;
     let error: string | undefined;
     try {
       const inventories = await inventoriesOf(inventoriesDir, pr);
       if (typeof inventories === "string") throw new Error(inventories);
-      const { base, head } = await steps.prepare(pr);
-      const compared = await steps.compare(base, head, inventories);
-      const signatureProblems = compared.completed ? await steps.signatures() : [];
-      outcome = { ...compared, failures: [...compared.failures, ...signatureProblems] };
+      compared = await steps.prepare(pr);
+      const gated = await steps.compare(compared.base, compared.head, inventories);
+      const signatureProblems = gated.completed ? await steps.signatures() : [];
+      outcome = { ...gated, failures: [...gated.failures, ...signatureProblems] };
       state = outcome.completed && outcome.verdict === "pass" && signatureProblems.length === 0 ? "success" : "failure";
       description = `Daily rescan: ${verdictSummary({ ...outcome, verdict: state === "success" ? "pass" : "fail" })}`;
     } catch (err) {
@@ -176,7 +192,7 @@ export async function runRescan(
     } finally {
       await steps.reset();
     }
-    await steps.record(pr, { state, description, outcome, error });
+    await steps.record(pr, { state, description, compared, outcome, error });
     // Again right before posting: the PR or its base may have moved while it was being scanned.
     if (!(await stillAsPlanned(pr, api, options))) continue;
     if (await newerStatusExists(pr, api, options)) {
