@@ -47,7 +47,7 @@ export async function gitTree(root: string, revision: string, run: RunProcess): 
   return {
     id: sha,
     async read(path) {
-      const listed = await run("git", ["ls-tree", "--name-only", sha, "--", path], { cwd: root });
+      const listed = await run("git", ["ls-tree", "-z", "--name-only", sha, "--", path], { cwd: root });
       if (listed.code !== 0) throw new Error(`git ls-tree ${sha} ${path} failed: ${listed.stderr.trim()}`);
       if (listed.stdout.trim() === "") return undefined;
       const shown = await run("git", ["show", `${sha}:${path}`], { cwd: root });
@@ -55,9 +55,10 @@ export async function gitTree(root: string, revision: string, run: RunProcess): 
       return shown.stdout;
     },
     async list(dir) {
-      const listed = await run("git", ["ls-tree", "-r", "--name-only", sha, "--", dir], { cwd: root });
+      // -z: names come back raw, NUL-separated, instead of quoted when they have unusual characters.
+      const listed = await run("git", ["ls-tree", "-r", "-z", "--name-only", sha, "--", dir], { cwd: root });
       if (listed.code !== 0) throw new Error(`git ls-tree ${sha} ${dir} failed: ${listed.stderr.trim()}`);
-      return listed.stdout.split("\n").filter((line) => line !== "").sort();
+      return listed.stdout.split("\0").filter((line) => line !== "").sort();
     },
   };
 }

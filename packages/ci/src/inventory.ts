@@ -91,7 +91,7 @@ export function npmLocation(lockfile: string, path: string): string {
 
 /** Whether the inventory has anything for the gate to check. */
 export function isEmpty(inventory: Inventory): boolean {
-  return inventory.npm.length === 0 && inventory.gradle === undefined && inventory.actions.uses.length === 0 && inventory.actions.docker.length === 0;
+  return inventory.npm.length === 0 && inventory.gradle === undefined && inventory.actions.files.length === 0;
 }
 
 /** Every npm and Maven package version in the inventory, with all its locations (actions come resolved from the gate). */

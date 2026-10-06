@@ -57,12 +57,12 @@ A package with no GitHub source repository, an unreadable repository, and a rang
 
 ## GitHub Actions
 
-Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, in a root `action.yml`, and in every local `./` action a workflow uses, is an action version, located in the file that uses it. Files are parsed as YAML (comments kept, a file that doesn't parse fails), and every `uses:` key counts.
+Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, in a root `action.yml`, and in every local `./` action a workflow uses, is an action version, located in the file that uses it. Files are parsed as YAML (comments kept, aliases followed, a file that doesn't parse fails), and every `uses:` key counts.
 
-- A use resolves to a version when it's pinned to a full commit SHA and its comment names a tag (`# v7.0.1`, `# tag=v7.0.1`) that GitHub says points at that commit, annotated tags dereferenced.
-- **A new or changed `uses:`** must resolve: a tag or branch ref, a missing comment, or a comment whose tag points elsewhere fails. Its age is its GitHub release's publish time (a tag's own date is whatever its author wrote); no published release fails, own actions aside (`ownPackages["GitHub Actions"].owners`).
-- An unchanged `uses:` that doesn't resolve, and `docker://` uses, are coverage gaps: the PR didn't make them worse.
-- A young action version can pass by the young-fix rule like any other, its candidates being the repository's releases.
+- A use resolves to a version when it's pinned to a full commit SHA and its comment names a full release tag (`# v7.0.1`, `# tag=v7.0.1`; a floating `# v7` doesn't say what's pinned) that GitHub says points at that commit, annotated tags dereferenced.
+- **A new or changed `uses:`** must resolve: a tag or branch ref, a missing comment, or a comment whose tag points elsewhere fails. Each occurrence is judged on its own: same file, action, ref and comment as in base, or it's a change (so dropping a comment, or copying an unpinned ref into another workflow, counts). Its age is its GitHub release's publish time (a tag's own date is whatever its author wrote); no published release fails, own actions aside (`ownPackages["GitHub Actions"].owners`).
+- An unchanged `uses:` that doesn't resolve, `docker://` uses, and a local action without an `action.yml` are coverage gaps: the PR didn't make them worse.
+- A young action version can pass by the young-fix rule like any other, its candidates being the repository's releases (every page; past 2,000 releases the listing is incomplete and the rule can't be checked).
 
 ## Floors: `.github/dependency-floors.json`
 
