@@ -5,19 +5,21 @@
  *   - `scan` (the default branch, on push and daily): every finding in one
  *     tree fails unless excepted.
  * Config and exceptions come from head: they're part of what would land.
+ * Gradle inventories come in as data, made by whoever ran the build.
  */
 import { type Config, DEFAULT_CONFIG, parseConfig } from "./config.ts";
 import { type Exceptions, NO_EXCEPTIONS, parseExceptions } from "./exceptions.ts";
 import { compareFindings, findingsOf } from "./findings.ts";
+import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
-import { type Inventory, located, readInventory } from "./inventory.ts";
+import { type Inventory, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
+import { MavenDates, mavenChangeProblems } from "./maven-changes.ts";
 import { npmChangeProblems } from "./npm-changes.ts";
 import { sourceProblems } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { osvScannerVersion } from "./osv-scanner.ts";
 import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
-import { MAVEN_CENTRAL } from "./source-repos.ts";
 import { takeSnapshot } from "./take-snapshot.ts";
 import type { Tree } from "./tree.ts";
 
@@ -42,13 +44,13 @@ export interface GateOutcome {
   readonly configText: string | undefined;
 }
 
-interface Settings {
+export interface Settings {
   readonly config: Config;
   readonly configText: string | undefined;
   readonly exceptions: Exceptions;
 }
 
-async function readSettings(head: Tree): Promise<Settings> {
+export async function readSettings(head: Tree): Promise<Settings> {
   const configText = await head.read(CONFIG_PATH);
   const exceptionsText = await head.read(EXCEPTIONS_PATH);
   return {
@@ -56,6 +58,11 @@ async function readSettings(head: Tree): Promise<Settings> {
     configText,
     exceptions: exceptionsText === undefined ? NO_EXCEPTIONS : parseExceptions(parseJson(exceptionsText, EXCEPTIONS_PATH)),
   };
+}
+
+/** What a tree has to inventory under its own settings: the CLI uses it to know which Gradle builds to run. */
+export async function treeSources(head: Tree): Promise<Sources> {
+  return sourcesOf(head, (await readSettings(head)).config);
 }
 
 function parseJson(text: string, path: string): unknown {
@@ -69,18 +76,24 @@ function parseJson(text: string, path: string): unknown {
 function snapshotOptions(config: Config, env: GateEnvironment) {
   return {
     osv: { binary: env.osvScanner, run: env.run },
-    sourceRepos: { fetch: env.fetch, overrides: config.repositories, mavenRepositories: [MAVEN_CENTRAL] },
+    sourceRepos: { fetch: env.fetch, overrides: config.repositories, mavenRepositories: config.maven.repositories },
     repositoryAdvisories: { fetch: env.fetch, token: env.githubToken },
     fetch: env.fetch,
     now: env.now,
   };
 }
 
-export async function runCompare(base: Tree, head: Tree, env: GateEnvironment): Promise<GateOutcome> {
+export interface GradleInputs {
+  readonly base?: GradleInventory | undefined;
+  readonly head?: GradleInventory | undefined;
+}
+
+export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
   const { config, configText, exceptions } = await readSettings(head);
-  const headInventory = await readInventory(head, config);
-  const baseInventory = await readInventory(base, config, { missingLockfilesAreEmpty: true });
+  const sources = await sourcesOf(head, config);
+  const headInventory = await readInventory(head, sources, { gradle: gradle.head });
+  const baseInventory = await readInventory(base, sources, { missingLockfilesAreEmpty: true, gradle: gradle.base });
   const baseLocated = located(baseInventory);
   const headLocated = located(headInventory);
   const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env));
@@ -89,12 +102,18 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment): 
   const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   const registry = new NpmRegistry(env.fetch);
-  const changeProblems: string[] = [...bundleFailures(headInventory)];
+  const changeProblems: string[] = [
+    ...bundleFailures(headInventory),
+    ...resolutionFailures(baseInventory, config, "base"),
+    ...resolutionFailures(headInventory, config, undefined),
+  ];
   for (const lockfile of headInventory.npm) {
     const before = baseInventory.npm.find((candidate) => candidate.path === lockfile.path)?.packages ?? [];
     const problems = await npmChangeProblems(before, lockfile.packages, { registry, snapshot, exceptions, config, now });
     changeProblems.push(...problems.map((problem) => prefixed(headInventory, lockfile.path, problem)));
   }
+  const dates = new MavenDates(env.fetch, config.maven.repositories);
+  changeProblems.push(...(await mavenChangeProblems(baseLocated, headLocated, { snapshot, exceptions, config, now, dates })));
   return {
     failures: [...verdict.failures, ...changeProblems],
     warnings: verdict.warnings,
@@ -105,18 +124,19 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment): 
   };
 }
 
-export async function runScan(head: Tree, env: GateEnvironment): Promise<GateOutcome> {
+export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
   const { config, configText, exceptions } = await readSettings(head);
-  const inventory = await readInventory(head, config);
+  const sources = await sourcesOf(head, config);
+  const inventory = await readInventory(head, sources, { gradle: gradle.head });
   const packages = located(inventory);
   const snapshot = await takeSnapshot(packages, snapshotOptions(config, env));
   const verdict = scanVerdict(findingsOf(packages, snapshot), exceptions, snapshot, env.now().toISOString().slice(0, 10));
-  const sources = inventory.npm.flatMap((lockfile) =>
+  const npmSources = inventory.npm.flatMap((lockfile) =>
     sourceProblems(lockfile.packages, config.npm.registries).map((problem) => prefixed(inventory, lockfile.path, problem)),
   );
   return {
-    failures: [...verdict.failures, ...bundleFailures(inventory), ...sources],
+    failures: [...verdict.failures, ...bundleFailures(inventory), ...npmSources, ...resolutionFailures(inventory, config, undefined)],
     warnings: [],
     notes: verdict.notes,
     gaps: snapshot.gaps,
@@ -127,6 +147,14 @@ export async function runScan(head: Tree, env: GateEnvironment): Promise<GateOut
 
 function bundleFailures(inventory: Inventory): string[] {
   return inventory.npm.flatMap((lockfile) => lockfile.bundleProblems.map((problem) => prefixed(inventory, lockfile.path, problem)));
+}
+
+/** A configuration that didn't resolve leaves a hole in that side's inventory, so the verdict can't stand. */
+function resolutionFailures(inventory: Inventory, config: Config, side: string | undefined): string[] {
+  if (inventory.gradle === undefined) return [];
+  return gradleResolutionProblems(inventory.gradle, config.gradle.ignoreConfigurations).map((problem) =>
+    side === undefined ? problem : `${side}: ${problem}`,
+  );
 }
 
 /** Names the lockfile when there's more than one. */

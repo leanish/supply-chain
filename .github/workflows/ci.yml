@@ -60,5 +60,12 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      # For the Gradle inventory's coverage test, which runs a real Gradle build.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 25
       - run: npm ci --ignore-scripts
       - run: npm run check
+        env:
+          SUPPLY_CHAIN_GRADLE_TESTS: "1"
