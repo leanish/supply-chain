@@ -282,6 +282,7 @@ function parseSegment(segment: string, partialsAreXRanges: boolean): Interval[] 
   const normalized = segment
     .replaceAll("≤", "<=")
     .replaceAll("≥", ">=")
+    .replace(/\s*[–—]\s*/g, " - ")
     .replace(/(\S+)\s+-\s+(\S+)/g, ">=$1 <=$2")
     .replace(/[,;]/g, " ")
     .replace(/([0-9A-Za-z])(<=|>=|<|>)/g, "$1 $2")
@@ -343,14 +344,27 @@ function splitInverted(scheme: VersionScheme): (interval: Interval) => Interval[
       : [interval];
 }
 
+/**
+ * A flavored version (`33.7.1-jre`) against a bound without that flavor
+ * (`33.7.1`) compares as the plain version: `4.0–33.7.1` includes 33.7.1-jre,
+ * which Maven's ordering would put after 33.7.1.
+ */
+function comparableTo(scheme: VersionScheme, version: string, bound: string): string {
+  const flavor = scheme.flavor(version);
+  if (flavor === "" || flavor.includes("+") || scheme.flavor(bound) !== "") return version;
+  const cut = version.toLowerCase().lastIndexOf(flavor);
+  return cut > 0 && cut + flavor.length === version.length && "-.".includes(version[cut - 1]!) ? version.slice(0, cut - 1) : version;
+}
+
 /** Whether `version` falls in the advisory range; undefined when the range doesn't parse (a coverage gap). */
 export function inAdvisoryRange(scheme: VersionScheme, range: string, version: string): boolean | undefined {
   const intervals = parseAdvisoryRange(range, scheme === SEMVER);
   if (intervals === undefined) return undefined;
   try {
+    const order = (bound: string) => scheme.compare(comparableTo(scheme, version, bound), bound);
     return intervals.flatMap(splitInverted(scheme)).some(({ lower, upper }) => {
-      const aboveLower = lower === undefined || (lower.inclusive ? scheme.compare(version, lower.version) >= 0 : scheme.compare(version, lower.version) > 0);
-      const belowUpper = upper === undefined || (upper.inclusive ? scheme.compare(version, upper.version) <= 0 : scheme.compare(version, upper.version) < 0);
+      const aboveLower = lower === undefined || (lower.inclusive ? order(lower.version) >= 0 : order(lower.version) > 0);
+      const belowUpper = upper === undefined || (upper.inclusive ? order(upper.version) <= 0 : order(upper.version) < 0);
       return aboveLower && belowUpper;
     });
   } catch {

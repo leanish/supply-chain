@@ -193,6 +193,9 @@ describe("advisory ranges", () => {
     expect(inAdvisoryRange(npm, "<=2.4.0; 3.0.0<= 3.1.0", "3.1.0")).toBe(true);
     expect(inAdvisoryRange(npm, "<=2.4.0; 3.0.0<= 3.1.0", "3.1.8")).toBe(false);
     expect(inAdvisoryRange(npm, "≤ 3.4.1 ", "3.4.4")).toBe(false);
+    // google/guava's GHSA-xxph-c9ww-hj94, verbatim (an en dash).
+    expect(inAdvisoryRange(maven, "4.0–33.7.1", "33.7.1-jre")).toBe(true);
+    expect(inAdvisoryRange(maven, "4.0–33.7.1", "33.7.2-jre")).toBe(false);
     expect(inAdvisoryRange(npm, "≥ 3.0.0, ≤ 3.4.1", "3.4.1")).toBe(true);
   });
 

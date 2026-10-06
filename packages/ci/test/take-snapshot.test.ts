@@ -79,32 +79,43 @@ describe("advisory snapshot", () => {
     expect(snapshot.group("CVE-2026-5")).toBe("GHSA-from-osv");
   });
 
-  it("keeps a repository advisory OSV only learned about after the scan started, and malware whatever OSV says", async () => {
-    const osvRecord = (id: string, modified: string) => ({
-      body: { id, modified, affected: [{ package: { ecosystem: "npm", name: "vite" } }] },
-    });
-    const fetch = fakeFetch({
+  it("looks OSV coverage up before scanning, so a record imported meanwhile can't erase a finding", async () => {
+    const events: string[] = [];
+    let scanned = false;
+    const imported = { id: "GHSA-imported-meanwhile", modified: "2026-10-01T00:00:00Z", affected: [{ package: { ecosystem: "npm", name: "vite" } }] };
+    const routes = fakeFetch({
       "https://registry.npmjs.org/vite/8.3.1": { body: { repository: "github:vitejs/vite" } },
       "https://api.github.com/repos/vitejs/vite/security-advisories?state=published&per_page=100": {
-        body: [
-          repositoryAdvisory("GHSA-imported-just-now", ">=8.0.0"),
-          repositoryAdvisory("GHSA-malware-in-repo", ">=8.0.0", ["CWE-506"]),
-        ],
+        body: [repositoryAdvisory("GHSA-imported-meanwhile", ">=8.0.0"), repositoryAdvisory("GHSA-malware-in-repo", ">=8.0.0", ["CWE-506"])],
       },
-      // OSV-Scanner ran before this record existed (or changed), so its silence proves nothing.
-      "https://api.osv.dev/v1/vulns/GHSA-imported-just-now": osvRecord("GHSA-imported-just-now", "2026-10-06T20:00:05Z"),
-      // OSV has it from before, but doesn't call it malware: the repository's classification wins.
-      "https://api.osv.dev/v1/vulns/GHSA-malware-in-repo": osvRecord("GHSA-malware-in-repo", "2026-10-01T00:00:00Z"),
+      // OSV has the malware advisory from before, but doesn't call it malware: the repository's classification wins.
+      "https://api.osv.dev/v1/vulns/GHSA-malware-in-repo": {
+        body: { id: "GHSA-malware-in-repo", modified: "2026-10-01T00:00:00Z", affected: [{ package: { ecosystem: "npm", name: "vite" } }] },
+      },
     });
+    // The first record only exists once the scan has run, with an older upstream `modified`.
+    const fetch: typeof routes = async (url, init) => {
+      if (url.includes("api.osv.dev")) events.push(`lookup ${url.split("/").pop()}`);
+      if (url === "https://api.osv.dev/v1/vulns/GHSA-imported-meanwhile" && scanned) {
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => imported, text: async () => JSON.stringify(imported) };
+      }
+      return routes(url, init);
+    };
+    const run: RunProcess = async (command, args, options) => {
+      events.push("scan");
+      scanned = true;
+      return scanner({})(command, args, options);
+    };
     const snapshot = await takeSnapshot([VITE], {
-      osv: { binary: "osv-scanner", run: scanner({}) },
+      osv: { binary: "osv-scanner", run },
       sourceRepos: { fetch, overrides: new Map(), mavenRepositories: [MAVEN_CENTRAL] },
       repositoryAdvisories: { fetch, token: undefined },
       fetch,
       now: () => TAKEN,
     });
+    expect(events).toEqual(["lookup GHSA-imported-meanwhile", "scan"]);
     expect(snapshot.advisories(VITE).map((advisory) => [advisory.id, advisory.malicious])).toEqual([
-      ["GHSA-imported-just-now", false],
+      ["GHSA-imported-meanwhile", false],
       ["GHSA-malware-in-repo", true],
     ]);
   });

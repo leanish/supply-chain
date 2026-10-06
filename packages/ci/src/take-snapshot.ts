@@ -1,9 +1,10 @@
 /**
  * Takes the advisory snapshot for a set of package versions: OSV-Scanner
  * over all of them in one run, plus the published advisories of each one's
- * source repository that OSV didn't cover at scan time (when OSV's record for
- * the advisory names that package and predates the scan, OSV-Scanner's
- * verdict on the version stands). A repository advisory marked as malware is
+ * source repository that OSV didn't cover yet. Repository advisories and
+ * OSV's records for them are read first, the scanner runs after, so OSV
+ * "covering" an advisory always means the scan saw it: then OSV-Scanner's
+ * verdict on the version stands. A repository advisory marked as malware is
  * always kept: OSV might not classify it the same way.
  */
 import type { Fetch } from "./http.ts";
@@ -26,22 +27,25 @@ export interface SnapshotOptions {
 export async function takeSnapshot(packages: ReadonlyArray<PackageVersion>, options: SnapshotOptions): Promise<Snapshot> {
   const unique = uniqueVersions(packages);
   const takenAt = options.now();
-  const [osv, repos] = await Promise.all([
-    scanWithOsvScanner(unique, options.osv),
-    sourceRepositories(unique, options.sourceRepos),
-  ]);
+  const repos = await sourceRepositories(unique, options.sourceRepos);
   const repository = await matchRepositoryAdvisories(unique, repos, options.repositoryAdvisories);
   const records = new OsvRecords(options.fetch);
+  const fromRepositories = new Map<string, Advisory[]>();
+  for (const pkg of unique) {
+    const kept: Advisory[] = [];
+    for (const advisory of repository.affecting.get(versionKey(pkg)) ?? []) {
+      const converted = fromRepository(advisory);
+      const covered = converted.malicious ? [] : await Promise.all(converted.ids.map((id) => records.covers(id, pkg)));
+      if (!covered.some(Boolean)) kept.push(converted);
+    }
+    fromRepositories.set(versionKey(pkg), kept);
+  }
+  // After the coverage lookups, never before: see the file header.
+  const osv = await scanWithOsvScanner(unique, options.osv);
   const affecting = new Map<string, Advisory[]>();
   for (const pkg of unique) {
     const key = versionKey(pkg);
-    const fromRepositories: Advisory[] = [];
-    for (const advisory of repository.affecting.get(key) ?? []) {
-      const converted = fromRepository(advisory);
-      const covered = converted.malicious ? [] : await Promise.all(converted.ids.map((id) => records.coveredAtScan(id, pkg, takenAt)));
-      if (!covered.some(Boolean)) fromRepositories.push(converted);
-    }
-    affecting.set(key, [...(osv.get(key) ?? []).map(fromOsv), ...fromRepositories]);
+    affecting.set(key, [...(osv.get(key) ?? []).map(fromOsv), ...(fromRepositories.get(key) ?? [])]);
   }
   return new Snapshot(affecting, repository.gaps, takenAt);
 }

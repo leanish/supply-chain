@@ -1,9 +1,10 @@
 /**
  * Single OSV records, by id, to tell whether OSV already covers an advisory
- * a package's repository publishes. When it covered it at scan time (the
- * record names the package and was last modified before the scan started),
- * OSV-Scanner's verdict on that package version stands: the repository's own
- * range is only used for what OSV didn't have yet.
+ * a package's repository publishes. These lookups happen before OSV-Scanner
+ * runs, so a record found here was there for the scan: when it names the
+ * package, OSV-Scanner's verdict on that version stands, and the repository's
+ * own range is only used for what OSV didn't have yet. (A record's
+ * `modified` can't tell: OSV keeps upstream timestamps on later imports.)
  */
 import type { Fetch } from "./http.ts";
 import { isObject } from "./json.ts";
@@ -14,25 +15,23 @@ const OSV_API = "https://api.osv.dev/v1";
 
 export class OsvRecords {
   private readonly fetch: Fetch;
-  private readonly cache = new Map<string, Promise<OsvRecordSummary | undefined>>();
+  private readonly cache = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 
   constructor(fetch: Fetch) {
     this.fetch = fetch;
   }
 
-  /** Whether OSV's record `id` names this package and was last modified before `scanStart`. */
-  async coveredAtScan(id: string, pkg: PackageName, scanStart: Date): Promise<boolean> {
+  /** Whether OSV has record `id` and it names this package as affected. */
+  async covers(id: string, pkg: PackageName): Promise<boolean> {
     let cached = this.cache.get(id);
     if (cached === undefined) {
-      cached = this.summary(id);
+      cached = this.affectedPackages(id);
       this.cache.set(id, cached);
     }
-    const summary = await cached;
-    if (summary === undefined || summary.modified === undefined || summary.modified >= scanStart) return false;
-    return summary.packages.has(packageKey(pkg));
+    return (await cached)?.has(packageKey(pkg)) ?? false;
   }
 
-  private async summary(id: string): Promise<OsvRecordSummary | undefined> {
+  private async affectedPackages(id: string): Promise<ReadonlySet<string> | undefined> {
     const response = await this.fetch(`${OSV_API}/vulns/${encodeURIComponent(id)}`);
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`OSV lookup of ${id} failed with HTTP ${response.status}`);
@@ -48,14 +47,6 @@ export class OsvRecords {
         packages.add(packageKey({ ecosystem: pkg["ecosystem"] as Ecosystem, name: pkg["name"] }));
       }
     }
-    const modified = typeof record["modified"] === "string" ? new Date(record["modified"]) : undefined;
-    return { packages, modified: modified === undefined || Number.isNaN(modified.getTime()) ? undefined : modified };
+    return packages;
   }
-}
-
-interface OsvRecordSummary {
-  /** `packageKey`s the record lists as affected. */
-  readonly packages: ReadonlySet<string>;
-  /** Undefined when the record has no valid `modified`: never treated as covered. */
-  readonly modified: Date | undefined;
 }
