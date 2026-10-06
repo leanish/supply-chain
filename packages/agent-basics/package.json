@@ -1,0 +1,25 @@
+{
+  "name": "@leanish/supply-chain-agent-basics",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What secure-it and bump-it need to run a coding agent: Codex and Claude runners, skills, usage, git workspace, GitHub client, logger. Copied from leanish-development's runtime (see PROVENANCE.md).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "yaml": "^2.9.1"
+  }
+}
