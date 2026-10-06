@@ -10,12 +10,13 @@
  */
 import { type Config, DEFAULT_CONFIG, parseConfig } from "./config.ts";
 import { type Exceptions, NO_EXCEPTIONS, parseExceptions } from "./exceptions.ts";
-import { compareFindings, findingsOf } from "./findings.ts";
+import { compareFindings, findingsOf, type Located } from "./findings.ts";
 import { checkFloors, type Floor, FLOORS_PATH, parseFloors } from "./floors.ts";
 import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
 import { type Inventory, isEmpty, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
 import { ActionsCatalog, actionChanges, actionGaps, actionsLocated, resolveUses } from "./actions-changes.ts";
+import type { Resolution } from "./actions-inventory.ts";
 import { ActionsGitHub } from "./actions-github.ts";
 import { MavenCatalog, NpmCatalog } from "./catalogs.ts";
 import { MavenDates, mavenChanges } from "./maven-changes.ts";
@@ -27,9 +28,11 @@ import { versionKey } from "./package-version.ts";
 import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
 import { type ChangedVersion, isYoung, releaseAgeProblems } from "./release-age.ts";
-import { takeSnapshot } from "./take-snapshot.ts";
+import type { Snapshot } from "./snapshot.ts";
+import { type SnapshotOptions, takeSnapshot } from "./take-snapshot.ts";
 import type { Tree } from "./tree.ts";
-import { gatherCandidates } from "./young-fixes.ts";
+import type { Ecosystem } from "./versions.ts";
+import { gatherCandidates, type VersionCatalog } from "./young-fixes.ts";
 
 export const CONFIG_PATH = ".github/supply-chain.json";
 export const EXCEPTIONS_PATH = ".github/supply-chain-exceptions.json";
@@ -106,7 +109,17 @@ function parseJson(text: string, path: string): unknown {
   }
 }
 
-function snapshotOptions(config: Config, env: GateEnvironment, actions: ActionsGitHub) {
+/** Every version each ecosystem's registry lists, and when each was published. */
+export function versionCatalogs(config: Config, env: GateEnvironment, github: ActionsGitHub): Readonly<Record<Ecosystem, VersionCatalog>> {
+  const dates = new MavenDates(env.fetch, config.maven.repositories);
+  return {
+    npm: new NpmCatalog(new NpmRegistry(env.fetch)),
+    Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates),
+    "GitHub Actions": new ActionsCatalog(github),
+  };
+}
+
+export function snapshotOptions(config: Config, env: GateEnvironment, actions: ActionsGitHub): SnapshotOptions {
   return {
     osv: { binary: env.osvScanner, run: env.run },
     sourceRepos: { fetch: env.fetch, overrides: config.repositories, mavenRepositories: config.maven.repositories },
@@ -139,11 +152,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   // What head adds or changes, with publish times, before the snapshot: young versions' candidates join it.
   const registry = new NpmRegistry(env.fetch);
   const dates = new MavenDates(env.fetch, config.maven.repositories);
-  const catalogs = {
-    npm: new NpmCatalog(registry),
-    Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates),
-    "GitHub Actions": new ActionsCatalog(github),
-  };
+  const catalogs = versionCatalogs(config, env, github);
   const problems: string[] = [
     ...bundleFailures(headInventory),
     ...resolutionFailures(baseInventory, config, "base"),
@@ -192,16 +201,33 @@ function mergeChanges(changes: ReadonlyArray<ChangedVersion>): ChangedVersion[] 
   return [...merged.values()];
 }
 
-export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
+/** What a scan reads before judging: one tree's settings and inventory, every located version, one snapshot over them. */
+export interface ScanState {
+  readonly settings: Settings;
+  readonly inventory: Inventory;
+  readonly resolutions: ReadonlyMap<string, Resolution>;
+  readonly packages: ReadonlyArray<Located>;
+  readonly github: ActionsGitHub;
+  readonly snapshot: Snapshot;
+  readonly osvScannerVersion: string;
+}
+
+export async function readScanState(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<ScanState> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
-  const { config, configText, exceptions, floors } = await readSettings(head);
-  const sources = await sourcesOf(head, config);
+  const settings = await readSettings(head);
+  const sources = await sourcesOf(head, settings.config);
   const inventory = await readInventory(head, sources, { gradle: gradle.head });
   if (isEmpty(inventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
   const github = new ActionsGitHub(env.fetch, env.githubToken);
   const resolutions = await resolveUses([inventory.actions], github);
   const packages = [...located(inventory), ...actionsLocated(inventory.actions, resolutions)];
-  const snapshot = await takeSnapshot(packages, snapshotOptions(config, env, github));
+  const snapshot = await takeSnapshot(packages, snapshotOptions(settings.config, env, github));
+  return { settings, inventory, resolutions, packages, github, snapshot, osvScannerVersion: version };
+}
+
+export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
+  const { settings, inventory, resolutions, packages, snapshot, osvScannerVersion: version } = await readScanState(head, env, gradle);
+  const { config, configText, exceptions, floors } = settings;
   const verdict = scanVerdict(findingsOf(packages, snapshot), exceptions, snapshot, env.now().toISOString().slice(0, 10));
   const npmSources = inventory.npm.flatMap((lockfile) =>
     sourceProblems(lockfile.packages, config.npm.registries).map((problem) => prefixed(inventory, lockfile.path, problem)),

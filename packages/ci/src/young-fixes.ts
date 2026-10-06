@@ -55,8 +55,13 @@ function lineOverride(config: Config, pkg: PackageName): number | undefined {
   return undefined;
 }
 
-/** The versions the proof weighs for replacing `from` with `to`, in ascending order. */
-export function candidateVersions(config: Config, pkg: PackageName, from: string, to: string, all: ReadonlyArray<string>): string[] {
+/**
+ * The versions a move from `from` may land on, in ascending order: every
+ * listed version that parses, other than `from`, with no prerelease unless
+ * `from` is one, and `from`'s flavor (Maven's `-jre`). `above` keeps only the
+ * newer ones; the older ones are for leaving a malicious version.
+ */
+export function movesFrom(pkg: PackageName, from: string, all: ReadonlyArray<string>, direction: "above" | "any" = "above"): string[] {
   const scheme = versionScheme(pkg.ecosystem);
   const parses = (version: string) => {
     try {
@@ -66,14 +71,67 @@ export function candidateVersions(config: Config, pkg: PackageName, from: string
       return false;
     }
   };
-  const line = (version: string) => compatibleLine(config, pkg, version);
   return [...new Set(all)]
     .filter(parses)
-    .filter((version) => scheme.compare(version, from) > 0)
+    .filter((version) => (direction === "above" ? scheme.compare(version, from) > 0 : scheme.compare(version, from) !== 0))
     .filter((version) => scheme.isPrerelease(from) || !scheme.isPrerelease(version))
     .filter((version) => scheme.flavor(version) === scheme.flavor(from))
-    .filter((version) => scheme.compare(version, to) <= 0 || line(version) === line(to) || line(version) === line(from))
     .sort(scheme.compare);
+}
+
+/** The versions the proof weighs for replacing `from` with `to`, in ascending order. */
+export function candidateVersions(config: Config, pkg: PackageName, from: string, to: string, all: ReadonlyArray<string>): string[] {
+  const scheme = versionScheme(pkg.ecosystem);
+  const line = (version: string) => compatibleLine(config, pkg, version);
+  return movesFrom(pkg, from, all).filter((version) => scheme.compare(version, to) <= 0 || line(version) === line(to) || line(version) === line(from));
+}
+
+/** The advisory groups affecting a version, from the snapshot. */
+export function groupsOf(snapshot: Snapshot, pkg: PackageVersion): Set<string> {
+  return new Set(snapshot.advisories(pkg).map((advisory) => snapshot.group(advisory.id)));
+}
+
+/** The groups a move from `from` has to fix: the ones affecting it, malware aside, and among `only` when given. */
+export function targetsOf(snapshot: Snapshot, pkg: PackageVersion, only?: ReadonlySet<string>): string[] {
+  const malicious = new Set(snapshot.advisories(pkg).filter((advisory) => advisory.malicious).map((advisory) => snapshot.group(advisory.id)));
+  return [...groupsOf(snapshot, pkg)].filter((group) => !malicious.has(group) && (only === undefined || only.has(group)));
+}
+
+/** Whether `version` fixes `targets` of `from`: none of them affects it, it adds no group `from` doesn't have, no malware. */
+export function fixes(snapshot: Snapshot, pkg: PackageName, from: string, targets: ReadonlyArray<string>, version: string): boolean {
+  const before = groupsOf(snapshot, { ...pkg, version: from });
+  const advisories = snapshot.advisories({ ...pkg, version });
+  const found = new Set(advisories.map((advisory) => snapshot.group(advisory.id)));
+  return !advisories.some((advisory) => advisory.malicious) && targets.every((group) => !found.has(group)) && [...found].every((group) => before.has(group));
+}
+
+export type RuleChoice =
+  | { readonly kind: "chosen"; readonly version: string; readonly line: string; readonly aged: boolean }
+  /** Fixing versions in the line whose publish time is unknown: an older aged fix can't be ruled out. */
+  | { readonly kind: "undated"; readonly line: string; readonly versions: ReadonlyArray<string> };
+
+/**
+ * What the rule picks among `fixing` (ascending, non-empty): the first
+ * compatible line with a fix, the lowest version in it at least
+ * `releaseAgeDays` old, else the lowest. `young`, the version under proof, is
+ * young by definition, so its own publish time needn't be known.
+ */
+export async function ruleChoice(
+  pkg: PackageName,
+  fixing: ReadonlyArray<string>,
+  catalog: VersionCatalog,
+  config: Config,
+  now: Date,
+  young?: string,
+): Promise<RuleChoice> {
+  if (fixing.length === 0) throw new Error(`ruleChoice needs at least one fixing version of ${pkg.name}`);
+  const line = compatibleLine(config, pkg, fixing[0]!);
+  const inLine = fixing.filter((version) => compatibleLine(config, pkg, version) === line);
+  const ages = await agesOf(inLine, pkg, catalog, now);
+  const undated = inLine.filter((version, i) => ages[i] === undefined && version !== young);
+  if (undated.length > 0) return { kind: "undated", line, versions: undated };
+  const aged = inLine.find((_, i) => ages[i] !== undefined && ages[i]! >= config.releaseAgeDays);
+  return aged === undefined ? { kind: "chosen", version: inLine[0]!, line, aged: false } : { kind: "chosen", version: aged, line, aged: true };
 }
 
 export interface Candidates {
@@ -123,47 +181,31 @@ export async function youngFixProblem(
   now: Date,
 ): Promise<string | undefined> {
   const { pkg } = young;
-  const groups = (version: string) =>
-    new Set(snapshot.advisories({ ecosystem: pkg.ecosystem, name: pkg.name, version }).map((advisory) => snapshot.group(advisory.id)));
-  const malicious = (version: string) => snapshot.advisories({ ecosystem: pkg.ecosystem, name: pkg.name, version }).some((advisory) => advisory.malicious);
   if (young.replaced.length === 0) return "it's new here, not a fix of an earlier version";
   if (candidates.size === 0) return `the registry doesn't list ${pkg.name}'s versions, so the rule can't be checked`;
   const reasons: string[] = [];
   for (const from of young.replaced) {
-    const before = groups(from);
-    const after = groups(pkg.version);
-    const maliciousGroups = new Set(
-      snapshot.advisories({ ecosystem: pkg.ecosystem, name: pkg.name, version: from }).filter((a) => a.malicious).map((a) => snapshot.group(a.id)),
-    );
-    const targets = [...before].filter((group) => !after.has(group) && !maliciousGroups.has(group));
+    const after = groupsOf(snapshot, pkg);
+    const targets = targetsOf(snapshot, { ...pkg, version: from }).filter((group) => !after.has(group));
     if (targets.length === 0) {
       reasons.push(`it fixes no advisory affecting ${from}`);
       continue;
     }
-    const fixes = (version: string) => {
-      const found = groups(version);
-      return !malicious(version) && targets.every((group) => !found.has(group)) && [...found].every((group) => before.has(group));
-    };
-    const fixing = (candidates.get(from) ?? []).filter(fixes);
+    const fixing = (candidates.get(from) ?? []).filter((version) => fixes(snapshot, pkg, from, targets, version));
     if (fixing.length === 0) {
       reasons.push(`no candidate above ${from} fixes ${targets.join(", ")}`);
       continue;
     }
-    const firstLine = compatibleLine(config, pkg, fixing[0]!);
-    const inLine = fixing.filter((version) => compatibleLine(config, pkg, version) === firstLine);
-    const ages = await agesOf(inLine, pkg, catalog, now);
-    const undated = inLine.filter((version, i) => ages[i] === undefined && version !== pkg.version);
-    if (undated.length > 0) {
-      reasons.push(`the publish time of ${undated.join(", ")} (fixing too, line ${firstLine}) is unknown, so an older fix can't be ruled out`);
+    const choice = await ruleChoice(pkg, fixing, catalog, config, now, pkg.version);
+    if (choice.kind === "undated") {
+      reasons.push(`the publish time of ${choice.versions.join(", ")} (fixing too, line ${choice.line}) is unknown, so an older fix can't be ruled out`);
       continue;
     }
-    const chosen = inLine.find((_, i) => ages[i]! >= config.releaseAgeDays);
-    const expected = chosen ?? inLine[0]!;
-    if (expected === pkg.version) return undefined;
+    if (choice.version === pkg.version) return undefined;
     reasons.push(
-      chosen === undefined
-        ? `the lowest version fixing ${targets.join(", ")} above ${from} is ${expected} (line ${firstLine})`
-        : `${expected} fixes ${targets.join(", ")} too and is at least ${config.releaseAgeDays} days old (line ${firstLine})`,
+      choice.aged
+        ? `${choice.version} fixes ${targets.join(", ")} too and is at least ${config.releaseAgeDays} days old (line ${choice.line})`
+        : `the lowest version fixing ${targets.join(", ")} above ${from} is ${choice.version} (line ${choice.line})`,
     );
   }
   return reasons.join("; ");

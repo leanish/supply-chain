@@ -5,6 +5,7 @@
  *   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain gradle-inventory --out <file> [--repo <dir>]
+ *   supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
  *
  * `compare` (pull requests) fails on findings head adds, on malware anywhere
  * in head, and on added or changed versions that fail the release-age,
@@ -12,7 +13,9 @@
  * finding without an exception. Both read files from git objects (or the
  * working tree), never running anything from them; a Gradle build's
  * inventory comes from `gradle-inventory`, which does run the build (in CI, in
- * a job of its own), or inline for `--head worktree`.
+ * a job of its own), or inline for `--head worktree`. `candidates` prints, for
+ * every version a scan fails on, the version the rule picks to fix it (JSON,
+ * for secure-it).
  *
  * Exit codes: 0 pass, 1 fail, 2 the gate couldn't complete (also a failure).
  * Environment: OSV_SCANNER (default `osv-scanner` on PATH), GITHUB_TOKEN or
@@ -24,6 +27,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { securityCandidates } from "./candidates.ts";
 import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess, withoutCredentials } from "./process.ts";
@@ -35,6 +39,7 @@ import { gitTree, type Tree, workingTree } from "./tree.ts";
 const PREPARE_PR = fileURLToPath(new URL("../scripts/prepare-pr.sh", import.meta.url));
 
 const USAGE = `usage:
+  supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain gradle-inventory --out <file> [--repo <dir>]
@@ -92,6 +97,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   const repo = values.repo ?? process.cwd();
   if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
+  if (command === "candidates") return candidatesCommand(values, env, repo);
   if (command === "rescan-plan" || command === "rescan") return rescanCommand(command, values, env, repo);
   if ((command !== "compare" && command !== "scan") || (command === "compare" && values.base === undefined)) {
     console.error(USAGE);
@@ -148,6 +154,32 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   });
   if (!completed) return 2;
   return report.verdict === "pass" ? 0 : 1;
+}
+
+/**
+ * The fix the version rule picks for every version a full scan fails on, as JSON (for secure-it): written to
+ * `--out`, or printed. Exits 0 when it could tell, whatever it found.
+ */
+async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: string): Promise<number> {
+  try {
+    const gate: GateEnvironment = {
+      run: runProcess,
+      fetch: namingFailures((url, init) => fetch(url, init)),
+      now: () => new Date(),
+      osvScanner: env["OSV_SCANNER"] ?? "osv-scanner",
+      githubToken: env["GITHUB_TOKEN"] ?? env["GH_TOKEN"],
+    };
+    const head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
+    const headGradle = await gradleInput(values["head-gradle"], head, (await treeSources(head)).gradleBuilds, "head", repo);
+    const found = await securityCandidates(head, gate, { head: headGradle });
+    const json = `${JSON.stringify({ tree: head.id, ...found }, null, 2)}\n`;
+    if (values.out === undefined) process.stdout.write(json);
+    else await writeFile(values.out, json);
+    return 0;
+  } catch (err) {
+    console.error(`✗ ${(err as Error).message}`);
+    return 2;
+  }
 }
 
 /** `compare` on two trees, each side's Gradle inventory read from its file (or made inline for the working tree). */
