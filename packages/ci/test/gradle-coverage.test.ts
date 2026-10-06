@@ -6,7 +6,7 @@
  */
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -185,7 +185,8 @@ dependencies { implementation "fixture:included-dep:1.0" }
   });
 
   it("inventories included builds Gradle configures from the root build without listing them, in a form compare accepts", async () => {
-    const rootOnly = await runGradleInventory(join(root, "build"), ["."], "worktree", runProcess);
+    // A relative path, as the workflow passes it (`--repo repo`).
+    const rootOnly = await runGradleInventory(relative(process.cwd(), join(root, "build")), ["."], "worktree", runProcess);
     expect(rootOnly.builds.map((build) => build.build).sort()).toEqual([".", "build-logic", "buildSrc", "included"]);
     // What `gradle-inventory` writes, read back as `compare` reads it, against the default sources.
     const reread = parseGradleInventory(JSON.parse(JSON.stringify(rootOnly)), "worktree", ["."]);

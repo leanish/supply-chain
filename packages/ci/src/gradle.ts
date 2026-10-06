@@ -12,7 +12,7 @@
  */
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Located } from "./findings.ts";
@@ -68,11 +68,13 @@ export interface GradleInventory {
  * (one the run didn't configure has to be listed in `gradle.builds` itself).
  */
 export async function runGradleInventory(
-  repoRoot: string,
+  repoDir: string,
   builds: ReadonlyArray<string>,
   tree: string,
   run: RunProcess,
 ): Promise<GradleInventory> {
+  // Absolute: the wrapper runs with the repository as its working directory, so a relative path would resolve twice.
+  const repoRoot = resolve(repoDir);
   if (!(await exists(join(repoRoot, "gradlew")))) throw new Error("supply-chain.json lists Gradle builds, but the repository has no ./gradlew");
   const collected = new Map<string, GradleConfiguration[]>();
   const nested = new Set<string>();

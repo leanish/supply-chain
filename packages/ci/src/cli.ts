@@ -23,7 +23,7 @@
  * SUPPLY_CHAIN_COMMIT to record the tool's own commit.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -94,7 +94,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     console.error(`${(err as Error).message}\n${USAGE}`);
     return 2;
   }
-  const repo = values.repo ?? process.cwd();
+  const repo = resolve(values.repo ?? process.cwd());
   if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
   if (command === "candidates") return candidatesCommand(values, env, repo);
