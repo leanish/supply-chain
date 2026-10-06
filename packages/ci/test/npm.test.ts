@@ -264,6 +264,12 @@ describe("release age", () => {
     expect(await changes([], head, fetch, { config })).toEqual([]);
   });
 
+  it("doesn't need an own package's publish time", async () => {
+    const odd = registry({ time: { "1.0.0": "not a date" }, versions: { "1.0.0": { _npmUser: { name: "m" }, dist: {} } } });
+    const config = parseConfig({ ownPackages: { npm: { scopes: ["@acme"] } } });
+    expect(await changes([], pkgs({ "@acme/own": "1.0.0" }), odd, { config })).toEqual([]);
+  });
+
   it("ignores packages the change doesn't touch", async () => {
     const same = pkgs({ untouched: "1.0.0" });
     expect(await changes(same, same, fake({}))).toEqual([]);

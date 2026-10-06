@@ -167,6 +167,11 @@ describe("Maven release age", () => {
     return `https://repo1.maven.org/maven2/${group!.replaceAll(".", "/")}/${artifact}/${version}/${artifact}-${version}.pom`;
   };
   const portal = (name: string, version: string) => central(name, version).replace("https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2");
+  const snappyMetadata = (versions: string[]) => ({
+    "https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/maven-metadata.xml": {
+      text: `<metadata><versioning><versions>${versions.map((version) => `<version>${version}</version>`).join("")}</versions></versioning></metadata>`,
+    },
+  });
 
   /** The Maven half of `compare`: changes, then the release-age rule over one snapshot that includes candidates. */
   async function age(
@@ -200,6 +205,7 @@ describe("Maven release age", () => {
       [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } },
       [portal("com.diffplug.spotless:spotless-plugin-gradle", "8.10.3")]: { headers: { "last-modified": "Fri, 25 Sep 2026 20:13:27 GMT" } },
       [central("com.acme:old", "1.0")]: { headers: { "last-modified": "Mon, 01 Jan 2024 00:00:00 GMT" } },
+      ...snappyMetadata(["1.1.10.8", "1.1.10.10"]),
     });
     expect(await age(base, head, fetch)).toEqual([
       "org.xerial.snappy:snappy-java@1.1.10.10 was published 2026-10-03T16:51:02.000Z (2.8 days ago, under 7), and it isn't the security fix the version rule would take: it fixes no advisory affecting 1.1.10.8",
@@ -253,9 +259,24 @@ describe("Maven release age", () => {
       maven("org.xerial.snappy:snappy-java", "1.1.10.10", [":runtimeClasspath"]),
       maven("org.xerial.snappy:snappy-java", "1.1.10.8", [":testRuntimeClasspath"]),
     ];
-    const fetch = fakeFetch({ [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } } });
+    const fetch = fakeFetch({
+      [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } },
+      ...snappyMetadata(["1.1.10.8", "1.1.10.10"]),
+    });
     const advisory: Advisory = { id: "GHSA-wmgv-28fv-894x", ids: ["GHSA-wmgv-28fv-894x"], source: "repository", malicious: false, summary: undefined, severity: "HIGH" };
     expect(await age(base, head, fetch, { affecting: { "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory] } })).toEqual([]);
+  });
+
+  it("lists Maven versions from every configured repository, and none when no repository has the package", async () => {
+    const metadata = (versions: string[]) => ({ text: `<metadata><versioning><versions>${versions.map((v) => `<version>${v}</version>`).join("")}</versions></versioning></metadata>` });
+    const config = parseConfig({ maven: { repositories: ["https://repo1.maven.org/maven2", "https://repo.acme.dev/maven"] } });
+    const fetch = fakeFetch({
+      "https://repo1.maven.org/maven2/com/acme/lib/maven-metadata.xml": metadata(["1.0.0", "1.0.1"]),
+      "https://repo.acme.dev/maven/com/acme/lib/maven-metadata.xml": metadata(["1.0.1", "1.0.2-backport"]),
+    });
+    const catalog = new MavenCatalog(fetch, config.maven.repositories, new MavenDates(fetch, config.maven.repositories));
+    expect([...(await catalog.versions({ ecosystem: "Maven", name: "com.acme:lib" }))!].sort()).toEqual(["1.0.0", "1.0.1", "1.0.2-backport"]);
+    expect(await catalog.versions({ ecosystem: "Maven", name: "com.acme:gone" })).toBeUndefined();
   });
 
   it("fails a version no configured repository has, skips own packages, and fails closed on a missing header", async () => {
