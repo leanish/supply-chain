@@ -15,6 +15,8 @@ permissions:
 
 jobs:
   # The gate on this repository's own lockfile, run from the code under review. Required by the `main` ruleset.
+  # It needs its one runtime dependency (yaml) installed first, without lifecycle scripts; repositories that adopt
+  # the gate run it from a pinned commit of this repository instead, with this repository's lockfile.
   supply-chain:
     runs-on: ubuntu-latest
     steps:
@@ -26,6 +28,8 @@ jobs:
           node-version: 24
       - name: Install the pinned OSV-Scanner
         run: echo "OSV_SCANNER=$(packages/ci/scripts/install-osv-scanner.sh "$RUNNER_TEMP/tools")" >> "$GITHUB_ENV"
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Gate dependency changes and findings
         env:
           EVENT: ${{ github.event_name }}
@@ -38,8 +42,6 @@ jobs:
           else
             node packages/ci/src/cli.ts scan --head HEAD --report "$RUNNER_TEMP/supply-chain.json"
           fi
-      - name: Install dependencies without lifecycle scripts
-        run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify registry signatures and provenance attestations
         run: npm audit signatures
       - name: Keep the report

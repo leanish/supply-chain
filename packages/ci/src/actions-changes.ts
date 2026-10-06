@@ -108,6 +108,22 @@ export async function actionChanges(
   return { problems, gaps, changes };
 }
 
+/** What a full scan can't tell about a tree's actions: uses not pinned or not verified, and container images. */
+export function actionGaps(inventory: ActionsInventory, resolutions: ReadonlyMap<string, Resolution>): string[] {
+  const gaps = inventory.docker.map((use) => `GitHub Actions ${use}: no advisory source covers container images`);
+  const seen = new Set<string>();
+  for (const use of inventory.uses) {
+    const key = useKey(use);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const resolution = resolutions.get(key)!;
+    const label = `${use.name}@${use.ref} (${use.file})`;
+    if (resolution.kind === "unpinned") gaps.push(`GitHub Actions ${label}: not pinned to a commit, so its version (and advisories) can't be told`);
+    else if (resolution.kind === "unverified") gaps.push(`GitHub Actions ${label}: ${resolution.reason}`);
+  }
+  return gaps;
+}
+
 /** An action's versions are its releases' tags; their dates, the releases' publish times. */
 export class ActionsCatalog implements VersionCatalog {
   private readonly github: ActionsGitHub;

@@ -27,7 +27,7 @@ function catalog(registry: Registry, listed = true): VersionCatalog {
 async function verdict(registry: Registry, from: string, to: string, config: Config = parseConfig({}), pkg: PackageName = LIB, listed = true) {
   const cat = catalog(registry, listed);
   const young = { pkg: { ...pkg, version: to } as PackageVersion, replaced: [from] };
-  const candidates = await gatherCandidates([young], { npm: cat, Maven: cat }, config);
+  const candidates = await gatherCandidates([young], { npm: cat, Maven: cat, "GitHub Actions": cat }, config);
   const map = new Map<string, Advisory[]>();
   for (const version of new Set([from, to, ...Object.keys(registry)])) {
     const ids = registry[version]?.advisories ?? [];

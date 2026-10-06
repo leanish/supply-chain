@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ActionsGitHub } from "../src/actions-github.ts";
 import type { PackageVersion } from "../src/package-version.ts";
 import type { RunProcess } from "../src/process.ts";
 import { MAVEN_CENTRAL } from "../src/source-repos.ts";
@@ -52,6 +53,7 @@ describe("advisory snapshot", () => {
       sourceRepos: { fetch, overrides: new Map(), mavenRepositories: [MAVEN_CENTRAL] },
       repositoryAdvisories: { fetch, token: undefined },
       fetch,
+      actions: new ActionsGitHub(fetch, undefined),
       now: () => TAKEN,
     });
     expect(snapshot.advisories(VITE).map((advisory) => [advisory.id, advisory.source])).toEqual([["GHSA-new-only-repo", "repository"]]);
@@ -73,6 +75,7 @@ describe("advisory snapshot", () => {
       sourceRepos: { fetch, overrides: new Map(), mavenRepositories: [MAVEN_CENTRAL] },
       repositoryAdvisories: { fetch, token: undefined },
       fetch,
+      actions: new ActionsGitHub(fetch, undefined),
       now: () => TAKEN,
     });
     expect(snapshot.advisories(VITE).map((advisory) => advisory.id)).toEqual(["GHSA-from-osv", "GHSA-partly-known"]);
@@ -111,6 +114,7 @@ describe("advisory snapshot", () => {
       sourceRepos: { fetch, overrides: new Map(), mavenRepositories: [MAVEN_CENTRAL] },
       repositoryAdvisories: { fetch, token: undefined },
       fetch,
+      actions: new ActionsGitHub(fetch, undefined),
       now: () => TAKEN,
     });
     expect(events).toEqual(["lookup GHSA-imported-meanwhile", "scan"]);
