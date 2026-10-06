@@ -116,6 +116,8 @@ export interface RescanSteps {
   signatures(): Promise<string[]>;
   /** Back to a clean checkout before the next PR. */
   reset(): Promise<void>;
+  /** Keeps what the rescan found on one PR (a report file, the step summary); called whether or not it's posted. */
+  record(pr: PlannedPr, result: { state: "success" | "failure"; description: string; outcome: RescanOutcome | undefined; error: string | undefined }): Promise<void>;
 }
 
 export interface RescanOutcome {
@@ -123,6 +125,8 @@ export interface RescanOutcome {
   readonly verdict: "pass" | "fail";
   readonly failures: ReadonlyArray<string>;
   readonly warnings: ReadonlyArray<string>;
+  readonly gaps: ReadonlyArray<string>;
+  readonly notes: ReadonlyArray<string>;
 }
 
 /**
@@ -154,21 +158,27 @@ export async function runRescan(
     if (!(await stillAsPlanned(pr, api, options))) continue;
     let state: "success" | "failure";
     let description: string;
+    let outcome: RescanOutcome | undefined;
+    let error: string | undefined;
     try {
       const inventories = await inventoriesOf(inventoriesDir, pr);
       if (typeof inventories === "string") throw new Error(inventories);
       const { base, head } = await steps.prepare(pr);
-      const outcome = await steps.compare(base, head, inventories);
-      const signatureProblems = outcome.completed ? await steps.signatures() : [];
-      const failures = [...outcome.failures, ...signatureProblems];
+      const compared = await steps.compare(base, head, inventories);
+      const signatureProblems = compared.completed ? await steps.signatures() : [];
+      outcome = { ...compared, failures: [...compared.failures, ...signatureProblems] };
       state = outcome.completed && outcome.verdict === "pass" && signatureProblems.length === 0 ? "success" : "failure";
-      description = `Daily rescan: ${verdictSummary({ ...outcome, verdict: state === "success" ? "pass" : "fail", failures })}`;
+      description = `Daily rescan: ${verdictSummary({ ...outcome, verdict: state === "success" ? "pass" : "fail" })}`;
     } catch (err) {
+      error = (err as Error).message;
       state = "failure";
-      description = `Daily rescan didn't complete: ${(err as Error).message}`;
+      description = `Daily rescan didn't complete: ${error}`;
     } finally {
       await steps.reset();
     }
+    await steps.record(pr, { state, description, outcome, error });
+    // Again right before posting: the PR or its base may have moved while it was being scanned.
+    if (!(await stillAsPlanned(pr, api, options))) continue;
     if (await newerStatusExists(pr, api, options)) {
       options.log(`#${pr.number}: a newer ${options.context} status exists; skipped`);
       continue;
@@ -241,9 +251,19 @@ function github(options: PublishOptions) {
   };
 }
 
-/** The status description's one line: what failed first, or how many warnings. */
-export function verdictSummary(report: { completed: boolean; verdict: string; failures: ReadonlyArray<string>; warnings: ReadonlyArray<string> }): string {
+/** The status description's one line: what failed first, or what passed with: inherited findings, coverage gaps. */
+export function verdictSummary(report: {
+  completed: boolean;
+  verdict: string;
+  failures: ReadonlyArray<string>;
+  warnings: ReadonlyArray<string>;
+  gaps?: ReadonlyArray<string>;
+}): string {
   if (!report.completed) return "didn't complete";
   if (report.verdict === "fail") return `${report.failures.length} failure(s): ${report.failures[0] ?? ""}`;
-  return report.warnings.length === 0 ? "clean" : `pass, ${report.warnings.length} inherited warning(s)`;
+  const parts = [
+    ...(report.warnings.length === 0 ? [] : [`${report.warnings.length} inherited finding(s)`]),
+    ...((report.gaps ?? []).length === 0 ? [] : [`${report.gaps!.length} coverage gap(s)`]),
+  ];
+  return parts.length === 0 ? "clean" : `pass, ${parts.join(", ")}`;
 }
