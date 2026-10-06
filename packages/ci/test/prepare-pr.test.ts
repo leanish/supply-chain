@@ -17,10 +17,10 @@ const git = async (cwd: string, ...args: string[]) => {
 };
 
 /** A clone of `origin` (which has refs/pull/<n>/head) in a fresh directory, then the script's `key=value` output. */
-async function prepare(name: string, number: number, head: string, base: string): Promise<Record<string, string>> {
+async function prepare(name: string, number: number, head: string, base: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
   const clone = join(root, name);
   await git(root, "clone", "--quiet", join(root, "origin.git"), clone);
-  const result = await runProcess(SCRIPT, [String(number), head, base], { cwd: clone });
+  const result = await runProcess(SCRIPT, [String(number), head, base], { cwd: clone, env });
   if (result.code !== 0) throw new Error(`prepare-pr.sh exited ${result.code}: ${result.stderr}`);
   return Object.fromEntries(result.stdout.trim().split("\n").map((line) => line.split("=") as [string, string]));
 }
@@ -67,6 +67,14 @@ describe("prepare-pr.sh", () => {
     expect(first["base"]).toBe(base);
     expect(first["head"]).not.toBe(mergeable);
     expect(second).toEqual(first);
+  });
+
+  it("passes a fetch token for that one fetch, leaving no credentials in the clone", async () => {
+    const result = await prepare("job-token", 1, mergeable, base, { ...process.env, GIT_FETCH_TOKEN: "s3cret" });
+    expect(result["base"]).toBe(base);
+    const config = await runProcess("git", ["config", "--list", "--local"], { cwd: join(root, "job-token") });
+    expect(config.stdout).not.toContain("extraheader");
+    expect(config.stdout).not.toContain("s3cret");
   });
 
   it("falls back to the PR head against its merge base when the merge conflicts", async () => {

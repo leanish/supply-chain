@@ -1,22 +1,24 @@
 /**
- * The daily rescan of open PRs, and its publisher.
+ * The daily rescan of open PRs.
  *
- * The rescan compares each open PR's head, merged onto its base's current
- * tip, against that tip, with today's advisories; it runs in jobs that can't
- * write anything. The publisher, which runs no PR code, then posts each
- * verdict as a commit status on the PR's head, under the same name as the
- * required `supply-chain` check: GitHub requires both to pass, so a red
- * status blocks the merge although the PR's own check was green. The latest
- * status of a context wins, and nothing is posted on the test merge commit
- * (GitHub would evaluate that one instead).
+ * Each open PR's head, merged onto its base's current tip, is compared
+ * against that tip with today's advisories. The Gradle inventories come from
+ * one job per PR that runs the build (base first, uploaded before any PR code
+ * runs); everything else happens in a single job that runs no code from the
+ * repository: it re-reads each PR, merges it, compares, checks npm registry
+ * signatures, and posts the verdict as a commit status on the PR's head,
+ * under the same name as the required `supply-chain` check. GitHub requires
+ * both to pass, so a red status blocks the merge although the PR's own check
+ * was green; the latest status of a context wins, and nothing is posted on the
+ * test merge commit (GitHub would evaluate that one instead). The verdict
+ * never leaves that job, so nothing another job uploads can stand in for it.
  *
- * Before posting, the publisher re-reads the PR and its base: closed, a new
- * head, or a moved base means the verdict is stale and is skipped; a newer
- * status from another run is never overwritten. A PR the rescan planned but
- * left no verdict for gets a failure: a scan that didn't complete is never
- * read as clean.
+ * A PR that closed, got a new head, or whose base moved is skipped (its
+ * verdict would be stale); a newer status from another run is never
+ * overwritten; a PR whose inventories or comparison didn't complete gets a
+ * failure: a scan that didn't complete is never read as clean.
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { Fetch } from "./http.ts";
@@ -30,16 +32,6 @@ export interface PlannedPr {
   readonly head: string;
   readonly base: string;
   readonly baseRef: string;
-}
-
-export interface RescanVerdict {
-  readonly number: number;
-  readonly head: string;
-  readonly base: string;
-  readonly completed: boolean;
-  readonly verdict: "pass" | "fail";
-  /** One line for the status description. */
-  readonly summary: string;
 }
 
 /** Parses the plan's PR list (`gh pr list` JSON plus base tips), checking its shape and size. */
@@ -63,36 +55,6 @@ export function parsePlan(raw: unknown): PlannedPr[] {
 
 function isSha(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
-}
-
-/** Every `verdict-<number>.json` in `dir`, by PR number; malformed files are ignored (that PR gets "didn't complete"). */
-export async function readVerdicts(dir: string): Promise<Map<number, RescanVerdict>> {
-  const verdicts = new Map<number, RescanVerdict>();
-  let files: string[];
-  try {
-    files = await readdir(dir, { recursive: true });
-  } catch {
-    return verdicts;
-  }
-  for (const file of files.filter((name) => /(^|\/)verdict-\d+\.json$/.test(name))) {
-    try {
-      const raw: unknown = JSON.parse(await readFile(join(dir, file), "utf8"));
-      if (
-        isObject(raw) &&
-        Number.isInteger(raw["number"]) &&
-        isSha(raw["head"]) &&
-        isSha(raw["base"]) &&
-        typeof raw["completed"] === "boolean" &&
-        (raw["verdict"] === "pass" || raw["verdict"] === "fail") &&
-        typeof raw["summary"] === "string"
-      ) {
-        verdicts.set(raw["number"] as number, raw as unknown as RescanVerdict);
-      }
-    } catch {
-      // A verdict that doesn't parse is a missing verdict.
-    }
-  }
-  return verdicts;
 }
 
 export interface PublishOptions {
@@ -144,45 +106,73 @@ export async function planRescan(
   return parsePlan(plan);
 }
 
-/** Posts one status per planned PR that's still as planned; returns how many were posted. */
-export async function publishRescan(
+/** What the rescan does to one PR, given as steps so it can be exercised without git, npm or a network. */
+export interface RescanSteps {
+  /** Merges the PR onto its base in the checkout (prepare-pr.sh); the commits to compare. */
+  prepare(pr: PlannedPr): Promise<{ base: string; head: string }>;
+  /** The gate on the pair, with the PR's Gradle inventory files when there are any. */
+  compare(base: string, head: string, gradle: { base: string | undefined; head: string | undefined }): Promise<RescanOutcome>;
+  /** `npm ci --ignore-scripts` and `npm audit signatures` on the merged checkout; the problems, if any. */
+  signatures(): Promise<string[]>;
+  /** Back to a clean checkout before the next PR. */
+  reset(): Promise<void>;
+}
+
+export interface RescanOutcome {
+  readonly completed: boolean;
+  readonly verdict: "pass" | "fail";
+  readonly failures: ReadonlyArray<string>;
+  readonly warnings: ReadonlyArray<string>;
+}
+
+/**
+ * The inventory job writes `done` in each side's artifact once that side's
+ * inventory succeeded (and `gradle.json` when the side has Gradle builds);
+ * without both markers the PR's rescan didn't complete.
+ */
+async function inventoriesOf(dir: string, pr: PlannedPr): Promise<{ base: string | undefined; head: string | undefined } | string> {
+  const found: Record<string, string | undefined> = {};
+  for (const side of ["base", "head"] as const) {
+    const sideDir = join(dir, `rescan-inventory-${pr.number}-${side}`);
+    const files = await readdir(sideDir).catch(() => [] as string[]);
+    if (!files.includes("done")) return `the ${side} inventory didn't complete`;
+    found[side] = files.includes("gradle.json") ? join(sideDir, "gradle.json") : undefined;
+  }
+  return { base: found["base"], head: found["head"] };
+}
+
+/** Rescans every planned PR that's still as planned and posts its verdict; returns how many statuses were posted. */
+export async function runRescan(
   plan: ReadonlyArray<PlannedPr>,
-  verdicts: ReadonlyMap<number, RescanVerdict>,
+  inventoriesDir: string,
+  steps: RescanSteps,
   options: PublishOptions,
 ): Promise<number> {
   const api = github(options);
   let posted = 0;
   for (const pr of plan) {
-    const current = await api.get(`/repos/${options.repository}/pulls/${pr.number}`);
-    const head = dig(current, "head", "sha");
-    const baseRef = dig(current, "base", "ref");
-    if (!isObject(current) || current["state"] !== "open" || head !== pr.head || baseRef !== pr.baseRef) {
-      options.log(`#${pr.number}: closed or changed since the rescan started; skipped`);
-      continue;
+    if (!(await stillAsPlanned(pr, api, options))) continue;
+    let state: "success" | "failure";
+    let description: string;
+    try {
+      const inventories = await inventoriesOf(inventoriesDir, pr);
+      if (typeof inventories === "string") throw new Error(inventories);
+      const { base, head } = await steps.prepare(pr);
+      const outcome = await steps.compare(base, head, inventories);
+      const signatureProblems = outcome.completed ? await steps.signatures() : [];
+      const failures = [...outcome.failures, ...signatureProblems];
+      state = outcome.completed && outcome.verdict === "pass" && signatureProblems.length === 0 ? "success" : "failure";
+      description = `Daily rescan: ${verdictSummary({ ...outcome, verdict: state === "success" ? "pass" : "fail", failures })}`;
+    } catch (err) {
+      state = "failure";
+      description = `Daily rescan didn't complete: ${(err as Error).message}`;
+    } finally {
+      await steps.reset();
     }
-    const branch = await api.get(`/repos/${options.repository}/branches/${encodeURIComponent(pr.baseRef)}`);
-    if (dig(branch, "commit", "sha") !== pr.base) {
-      options.log(`#${pr.number}: ${pr.baseRef} moved since the rescan started; skipped`);
-      continue;
-    }
-    const statuses = await api.get(`/repos/${options.repository}/commits/${pr.head}/statuses?per_page=100`);
-    const newer = Array.isArray(statuses)
-      ? statuses.some(
-          (status: unknown) =>
-            isObject(status) &&
-            status["context"] === options.context &&
-            typeof status["created_at"] === "string" &&
-            new Date(status["created_at"]) > options.startedAt,
-        )
-      : false;
-    if (newer) {
+    if (await newerStatusExists(pr, api, options)) {
       options.log(`#${pr.number}: a newer ${options.context} status exists; skipped`);
       continue;
     }
-    const verdict = verdicts.get(pr.number);
-    const matches = verdict !== undefined && verdict.head === pr.head && verdict.base === pr.base;
-    const state = matches && verdict.completed && verdict.verdict === "pass" ? "success" : "failure";
-    const description = !matches || !verdict.completed ? "Daily rescan didn't complete" : `Daily rescan: ${verdict.summary}`;
     await api.post(`/repos/${options.repository}/statuses/${pr.head}`, {
       state,
       context: options.context,
@@ -193,6 +183,34 @@ export async function publishRescan(
     posted++;
   }
   return posted;
+}
+
+async function stillAsPlanned(pr: PlannedPr, api: ReturnType<typeof github>, options: PublishOptions): Promise<boolean> {
+  const current = await api.get(`/repos/${options.repository}/pulls/${pr.number}`);
+  if (!isObject(current) || current["state"] !== "open" || dig(current, "head", "sha") !== pr.head || dig(current, "base", "ref") !== pr.baseRef) {
+    options.log(`#${pr.number}: closed or changed since the rescan started; skipped`);
+    return false;
+  }
+  const branch = await api.get(`/repos/${options.repository}/branches/${encodeURIComponent(pr.baseRef)}`);
+  if (dig(branch, "commit", "sha") !== pr.base) {
+    options.log(`#${pr.number}: ${pr.baseRef} moved since the rescan started; skipped`);
+    return false;
+  }
+  return true;
+}
+
+/** Statuses come newest first: read pages until one predates the rescan, or they run out. */
+async function newerStatusExists(pr: PlannedPr, api: ReturnType<typeof github>, options: PublishOptions): Promise<boolean> {
+  for (let page = 1; ; page++) {
+    const statuses = await api.get(`/repos/${options.repository}/commits/${pr.head}/statuses?per_page=100&page=${page}`);
+    if (!Array.isArray(statuses) || statuses.length === 0) return false;
+    for (const status of statuses) {
+      if (!isObject(status) || typeof status["created_at"] !== "string") continue;
+      if (new Date(status["created_at"]) <= options.startedAt) return false;
+      if (status["context"] === options.context) return true;
+    }
+    if (statuses.length < 100) return false;
+  }
 }
 
 function dig(value: unknown, ...keys: string[]): unknown {

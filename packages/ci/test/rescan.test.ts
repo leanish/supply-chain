@@ -1,46 +1,78 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_RESCANNED_PRS, parsePlan, planRescan, publishRescan, readVerdicts, type RescanVerdict, verdictSummary } from "../src/rescan.ts";
+import { MAX_RESCANNED_PRS, parsePlan, planRescan, type RescanOutcome, type RescanSteps, runRescan, verdictSummary } from "../src/rescan.ts";
 import { fakeFetch, type FakeResponse } from "./fake-fetch.ts";
 
 const API = "https://api.github.com/repos/acme/app";
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
+const MERGE = "c".repeat(40);
 const STARTED = new Date("2026-10-07T04:23:00Z");
 const pr = { number: 7, head: HEAD, base: BASE, baseRef: "main" };
 
-/** GitHub as the publisher sees it: PR 7 open on `main`, main at BASE, `statuses` already on HEAD; records POSTs. */
+/** GitHub as the rescan sees it: PR 7 open on `main`, main at BASE, no statuses on HEAD; records POSTs. */
 function github(overrides: Record<string, FakeResponse> = {}, posts: Array<{ url: string; body: unknown }> = []) {
-  const routes: Record<string, FakeResponse | ((init?: { body?: string }) => FakeResponse)> = {
+  return fakeFetch({
     [`${API}/pulls/7`]: { body: { state: "open", head: { sha: HEAD }, base: { ref: "main" } } },
     [`${API}/branches/main`]: { body: { commit: { sha: BASE } } },
-    [`${API}/commits/${HEAD}/statuses?per_page=100`]: { body: [] },
+    [`${API}/commits/${HEAD}/statuses?per_page=100&page=1`]: { body: [] },
     [`${API}/statuses/${HEAD}`]: (init) => {
       posts.push({ url: `${API}/statuses/${HEAD}`, body: JSON.parse(init?.body ?? "{}") });
       return { status: 201, body: {} };
     },
     ...overrides,
-  };
-  return fakeFetch(routes);
+  });
 }
 
-const verdict = (overrides: Partial<RescanVerdict> = {}): RescanVerdict => ({
-  number: 7,
-  head: HEAD,
-  base: BASE,
-  completed: true,
-  verdict: "fail",
-  summary: "1 failure(s): new: lib@1.0.0: GHSA-x has no exception",
-  ...overrides,
+let inventories: string;
+beforeEach(async () => {
+  inventories = await mkdtemp(join(tmpdir(), "supply-chain-rescan-"));
+});
+afterEach(async () => {
+  await rm(inventories, { recursive: true, force: true });
 });
 
-async function publish(verdicts: Map<number, RescanVerdict>, fetch: ReturnType<typeof github>) {
+/** The inventory job's artifacts for PR 7: `done` markers, and gradle.json on the given sides. */
+async function inventory(sides: Array<"base" | "head">, gradle: Array<"base" | "head"> = []) {
+  for (const side of sides) {
+    const dir = join(inventories, `rescan-inventory-7-${side}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "done"), "");
+    if (gradle.includes(side)) await writeFile(join(dir, "gradle.json"), "{}");
+  }
+}
+
+function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls: string[] = []): RescanSteps {
+  return {
+    prepare: async () => {
+      calls.push("prepare");
+      return { base: BASE, head: MERGE };
+    },
+    compare: async (base, head, gradle) => {
+      calls.push(`compare ${base.slice(0, 1)}..${head.slice(0, 1)} ${gradle.base === undefined ? "-" : "g"}${gradle.head === undefined ? "-" : "g"}`);
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
+    signatures: async () => {
+      calls.push("signatures");
+      return signatures;
+    },
+    reset: async () => {
+      calls.push("reset");
+    },
+  };
+}
+
+const pass: RescanOutcome = { completed: true, verdict: "pass", failures: [], warnings: [] };
+const fail: RescanOutcome = { completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [] };
+
+async function rescan(rescanSteps: RescanSteps, fetch: ReturnType<typeof github>) {
   const log: string[] = [];
-  const posted = await publishRescan([pr], verdicts, {
+  const posted = await runRescan([pr], inventories, rescanSteps, {
     fetch,
     token: "t",
     repository: "acme/app",
@@ -52,10 +84,13 @@ async function publish(verdicts: Map<number, RescanVerdict>, fetch: ReturnType<t
   return { posted, log };
 }
 
-describe("rescan publisher", () => {
-  it("posts the verdict as a status on the PR head, under the required check's name", async () => {
+describe("rescan", () => {
+  it("merges, compares with the PR's inventories, checks signatures, and posts the verdict on the PR head", async () => {
+    await inventory(["base", "head"], ["head"]);
     const posts: Array<{ url: string; body: unknown }> = [];
-    expect((await publish(new Map([[7, verdict()]]), github({}, posts))).posted).toBe(1);
+    const calls: string[] = [];
+    expect((await rescan(steps(fail, [], calls), github({}, posts))).posted).toBe(1);
+    expect(calls).toEqual(["prepare", "compare b..c -g", "signatures", "reset"]);
     expect(posts).toEqual([
       {
         url: `${API}/statuses/${HEAD}`,
@@ -68,30 +103,45 @@ describe("rescan publisher", () => {
       },
     ]);
     const passed: Array<{ url: string; body: unknown }> = [];
-    await publish(new Map([[7, verdict({ verdict: "pass", summary: "clean" })]]), github({}, passed));
+    await rescan(steps(pass), github({}, passed));
     expect(passed[0]!.body).toMatchObject({ state: "success", description: "Daily rescan: clean" });
   });
 
-  it("posts a failure when the rescan left no verdict, or one for another head or base", async () => {
-    for (const verdicts of [new Map(), new Map([[7, verdict({ verdict: "pass", base: "c".repeat(40) })]])]) {
-      const posts: Array<{ url: string; body: unknown }> = [];
-      await publish(verdicts, github({}, posts));
-      expect(posts[0]!.body).toMatchObject({ state: "failure", description: "Daily rescan didn't complete" });
-    }
-    const incomplete: Array<{ url: string; body: unknown }> = [];
-    await publish(new Map([[7, verdict({ completed: false, verdict: "fail" })]]), github({}, incomplete));
-    expect(incomplete[0]!.body).toMatchObject({ state: "failure", description: "Daily rescan didn't complete" });
+  it("fails on npm signature problems even when the comparison passes", async () => {
+    await inventory(["base", "head"]);
+    const posts: Array<{ url: string; body: unknown }> = [];
+    await rescan(steps(pass, ["npm audit signatures in . failed: 1 package has an invalid signature"]), github({}, posts));
+    expect(posts[0]!.body).toMatchObject({
+      state: "failure",
+      description: "Daily rescan: 1 failure(s): npm audit signatures in . failed: 1 package has an invalid signature",
+    });
   });
 
-  it("skips a PR that closed, moved its head or base, or got a newer status", async () => {
+  it("posts a failure when an inventory side didn't complete, or the comparison throws", async () => {
+    await inventory(["base"]);
+    const missing: Array<{ url: string; body: unknown }> = [];
+    const calls: string[] = [];
+    await rescan(steps(pass, [], calls), github({}, missing));
+    expect(missing[0]!.body).toMatchObject({ state: "failure", description: "Daily rescan didn't complete: the head inventory didn't complete" });
+    expect(calls).toEqual(["reset"]);
+    await inventory(["head"]);
+    const thrown: Array<{ url: string; body: unknown }> = [];
+    await rescan(steps(new Error("OSV is down")), github({}, thrown));
+    expect(thrown[0]!.body).toMatchObject({ state: "failure", description: "Daily rescan didn't complete: OSV is down" });
+  });
+
+  it("skips a PR that closed, moved its head or base, or got a newer status, reading every page of statuses", async () => {
+    await inventory(["base", "head"]);
+    const old = Array.from({ length: 100 }, () => ({ context: "other", created_at: "2026-10-07T05:00:00Z" }));
     const cases: Array<[Record<string, FakeResponse>, string]> = [
       [{ [`${API}/pulls/7`]: { body: { state: "closed", head: { sha: HEAD }, base: { ref: "main" } } } }, "closed or changed"],
       [{ [`${API}/pulls/7`]: { body: { state: "open", head: { sha: "d".repeat(40) }, base: { ref: "main" } } } }, "closed or changed"],
       [{ [`${API}/branches/main`]: { body: { commit: { sha: "e".repeat(40) } } } }, "main moved"],
       [
         {
-          [`${API}/commits/${HEAD}/statuses?per_page=100`]: {
-            body: [{ context: "supply-chain / supply-chain", created_at: "2026-10-07T05:00:00Z", state: "success" }],
+          [`${API}/commits/${HEAD}/statuses?per_page=100&page=1`]: { body: old },
+          [`${API}/commits/${HEAD}/statuses?per_page=100&page=2`]: {
+            body: [{ context: "supply-chain / supply-chain", created_at: "2026-10-07T04:30:00Z", state: "success" }],
           },
         },
         "a newer supply-chain / supply-chain status exists",
@@ -99,15 +149,23 @@ describe("rescan publisher", () => {
     ];
     for (const [overrides, reason] of cases) {
       const posts: Array<{ url: string; body: unknown }> = [];
-      const { posted, log } = await publish(new Map([[7, verdict()]]), github(overrides, posts));
+      const { posted, log } = await rescan(steps(fail), github(overrides, posts));
       expect(posted).toBe(0);
       expect(posts).toEqual([]);
       expect(log.join("\n")).toContain(reason);
     }
   });
 
+  it("stops reading statuses at the first one older than the rescan", async () => {
+    await inventory(["base", "head"]);
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const statuses = { body: [{ context: "supply-chain / supply-chain", created_at: "2026-10-06T04:30:00Z", state: "success" }] };
+    await rescan(steps(fail), github({ [`${API}/commits/${HEAD}/statuses?per_page=100&page=1`]: statuses }, posts));
+    expect(posts).toHaveLength(1);
+  });
+
   it("fails closed when GitHub doesn't answer", async () => {
-    await expect(publish(new Map([[7, verdict()]]), github({ [`${API}/pulls/7`]: { status: 502 } }))).rejects.toThrow("HTTP 502");
+    await expect(rescan(steps(pass), github({ [`${API}/pulls/7`]: { status: 502 } }))).rejects.toThrow("HTTP 502");
   });
 });
 
@@ -134,19 +192,18 @@ describe("rescan plan and verdicts", () => {
     expect(() => parsePlan([{ ...pr, head: "short" }])).toThrow("malformed entry");
   });
 
-  it("reads verdict files, ignoring what doesn't parse, and summarizes reports", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "supply-chain-verdicts-"));
-    try {
-      await writeFile(join(dir, "verdict-7.json"), JSON.stringify(verdict()));
-      await writeFile(join(dir, "verdict-8.json"), "not json");
-      await writeFile(join(dir, "verdict-9.json"), JSON.stringify({ number: 9 }));
-      expect([...(await readVerdicts(dir)).keys()]).toEqual([7]);
-      expect((await readVerdicts(join(dir, "missing"))).size).toBe(0);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  it("summarizes outcomes for the status description", () => {
     expect(verdictSummary({ completed: true, verdict: "pass", failures: [], warnings: [] })).toBe("clean");
     expect(verdictSummary({ completed: true, verdict: "pass", failures: [], warnings: ["a", "b"] })).toBe("pass, 2 inherited warning(s)");
     expect(verdictSummary({ completed: false, verdict: "fail", failures: [], warnings: [] })).toBe("didn't complete");
+  });
+});
+
+describe("tool environments", () => {
+  it("keep no credentials", async () => {
+    const { withoutCredentials } = await import("../src/cli.ts");
+    expect(
+      withoutCredentials({ PATH: "/bin", GITHUB_TOKEN: "a", GH_TOKEN: "b", GIT_FETCH_TOKEN: "c", ACTIONS_RUNTIME_TOKEN: "d", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "e" }),
+    ).toEqual({ PATH: "/bin" });
   });
 });

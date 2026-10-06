@@ -199,7 +199,7 @@ What runs where:
 
 - **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check.
 - **On pushes to the default branch and daily:** the full `scan`.
-- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts), inventoried, and compared, with today's advisories. A publisher job that runs no code from the repository re-reads each PR (still open, same head, same base, no newer status) and posts the verdict as a commit status on the PR's head, named like the required check. A rescan that didn't complete posts a failure.
+- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures, and posts the verdict as a commit status on the PR's head, named like the required check, unless a newer status of that name exists. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
 
 **GitHub settings**
 
@@ -211,6 +211,8 @@ What runs where:
 
 - **Fork PRs:** their workflow runs from the fork's own files, with a read-only token and no secrets, so their check is only as trustworthy as the PR: review workflow and build changes, require approval for outside contributors' runs, and don't merge before the daily rescan's status lands (or trigger it with `workflow_dispatch`, `pr` input).
 - **Scheduled runs** are best effort: GitHub may delay or skip them under load, and disables them in a public repository after 60 days without activity.
+- **The rescan goes through PRs one after another** in one job (up to 256 open PRs): minutes per PR, fine for a repository's own pace of work, slow for hundreds of open PRs.
+- A PR's build runs in its inventory job, which could also upload an artifact under another PR's name; such cross-PR tampering can make that PR's inventory lie, like a build can lie about its own.
 - The Gradle inventory comes from running the build, so a malicious build script or plugin can alter its own inventory; the job split keeps it from touching the comparison and the publishing credentials, not from lying about itself.
 
 **Updating the pin:** a PR that changes the SHA (and its `# vX.Y.Z` comment); bump-it does it like any other action update.

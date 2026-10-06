@@ -10,7 +10,14 @@ number=${1:?usage: prepare-pr.sh <pr-number> <head-sha> <base-sha>}
 head_sha=${2:?usage: prepare-pr.sh <pr-number> <head-sha> <base-sha>}
 base_sha=${3:?usage: prepare-pr.sh <pr-number> <head-sha> <base-sha>}
 
-git fetch --no-tags --quiet origin "+refs/pull/$number/head:refs/remotes/pull/$number/head" "$base_sha"
+# The checkout keeps no credentials (the build runs later in some jobs); a private repository needs them for this one
+# fetch, so GIT_FETCH_TOKEN, when set, goes in a header for this command only.
+auth=()
+if [ -n "${GIT_FETCH_TOKEN:-}" ]; then
+  basic=$(printf 'x-access-token:%s' "$GIT_FETCH_TOKEN" | base64 | tr -d '\n')
+  auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $basic")
+fi
+git "${auth[@]}" fetch --no-tags --quiet origin "+refs/pull/$number/head:refs/remotes/pull/$number/head" "$base_sha"
 actual=$(git rev-parse "refs/remotes/pull/$number/head")
 if [ "$actual" != "$head_sha" ]; then
   echo "PR #$number head moved to $actual since the rescan listed $head_sha" >&2

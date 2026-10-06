@@ -21,6 +21,7 @@
  */
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
@@ -28,8 +29,10 @@ import { type GradleInventory, parseGradleInventory, runGradleInventory } from "
 import { runProcess } from "./process.ts";
 import type { Fetch } from "./http.ts";
 import { configDigest, emitReport, REPORT_SCHEMA_VERSION, type Report } from "./report.ts";
-import { parsePlan, planRescan, publishRescan, readVerdicts, verdictSummary } from "./rescan.ts";
+import { parsePlan, planRescan, type RescanSteps, runRescan } from "./rescan.ts";
 import { gitTree, type Tree, workingTree } from "./tree.ts";
+
+const PREPARE_PR = fileURLToPath(new URL("../scripts/prepare-pr.sh", import.meta.url));
 
 const USAGE = `usage:
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
@@ -37,8 +40,7 @@ const USAGE = `usage:
   supply-chain gradle-inventory --out <file> [--repo <dir>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
-  supply-chain rescan-verdict --pr <number> --pr-head <sha> --base <sha> --report <file> --out <file>
-  supply-chain publish-rescan --github-repo <owner/repo> --plan <file> --verdicts <dir> --context <name> --started-at <iso> [--target-url <url>]`;
+  supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --started-at <iso> [--repo <dir>] [--target-url <url>]`;
 
 interface Options {
   base?: string;
@@ -50,9 +52,8 @@ interface Options {
   "head-gradle"?: string;
   "github-repo"?: string;
   pr?: string;
-  "pr-head"?: string;
   plan?: string;
-  verdicts?: string;
+  inventories?: string;
   context?: string;
   "started-at"?: string;
   "target-url"?: string;
@@ -74,9 +75,8 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
         "head-gradle": { type: "string" },
         "github-repo": { type: "string" },
         pr: { type: "string" },
-        "pr-head": { type: "string" },
         plan: { type: "string" },
-        verdicts: { type: "string" },
+        inventories: { type: "string" },
         context: { type: "string" },
         "started-at": { type: "string" },
         "target-url": { type: "string" },
@@ -90,7 +90,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   const repo = values.repo ?? process.cwd();
   if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
-  if (command === "rescan-plan" || command === "rescan-verdict" || command === "publish-rescan") return rescanCommand(command, values, env);
+  if (command === "rescan-plan" || command === "rescan") return rescanCommand(command, values, env, repo);
   if ((command !== "compare" && command !== "scan") || (command === "compare" && values.base === undefined)) {
     console.error(USAGE);
     return 2;
@@ -109,14 +109,11 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   let error: string | undefined;
   try {
     head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
-    const headSources = await treeSources(head);
-    const headGradle = await gradleInput(values["head-gradle"], head, headSources.gradleBuilds, "head", repo);
     if (command === "compare") {
       base = await gitTree(repo, values.base!, runProcess);
-      const baseBuilds = (await baseSources(base, headSources)).gradleBuilds;
-      const baseGradle = await gradleInput(values["base-gradle"], base, baseBuilds, "base", repo);
-      outcome = await runCompare(base, head, gate, { base: baseGradle, head: headGradle });
+      outcome = await compareTrees(base, head, gate, { base: values["base-gradle"], head: values["head-gradle"] }, repo);
     } else {
+      const headGradle = await gradleInput(values["head-gradle"], head, (await treeSources(head)).gradleBuilds, "head", repo);
       outcome = await runScan(head, gate, { head: headGradle });
     }
   } catch (err) {
@@ -148,6 +145,20 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   });
   if (!completed) return 2;
   return report.verdict === "pass" ? 0 : 1;
+}
+
+/** `compare` on two trees, each side's Gradle inventory read from its file (or made inline for the working tree). */
+async function compareTrees(
+  base: Tree,
+  head: Tree,
+  gate: GateEnvironment,
+  files: { base: string | undefined; head: string | undefined },
+  repo: string,
+): Promise<GateOutcome> {
+  const headSources = await treeSources(head);
+  const headGradle = await gradleInput(files.head, head, headSources.gradleBuilds, "head", repo);
+  const baseGradle = await gradleInput(files.base, base, (await baseSources(base, headSources)).gradleBuilds, "base", repo);
+  return runCompare(base, head, gate, { base: baseGradle, head: headGradle });
 }
 
 /**
@@ -195,31 +206,48 @@ async function gradleInventoryCommand(repo: string, out: string): Promise<number
   }
 }
 
+/** Credentials no tool the gate runs needs, kept out of its environment (a PR's `.npmrc` can expand variables). */
+const CREDENTIALS = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_FETCH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"];
+
+export function withoutCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !CREDENTIALS.includes(key)));
+}
+
 /**
  * After the gate passed: `npm ci --ignore-scripts` next to every lockfile the
  * tree lists (no package code runs), then `npm audit signatures`, which checks
  * the registry signatures and provenance attestations of what was installed.
+ * The problems, if any.
  */
-async function npmSignaturesCommand(repo: string): Promise<number> {
-  try {
-    const { lockfiles } = await lenientSources(workingTree(repo));
-    for (const lockfile of lockfiles) {
-      const dir = join(repo, dirname(lockfile));
-      for (const args of [["ci", "--ignore-scripts", "--no-audit", "--no-fund"], ["audit", "signatures"]]) {
-        const result = await runProcess("npm", args, { cwd: dir });
-        process.stdout.write(result.stdout);
-        if (result.code !== 0) throw new Error(`npm ${args.join(" ")} in ${dirname(lockfile)} failed: ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
+async function npmSignatures(repo: string): Promise<string[]> {
+  const { lockfiles } = await lenientSources(workingTree(repo));
+  const env = withoutCredentials(process.env);
+  for (const lockfile of lockfiles) {
+    const dir = join(repo, dirname(lockfile));
+    for (const args of [["ci", "--ignore-scripts", "--no-audit", "--no-fund"], ["audit", "signatures"]]) {
+      const result = await runProcess("npm", args, { cwd: dir, env });
+      process.stdout.write(result.stdout);
+      if (result.code !== 0) {
+        return [`npm ${args.join(" ")} in ${dirname(lockfile)} failed: ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`];
       }
     }
-    console.log(`npm-signatures: ${lockfiles.length} lockfile(s) installed without scripts and verified`);
-    return 0;
+  }
+  return [];
+}
+
+async function npmSignaturesCommand(repo: string): Promise<number> {
+  try {
+    const problems = await npmSignatures(repo);
+    for (const problem of problems) console.error(`✗ ${problem}`);
+    if (problems.length === 0) console.log("npm-signatures: every lockfile installed without scripts and verified");
+    return problems.length === 0 ? 0 : 1;
   } catch (err) {
     console.error(`✗ ${(err as Error).message}`);
     return 1;
   }
 }
 
-async function rescanCommand(command: string, values: Options, env: NodeJS.ProcessEnv): Promise<number> {
+async function rescanCommand(command: string, values: Options, env: NodeJS.ProcessEnv, repo: string): Promise<number> {
   try {
     const token = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
     const required = (name: keyof Options): string => {
@@ -227,19 +255,6 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       if (value === undefined || value === "") throw new Error(`${command} needs --${name}\n${USAGE}`);
       return value;
     };
-    if (command === "rescan-verdict") {
-      const report = JSON.parse(await readFile(required("report"), "utf8")) as Report;
-      const verdict = {
-        number: Number(required("pr")),
-        head: required("pr-head"),
-        base: required("base"),
-        completed: report.completed,
-        verdict: report.verdict,
-        summary: verdictSummary(report),
-      };
-      await writeFile(required("out"), `${JSON.stringify(verdict)}\n`);
-      return 0;
-    }
     if (token === undefined) throw new Error(`${command} needs GITHUB_TOKEN`);
     const fetcher: Fetch = (url, init) => fetch(url, init);
     if (command === "rescan-plan") {
@@ -250,7 +265,35 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       return 0;
     }
     const plan = parsePlan(JSON.parse(await readFile(required("plan"), "utf8")));
-    const posted = await publishRescan(plan, await readVerdicts(required("verdicts")), {
+    const gate: GateEnvironment = {
+      run: runProcess,
+      fetch: fetcher,
+      now: () => new Date(),
+      osvScanner: env["OSV_SCANNER"] ?? "osv-scanner",
+      githubToken: token,
+    };
+    const steps: RescanSteps = {
+      async prepare(pr) {
+        const result = await runProcess(PREPARE_PR, [String(pr.number), pr.head, pr.base], {
+          cwd: repo,
+          env: { ...withoutCredentials(env), GIT_FETCH_TOKEN: token },
+        });
+        if (result.code !== 0) throw new Error(`merging #${pr.number} onto its base failed: ${result.stderr.trim().split("\n").at(-1) ?? ""}`);
+        const out = Object.fromEntries(result.stdout.trim().split("\n").map((line) => line.split("=") as [string, string]));
+        if (out["base"] === undefined || out["head"] === undefined) throw new Error(`prepare-pr.sh printed no commits for #${pr.number}`);
+        return { base: out["base"], head: out["head"] };
+      },
+      async compare(baseRev, headRev, gradle) {
+        const outcome = await compareTrees(await gitTree(repo, baseRev, runProcess), await gitTree(repo, headRev, runProcess), gate, gradle, repo);
+        return { completed: true, verdict: outcome.failures.length === 0 ? "pass" : "fail", failures: outcome.failures, warnings: outcome.warnings };
+      },
+      signatures: () => npmSignatures(repo),
+      async reset() {
+        await runProcess("git", ["reset", "--hard", "--quiet"], { cwd: repo });
+        await runProcess("git", ["clean", "-ffdxq"], { cwd: repo });
+      },
+    };
+    const posted = await runRescan(plan, required("inventories"), steps, {
       fetch: fetcher,
       token,
       repository: required("github-repo"),
@@ -259,7 +302,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       targetUrl: values["target-url"],
       log: (line) => console.log(line),
     });
-    console.log(`publish-rescan: ${posted} status(es) posted`);
+    console.log(`rescan: ${posted} status(es) posted`);
     return 0;
   } catch (err) {
     console.error(`✗ ${(err as Error).message}`);
