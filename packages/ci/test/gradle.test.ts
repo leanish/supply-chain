@@ -100,6 +100,7 @@ describe("running the Gradle inventory", () => {
         const requested = args[args.indexOf("-p") + 1];
         const manifest = { projects: [":"], nestedBuilds: build === "." && requested === "." ? nested : [] };
         await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 1, build, project: "manifest", manifest }));
+        await writeFile(file("settings"), JSON.stringify({ schemaVersion: 1, build, project: "settings", configurations: [] }));
       }
       return { code: 0, stdout: "", stderr: "" };
     };
@@ -120,7 +121,7 @@ describe("running the Gradle inventory", () => {
     expect((await runGradleInventory(repo, ["."], "worktree", gradlew(["."], [], []))).builds.map((build) => build.build)).toEqual(["."]);
   });
 
-  it("fails when a project in the manifest wrote nothing, or a build wrote no manifest", async () => {
+  it("fails when a project in the manifest wrote nothing, or a build wrote no manifest or settings output", async () => {
     const missingProject: RunProcess = async (command, args, options) => {
       const result = await gradlew(["."], [], [])(command, args, options);
       const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
@@ -136,6 +137,13 @@ describe("running the Gradle inventory", () => {
       return result;
     };
     await expect(runGradleInventory(repo, ["."], "worktree", noManifest)).rejects.toThrow("Gradle inventory of build . wrote no manifest");
+    const noSettings: RunProcess = async (command, args, options) => {
+      const result = await gradlew(["."], [], [])(command, args, options);
+      const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
+      await rm(join(out, `${encodeURIComponent(".|settings")}.json`));
+      return result;
+    };
+    await expect(runGradleInventory(repo, ["."], "worktree", noSettings)).rejects.toThrow("Gradle inventory of build . wrote no settings output");
   });
 
   it("fails on a failed Gradle run, a build without output, a missing wrapper or build directory", async () => {
