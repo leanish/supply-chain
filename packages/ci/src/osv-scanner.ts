@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { isObject, optionalString, stringList } from "./json.ts";
 import { label, type PackageVersion, uniqueVersions, versionKey } from "./package-version.ts";
 import type { RunProcess } from "./process.ts";
-import { ECOSYSTEMS, type Ecosystem } from "./versions.ts";
+import type { Ecosystem } from "./versions.ts";
 
 /** What the gate reads from an OSV record. */
 export interface OsvRecord {
@@ -37,6 +37,8 @@ export interface OsvScannerOptions {
 }
 
 const SUPPORTED_MAJOR = 2;
+/** The ecosystems this gate asks OSV-Scanner about. */
+const OSV_ECOSYSTEMS: ReadonlyArray<Ecosystem> = ["npm", "Maven"];
 
 /** The binary's version, failing on one this gate wasn't written against. */
 export async function osvScannerVersion(options: OsvScannerOptions): Promise<string> {
@@ -129,7 +131,7 @@ function parseScannedPackage(entry: unknown): ScannedPackage {
   const pkg = isObject(entry) ? entry["package"] : undefined;
   if (!isObject(pkg)) throw new Error("osv-scanner output has a package entry without `package`");
   const { name, version, ecosystem } = pkg;
-  if (typeof name !== "string" || typeof version !== "string" || !ECOSYSTEMS.includes(ecosystem as Ecosystem)) {
+  if (typeof name !== "string" || typeof version !== "string" || !OSV_ECOSYSTEMS.includes(ecosystem as Ecosystem)) {
     throw new Error(`osv-scanner output has a malformed package: ${JSON.stringify(pkg)}`);
   }
   const vulnerabilities = (entry as Record<string, unknown>)["vulnerabilities"] ?? [];

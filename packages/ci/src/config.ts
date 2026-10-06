@@ -8,7 +8,11 @@
  *     "gradle": { "builds": ["."], "ignoreConfigurations": [] },
  *     "maven": { "repositories": ["https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2"] },
  *     "releaseAgeDays": 7,
- *     "ownPackages": { "npm": { "scopes": ["@acme"] }, "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] } },
+ *     "ownPackages": {
+ *       "npm": { "scopes": ["@acme"] },
+ *       "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] },
+ *       "GitHub Actions": { "owners": ["acme"] }
+ *     },
  *     "repositories": { "npm:some-package": "owner/repo" },
  *     "compatibleLines": { "Maven:org.springframework.boot:*": 2 }
  *   }
@@ -65,6 +69,8 @@ export interface OwnPackages {
   readonly mavenGroups: ReadonlyArray<string>;
   /** Gradle plugin id prefixes; they match plugin marker coordinates `<id>:<id>.gradle.plugin` only. */
   readonly pluginIdPrefixes: ReadonlyArray<string>;
+  /** GitHub owners whose actions and reusable workflows are own. */
+  readonly actionOwners: ReadonlyArray<string>;
 }
 
 export const GRADLE_PLUGIN_PORTAL = "https://plugins.gradle.org/m2";
@@ -74,7 +80,7 @@ export const DEFAULT_CONFIG: Config = {
   gradle: { builds: undefined, ignoreConfigurations: [] },
   maven: { repositories: [MAVEN_CENTRAL, GRADLE_PLUGIN_PORTAL] },
   releaseAgeDays: 7,
-  ownPackages: { npmScopes: [], mavenGroups: [], pluginIdPrefixes: [] },
+  ownPackages: { npmScopes: [], mavenGroups: [], pluginIdPrefixes: [], actionOwners: [] },
   repositories: new Map(),
   compatibleLines: [],
 };
@@ -82,6 +88,7 @@ export const DEFAULT_CONFIG: Config = {
 /** Own packages skip the release-age wait, and only that. */
 export function isOwnPackage(own: OwnPackages, pkg: PackageName): boolean {
   if (pkg.ecosystem === "npm") return own.npmScopes.some((scope) => pkg.name.startsWith(`${scope}/`));
+  if (pkg.ecosystem === "GitHub Actions") return own.actionOwners.some((owner) => pkg.name.startsWith(`${owner.toLowerCase()}/`));
   const [group, artifact] = pkg.name.split(":");
   if (own.mavenGroups.includes(group!)) return true;
   return own.pluginIdPrefixes.some((prefix) => group!.startsWith(prefix) && artifact === `${group}.gradle.plugin`);
@@ -93,7 +100,9 @@ export function parseConfig(raw: unknown): Config {
   const npm = root["npm"] === undefined ? {} : object(root["npm"], `${where}: npm`, ["lockfiles", "registries"]);
   const gradle = root["gradle"] === undefined ? {} : object(root["gradle"], `${where}: gradle`, ["builds", "ignoreConfigurations"]);
   const maven = root["maven"] === undefined ? {} : object(root["maven"], `${where}: maven`, ["repositories"]);
-  const own = root["ownPackages"] === undefined ? {} : object(root["ownPackages"], `${where}: ownPackages`, ["npm", "Maven"]);
+  const own = root["ownPackages"] === undefined ? {} : object(root["ownPackages"], `${where}: ownPackages`, ["npm", "Maven", "GitHub Actions"]);
+  const ownActions =
+    own["GitHub Actions"] === undefined ? {} : object(own["GitHub Actions"], `${where}: ownPackages["GitHub Actions"]`, ["owners"]);
   const ownNpm = own["npm"] === undefined ? {} : object(own["npm"], `${where}: ownPackages.npm`, ["scopes"]);
   const ownMaven = own["Maven"] === undefined ? {} : object(own["Maven"], `${where}: ownPackages.Maven`, ["groups", "pluginIdPrefixes"]);
   const releaseAgeDays = root["releaseAgeDays"] ?? DEFAULT_CONFIG.releaseAgeDays;
@@ -128,6 +137,7 @@ export function parseConfig(raw: unknown): Config {
       npmScopes: scopes,
       mavenGroups: strings(ownMaven["groups"], `${where}: ownPackages.Maven.groups`) ?? [],
       pluginIdPrefixes: strings(ownMaven["pluginIdPrefixes"], `${where}: ownPackages.Maven.pluginIdPrefixes`) ?? [],
+      actionOwners: strings(ownActions["owners"], `${where}: ownPackages["GitHub Actions"].owners`) ?? [],
     },
     repositories: repositories(root["repositories"], `${where}: repositories`),
     compatibleLines: compatibleLines(root["compatibleLines"], `${where}: compatibleLines`),

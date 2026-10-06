@@ -17,6 +17,9 @@ import { inAdvisoryRange, parseAdvisoryRange, type VersionScheme, versionScheme 
 
 const GITHUB_API = "https://api.github.com";
 
+/** How GitHub's advisories name each ecosystem. */
+const GITHUB_ECOSYSTEMS: Readonly<Record<PackageVersion["ecosystem"], string>> = { npm: "npm", Maven: "maven", "GitHub Actions": "actions" };
+
 export interface RepositoryAdvisory {
   readonly ghsaId: string;
   readonly cveId: string | undefined;
@@ -121,8 +124,8 @@ function fixedByPatch(range: string, patched: string | undefined, version: strin
 
 /** Same ecosystem, and the same name; for Maven a bare artifactId counts too (snappy-java's own advisories use one). */
 function namesPackage(vulnerability: { ecosystem: string; name: string }, pkg: PackageVersion): boolean {
-  if (vulnerability.ecosystem.toLowerCase() !== pkg.ecosystem.toLowerCase()) return false;
-  if (vulnerability.name === pkg.name) return true;
+  if (vulnerability.ecosystem.toLowerCase() !== GITHUB_ECOSYSTEMS[pkg.ecosystem]) return false;
+  if (vulnerability.name === pkg.name || (pkg.ecosystem === "GitHub Actions" && vulnerability.name.toLowerCase() === pkg.name)) return true;
   return pkg.ecosystem === "Maven" && vulnerability.name === mavenCoordinates(pkg.name)[1];
 }
 

@@ -33,6 +33,7 @@ export async function sourceRepositories(
 export async function sourceRepository(pkg: PackageVersion, options: SourceRepoOptions): Promise<string | undefined> {
   const override = options.overrides.get(packageKey(pkg));
   if (override !== undefined) return override.toLowerCase();
+  if (pkg.ecosystem === "GitHub Actions") return pkg.name.toLowerCase();
   return pkg.ecosystem === "npm" ? npmRepository(pkg, options.fetch) : mavenRepository(pkg, options, 0);
 }
 
