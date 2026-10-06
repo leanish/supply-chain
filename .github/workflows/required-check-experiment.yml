@@ -1,0 +1,48 @@
+name: required-check-experiment
+
+# Throwaway: checks how a ruleset that requires `supply-chain` treats a green
+# `supply-chain` check run plus commit statuses with the same context. Each
+# push sets `.experiment/status`: `none`, or comma-separated `<head|merge>:<state>`
+# steps posted in order. Never merged.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the SHAs this check run belongs to
+        env:
+          MERGE_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: echo "check run for merge $MERGE_SHA, head $HEAD_SHA"
+
+  post-statuses:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Post the requested statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          plan=$(cat .experiment/status)
+          echo "plan: $plan"
+          [ "$plan" = "none" ] && exit 0
+          IFS=',' read -ra steps <<< "$plan"
+          for step in "${steps[@]}"; do
+            target=${step%%:*}
+            state=${step#*:}
+            if [ "$target" = "head" ]; then sha=$HEAD_SHA; else sha=$MERGE_SHA; fi
+            gh api "repos/$REPO/statuses/$sha" -f state="$state" -f context=supply-chain -f description="experiment: $step"
+            echo "posted $state on $target $sha"
+            sleep 2
+          done
