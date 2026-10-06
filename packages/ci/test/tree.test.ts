@@ -41,5 +41,9 @@ describe("network errors", () => {
       throw new Error("aborted");
     });
     await expect(plain("https://api.github.com/x", { method: "HEAD" })).rejects.toThrow("HEAD https://api.github.com/x failed: aborted");
+    const codeOnly = namingFailures(async () => {
+      throw new TypeError("fetch failed", { cause: Object.assign(new Error(""), { code: "UND_ERR_SOCKET" }) });
+    });
+    await expect(codeOnly("https://plugins.gradle.org/m2/x.pom")).rejects.toThrow("GET https://plugins.gradle.org/m2/x.pom failed: UND_ERR_SOCKET");
   });
 });

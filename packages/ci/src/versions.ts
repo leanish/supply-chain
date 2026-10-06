@@ -279,6 +279,7 @@ export interface Interval {
  * bound runs to infinity). A bare version followed by an upper bound is a
  * lower bound (`4.0.0 < 4.1.2`); a bare partial npm version is its X-range
  * (`6` and `6.x` are 6.x, also in `6 <=6.1.8`); any other bare version is a single point.
+ * `≤`/`=<` read as `<=`, `≥`/`=>` as `>=`.
  * `,` and `;` separate bounds; `||` also ends any open interval. That reading
  * gives the same answer for both comma conventions whenever the range is well
  * formed (an inverted interval, `>= 2.0.0, < 1.0.0`, reads as both open
@@ -300,6 +301,8 @@ function parseSegment(segment: string, partialsAreXRanges: boolean): Interval[] 
   const normalized = segment
     .replaceAll("≤", "<=")
     .replaceAll("≥", ">=")
+    .replaceAll("=<", "<=")
+    .replaceAll("=>", ">=")
     .replace(/\s*[–—]\s*/g, " - ")
     .replace(/(\S+)\s+-\s+(\S+)/g, ">=$1 <=$2")
     .replace(/[,;]/g, " ")
