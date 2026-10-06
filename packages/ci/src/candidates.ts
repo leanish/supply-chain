@@ -20,7 +20,10 @@
 import { type Config, isOwnPackage } from "./config.ts";
 import { unexcusedProblem } from "./exceptions.ts";
 import { findingsOf, type Located } from "./findings.ts";
-import { type GateEnvironment, type GradleInputs, readScanState, snapshotOptions, versionCatalogs } from "./gate.ts";
+import type { Floor } from "./floors.ts";
+import { type GateEnvironment, type GradleInputs, readScanState, type ScanState, snapshotOptions, versionCatalogs } from "./gate.ts";
+import { gradleLocation } from "./gradle.ts";
+import { directDependencies } from "./npm-lock.ts";
 import { type PackageName, type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { takeSnapshot } from "./take-snapshot.ts";
@@ -165,4 +168,150 @@ async function chooseMove(
     return none(`the publish time of ${choice.versions.join(", ")} (fixing, line ${choice.line}) is unknown, so the rule can't tell which fix is old enough`);
   }
   return move(choice.version, choice.aged);
+}
+
+/** How many of a line's newest aged versions bump-it weighs: past them, it reports instead of digging further. */
+export const BUMP_DEPTH = 10;
+
+export interface BumpMove {
+  readonly version: string;
+  readonly line: string;
+}
+
+/** A dependency the repository declares directly, and where bump-it can move it. */
+export interface BumpCandidate {
+  readonly ecosystem: Ecosystem;
+  readonly name: string;
+  readonly from: string;
+  /** npm: the lockfile path and workspace (`lockfile#workspace`); Gradle: configuration ids; Actions: workflow files. */
+  readonly locations: ReadonlyArray<string>;
+  /** The highest acceptable version in `from`'s own line (minors and patches go together in one PR). */
+  readonly minor: BumpMove | undefined;
+  /** The highest acceptable version of the highest newer line (each major is a PR of its own). */
+  readonly major: BumpMove | undefined;
+  /** Why a line with newer versions has no acceptable one. */
+  readonly problems: ReadonlyArray<string>;
+}
+
+export interface BumpCandidates {
+  readonly bumps: ReadonlyArray<BumpCandidate>;
+  readonly gaps: ReadonlyArray<string>;
+  readonly osvScannerVersion: string;
+}
+
+/**
+ * Where bump-it can move each directly declared dependency: in its own line
+ * and in the highest newer line, the highest version at least
+ * `releaseAgeDays` old (own packages skip the wait) that adds no advisory
+ * group and no malware, judged on one snapshot of the current versions and
+ * every version weighed. Direct means: npm dependencies the root and the
+ * workspaces of every checked lockfile declare; Gradle dependencies declared
+ * with a version, recorded floors aside (bump-it doesn't raise floors); and
+ * every `uses:` pinned to a release. Gradle transitives are never bumped.
+ */
+export async function bumpCandidates(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<BumpCandidates> {
+  const state = await readScanState(head, env, gradle);
+  const { config, floors } = state.settings;
+  const now = env.now();
+  const direct = await directOf(head, state, floors);
+  const catalogs = versionCatalogs(config, env, state.github);
+
+  const weighed = new Map<string, { own: Located; lines: Array<{ line: string; versions: string[]; problem?: string }> }>();
+  const candidates: PackageVersion[] = [];
+  const problemsOf = new Map<string, string[]>();
+  for (const pkg of direct) {
+    const listed = await catalogs[pkg.ecosystem].versions(pkg);
+    if (listed === undefined) {
+      problemsOf.set(versionKey(pkg), [`the registry doesn't list ${pkg.name}'s versions completely`]);
+      continue;
+    }
+    const newer = movesFrom(pkg, pkg.version, listed);
+    const line = (version: string) => compatibleLine(config, pkg, version);
+    const own = line(pkg.version);
+    const higher = newer.filter((version) => line(version) !== own);
+    const lines = [own, ...(higher.length === 0 ? [] : [line(higher.at(-1)!)])];
+    const picked: Array<{ line: string; versions: string[] }> = [];
+    for (const target of lines) {
+      const inLine = newer.filter((version) => line(version) === target).reverse();
+      if (inLine.length === 0) continue;
+      const aged = await newestAged(pkg, inLine, catalogs[pkg.ecosystem], config, now);
+      picked.push({ line: target, versions: aged });
+      candidates.push(...aged.map((version) => ({ ...pkg, version })));
+    }
+    weighed.set(versionKey(pkg), { own: pkg, lines: picked });
+  }
+  const snapshot = await takeSnapshot(direct, snapshotOptions(config, env, state.github), candidates);
+
+  const bumps: BumpCandidate[] = [];
+  for (const pkg of direct) {
+    const entry = weighed.get(versionKey(pkg));
+    const problems = [...(problemsOf.get(versionKey(pkg)) ?? [])];
+    let minor: BumpMove | undefined;
+    let major: BumpMove | undefined;
+    const ownLine = compatibleLine(config, pkg, pkg.version);
+    for (const { line, versions } of entry?.lines ?? []) {
+      if (versions.length === 0) continue;
+      const accepted = versions.find((version) => fixes(snapshot, pkg, pkg.version, [], version));
+      if (accepted === undefined) {
+        problems.push(`each of the ${versions.length} newest versions of line ${line} old enough adds an advisory or is malicious`);
+        continue;
+      }
+      if (line === ownLine) minor = { version: accepted, line };
+      else major = { version: accepted, line };
+    }
+    bumps.push({ ecosystem: pkg.ecosystem, name: pkg.name, from: pkg.version, locations: pkg.locations, minor, major, problems });
+  }
+  return { bumps, gaps: [...state.snapshot.gaps, ...snapshot.gaps], osvScannerVersion: state.osvScannerVersion };
+}
+
+/** Up to `BUMP_DEPTH` versions of `newestFirst` old enough (own packages: any age), newest first. */
+async function newestAged(
+  pkg: PackageVersion,
+  newestFirst: ReadonlyArray<string>,
+  catalog: VersionCatalog,
+  config: Config,
+  now: Date,
+): Promise<string[]> {
+  if (isOwnPackage(config.ownPackages, pkg)) return newestFirst.slice(0, BUMP_DEPTH);
+  const aged: string[] = [];
+  for (const version of newestFirst) {
+    if (aged.length === BUMP_DEPTH) break;
+    const published = await catalog.published({ ...pkg, version });
+    if (published !== undefined && (now.getTime() - published.getTime()) / DAY_MS >= config.releaseAgeDays) aged.push(version);
+  }
+  return aged;
+}
+
+/** The directly declared dependencies of the scanned tree, one per version, with where each is declared, sorted. */
+async function directOf(head: Tree, state: ScanState, floors: ReadonlyArray<Floor>): Promise<Located[]> {
+  const byVersion = new Map<string, { pkg: PackageVersion; locations: Set<string> }>();
+  const add = (pkg: PackageVersion, location: string) => {
+    const entry = byVersion.get(versionKey(pkg)) ?? { pkg, locations: new Set<string>() };
+    entry.locations.add(location);
+    byVersion.set(versionKey(pkg), entry);
+  };
+  for (const lockfile of state.inventory.npm) {
+    const text = await head.read(lockfile.path);
+    if (text === undefined) throw new Error(`${lockfile.path} disappeared while reading it`);
+    for (const dependency of directDependencies(JSON.parse(text))) {
+      add({ ecosystem: "npm", name: dependency.name, version: dependency.version }, `${lockfile.path}#${dependency.workspace || "."}`);
+    }
+  }
+  const floored = new Set(floors.filter((floor) => floor.ecosystem === "Maven").map((floor) => `${floor.package}@${floor.version}`));
+  for (const build of state.inventory.gradle?.builds ?? []) {
+    for (const configuration of build.configurations) {
+      for (const declared of configuration.declared) {
+        if (declared.version === undefined) continue;
+        const name = `${declared.group}:${declared.name}`;
+        if (floored.has(`${name}@${declared.version}`)) continue;
+        add({ ecosystem: "Maven", name, version: declared.version }, gradleLocation(build.build, configuration.id));
+      }
+    }
+  }
+  for (const pkg of state.packages.filter((located) => located.ecosystem === "GitHub Actions")) {
+    for (const location of pkg.locations) add(pkg, location);
+  }
+  return [...byVersion.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, { pkg, locations }]) => ({ ...pkg, locations: [...locations].sort() }));
 }

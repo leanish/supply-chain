@@ -145,3 +145,54 @@ export function changedPackages(
   const before = new Map(base.map((pkg) => [pkg.path, `${pkg.name}@${pkg.version}`]));
   return head.filter((pkg) => before.get(pkg.path) !== `${pkg.name}@${pkg.version}`);
 }
+
+/** A dependency a lockfile's root or one of its workspaces declares, with the version installed for it. */
+export interface DirectDependency {
+  readonly name: string;
+  /** The declared range, e.g. `^1.2.0`. */
+  readonly spec: string;
+  /** The workspace that declares it (`""` for the root). */
+  readonly workspace: string;
+  /** Lockfile key of the installed copy that workspace uses. */
+  readonly path: string;
+  readonly version: string;
+}
+
+/**
+ * The registry dependencies the root and every workspace declare
+ * (`dependencies`, `devDependencies`, `optionalDependencies`), each with the
+ * copy it gets: the workspace's own `node_modules` first, then the root's.
+ * Specs that aren't registry ranges (`file:`, `workspace:`, git, URLs, `npm:`
+ * aliases) and optional dependencies that aren't installed are left out.
+ */
+export function directDependencies(lock: unknown): DirectDependency[] {
+  const { packages } = (lock ?? {}) as { packages?: Record<string, LockEntry & DeclaringEntry> };
+  if (!isPlainObject(packages)) throw new Error("package-lock.json has no `packages` map");
+  const found: DirectDependency[] = [];
+  for (const [workspace, entry] of Object.entries(packages)) {
+    if (workspace.includes("node_modules/") || entry.link === true) continue;
+    const declared = { ...entry.optionalDependencies, ...entry.devDependencies, ...entry.dependencies };
+    for (const [name, spec] of Object.entries(declared)) {
+      if (!isRegistryRange(spec)) continue;
+      const own = workspace === "" ? undefined : `${workspace}/node_modules/${name}`;
+      const path = own !== undefined && packages[own] !== undefined ? own : `node_modules/${name}`;
+      const installed = packages[path];
+      if (installed?.version === undefined || installed.link === true) continue;
+      found.push({ name, spec, workspace, path, version: installed.version });
+    }
+  }
+  return found;
+}
+
+interface DeclaringEntry {
+  readonly devDependencies?: Record<string, string>;
+  readonly optionalDependencies?: Record<string, string>;
+}
+
+/** A range or dist-tag the registry resolves: no protocol (`file:`, `npm:`, `git+…`), no URL, no path, no `owner/repo`. */
+function isRegistryRange(spec: string): boolean {
+  const trimmed = spec.trim();
+  // `~1.2` and `^1` are ranges; `~/dir` and `./dir` are paths.
+  if (/^[\^~<>=\d\s.xX*|-]+$/.test(trimmed)) return true;
+  return !/^[a-z+]+:/i.test(trimmed) && !/^[./~]/.test(trimmed) && !trimmed.includes("/");
+}

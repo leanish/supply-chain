@@ -5,7 +5,7 @@
  *   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain gradle-inventory --out <file> [--repo <dir>]
- *   supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
+ *   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
  *
  * `compare` (pull requests) fails on findings head adds, on malware anywhere
  * in head, and on added or changed versions that fail the release-age,
@@ -13,9 +13,11 @@
  * finding without an exception. Both read files from git objects (or the
  * working tree), never running anything from them; a Gradle build's
  * inventory comes from `gradle-inventory`, which does run the build (in CI, in
- * a job of its own), or inline for `--head worktree`. `candidates` prints, for
- * every version a scan fails on, the version the rule picks to fix it (JSON,
- * for secure-it).
+ * a job of its own), or inline for `--head worktree`. `candidates` prints, as
+ * JSON, where to move versions: `--rule security`, the fix the rule picks for
+ * every version a scan fails on (secure-it); `--rule bump`, the highest
+ * acceptable version of every direct dependency, in its line and the highest
+ * newer one (bump-it).
  *
  * Exit codes: 0 pass, 1 fail, 2 the gate couldn't complete (also a failure).
  * Environment: OSV_SCANNER (default `osv-scanner` on PATH), GITHUB_TOKEN or
@@ -27,7 +29,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { securityCandidates } from "./candidates.ts";
+import { bumpCandidates, securityCandidates } from "./candidates.ts";
 import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess, withoutCredentials } from "./process.ts";
@@ -39,7 +41,7 @@ import { gitTree, type Tree, workingTree } from "./tree.ts";
 const PREPARE_PR = fileURLToPath(new URL("../scripts/prepare-pr.sh", import.meta.url));
 
 const USAGE = `usage:
-  supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
+  supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain gradle-inventory --out <file> [--repo <dir>]
@@ -57,6 +59,7 @@ interface Options {
   "head-gradle"?: string;
   "github-repo"?: string;
   pr?: string;
+  rule?: string;
   plan?: string;
   inventories?: string;
   reports?: string;
@@ -81,6 +84,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
         "head-gradle": { type: "string" },
         "github-repo": { type: "string" },
         pr: { type: "string" },
+        rule: { type: "string" },
         plan: { type: "string" },
         inventories: { type: "string" },
         reports: { type: "string" },
@@ -157,10 +161,15 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
 }
 
 /**
- * The fix the version rule picks for every version a full scan fails on, as JSON (for secure-it): written to
- * `--out`, or printed. Exits 0 when it could tell, whatever it found.
+ * Where to move versions, as JSON, written to `--out` or printed: the security fixes (`--rule security`, for
+ * secure-it) or the bumps of direct dependencies (`--rule bump`, for bump-it). Exits 0 when it could tell, whatever
+ * it found.
  */
 async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: string): Promise<number> {
+  if (values.rule !== "security" && values.rule !== "bump") {
+    console.error(`candidates needs --rule security or --rule bump\n${USAGE}`);
+    return 2;
+  }
   try {
     const gate: GateEnvironment = {
       run: runProcess,
@@ -171,7 +180,7 @@ async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: 
     };
     const head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
     const headGradle = await gradleInput(values["head-gradle"], head, (await treeSources(head)).gradleBuilds, "head", repo);
-    const found = await securityCandidates(head, gate, { head: headGradle });
+    const found = values.rule === "security" ? await securityCandidates(head, gate, { head: headGradle }) : await bumpCandidates(head, gate, { head: headGradle });
     const json = `${JSON.stringify({ tree: head.id, ...found }, null, 2)}\n`;
     if (values.out === undefined) process.stdout.write(json);
     else await writeFile(values.out, json);

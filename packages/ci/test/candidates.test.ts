@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { type SecurityFix, securityCandidates } from "../src/candidates.ts";
+import { bumpCandidates, type SecurityFix, securityCandidates } from "../src/candidates.ts";
 import type { GateEnvironment } from "../src/gate.ts";
 import { runProcess, type RunProcess } from "../src/process.ts";
 import { workingTree } from "../src/tree.ts";
@@ -24,8 +24,8 @@ afterEach(async () => {
   await rm(repo, { recursive: true, force: true });
 });
 
-async function tree(locked: Record<string, string>, files: Record<string, string> = {}) {
-  const packages: Record<string, object> = { "": { name: "app" } };
+async function tree(locked: Record<string, string>, files: Record<string, string> = {}, root: object = { name: "app" }, extra: Record<string, object> = {}) {
+  const packages: Record<string, object> = { "": root, ...extra };
   for (const [name, version] of Object.entries(locked)) {
     packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: "sha512-AAAA" };
   }
@@ -170,6 +170,70 @@ describe("securityCandidates", () => {
     expect(moves(found.fixes)).toEqual([
       ["lib@1.0.0", undefined, "no version above 1.0.0 fixes GHSA-a"],
       ["odd@1.0.0", undefined, "the publish time of 1.0.1 (fixing, line 1) is unknown, so the rule can't tell which fix is old enough"],
+    ]);
+  });
+});
+
+describe("bumpCandidates", () => {
+  it("moves each direct dependency to its line's highest aged version and its highest newer line's, leaving transitives alone", async () => {
+    const scans: string[][] = [];
+    const registry = {
+      lib: { "1.0.0": OLD, "1.2.0": OLD, "1.3.0": YESTERDAY, "2.0.0": OLD, "3.0.0": OLD, "3.1.0": OLD },
+      dev: { "0.5.0": OLD, "0.5.1": OLD, "0.6.0": OLD },
+      transitive: { "1.0.0": OLD, "1.5.0": OLD },
+    };
+    const head = await tree({ lib: "1.0.0", dev: "0.5.0", transitive: "1.0.0" }, {}, { name: "app", dependencies: { lib: "^1.0.0" }, devDependencies: { dev: "~0.5.0" } });
+    const found = await bumpCandidates(head, environment({}, registry, scans));
+    expect(found.bumps).toEqual([
+      // npm's caret line for 0.x is the minor: 0.6.0 is a "major" move.
+      { ecosystem: "npm", name: "dev", from: "0.5.0", locations: ["package-lock.json#."], minor: { version: "0.5.1", line: "0.5" }, major: { version: "0.6.0", line: "0.6" }, problems: [] },
+      {
+        ecosystem: "npm",
+        name: "lib",
+        from: "1.0.0",
+        locations: ["package-lock.json#."],
+        minor: { version: "1.2.0", line: "1" },
+        major: { version: "3.1.0", line: "3" },
+        problems: [],
+      },
+    ]);
+    expect(scans[1]).toEqual(["dev@0.5.0", "dev@0.5.1", "dev@0.6.0", "lib@1.0.0", "lib@1.2.0", "lib@3.0.0", "lib@3.1.0"]);
+  });
+
+  it("skips versions that add an advisory or malware, and says so when a whole line does", async () => {
+    const affected = { "lib@1.2.0": ["GHSA-new"], "lib@2.0.0": ["MAL-2026-9"], "lib@1.0.0": ["GHSA-old"], "lib@1.1.0": ["GHSA-old"] };
+    const registry = { lib: { "1.0.0": OLD, "1.1.0": OLD, "1.2.0": OLD, "2.0.0": OLD } };
+    const head = await tree({ lib: "1.0.0" }, {}, { name: "app", dependencies: { lib: "^1.0.0" } });
+    const found = await bumpCandidates(head, environment(affected, registry));
+    expect(found.bumps).toEqual([
+      {
+        ecosystem: "npm",
+        name: "lib",
+        from: "1.0.0",
+        locations: ["package-lock.json#."],
+        minor: { version: "1.1.0", line: "1" },
+        major: undefined,
+        problems: ["each of the 1 newest versions of line 2 old enough adds an advisory or is malicious"],
+      },
+    ]);
+  });
+
+  it("reads workspaces' own copies, lets own packages skip the wait, and ignores non-registry specs", async () => {
+    const registry = { "@acme/kit": { "1.0.0": OLD, "1.0.1": YESTERDAY }, shared: { "2.0.0": OLD, "2.1.0": OLD } };
+    const head = await tree(
+      { "@acme/kit": "1.0.0", shared: "2.1.0" },
+      { ".github/supply-chain.json": JSON.stringify({ ownPackages: { npm: { scopes: ["@acme"] } } }) },
+      { name: "app", workspaces: ["tools/x"], dependencies: { "@acme/kit": "^1.0.0", local: "file:../local" } },
+      {
+        "tools/x": { name: "x", dependencies: { shared: "^2.0.0", gh: "github:owner/repo" } },
+        "tools/x/node_modules/shared": { version: "2.0.0", resolved: "https://registry.npmjs.org/shared/-/shared-2.0.0.tgz", integrity: "sha512-AAAA" },
+        "node_modules/x": { resolved: "tools/x", link: true },
+      },
+    );
+    const found = await bumpCandidates(head, environment({}, registry));
+    expect(found.bumps.map((bump) => [bump.name, bump.from, bump.locations, bump.minor?.version])).toEqual([
+      ["@acme/kit", "1.0.0", ["package-lock.json#."], "1.0.1"],
+      ["shared", "2.0.0", ["package-lock.json#tools/x"], "2.1.0"],
     ]);
   });
 });

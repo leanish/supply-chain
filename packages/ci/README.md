@@ -219,7 +219,9 @@ What runs where:
 
 ## Picking a fix: `candidates`
 
-`supply-chain candidates [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]` prints, as JSON, the version the rule above picks for every version a full scan fails on: what secure-it moves to. It reuses the rule's code, so what it picks is what the gate then accepts.
+`supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]` prints, as JSON, where secure-it and bump-it move versions.
+
+**`--rule security`** picks, for every version a full scan fails on, the version the rule above picks: what secure-it moves to. It reuses the rule's code, so what it picks is what the gate then accepts.
 
 - **Targets:** the version's failing advisory groups (an excepted one stays as it is). A target no listed version fixes is reported as `unfixable` and left: fixing A and leaving B is allowed.
 - **Candidates:** every version above it the registry lists, in any line, scanned in one snapshot together with the version itself.
@@ -229,6 +231,4 @@ What runs where:
 
 On sqs-codec today it picks Guava 33.7.2-jre for 33.5.0-jre and 33.7.1-jre, and snappy-java 1.1.10.10 (young, the lowest that fixes all seven advisories) for 1.1.10.8.
 
-## Coming next
-
-The bump rule for bump-it: per direct dependency, the highest version at least `releaseAgeDays` old that adds no finding, minors and patches apart from majors.
+**`--rule bump`** gives, for every directly declared dependency, the highest version at least `releaseAgeDays` old (own packages: any age) that adds no advisory group and no malware: in its own line (`minor`: minors and patches, one PR together) and in the highest newer line (`major`: a PR of its own). Direct means the npm dependencies the root and the workspaces of every checked lockfile declare, the Gradle dependencies declared with a version (recorded floors aside: bump-it doesn't raise floors), and every `uses:` pinned to a release; Gradle transitives are never bumped. It weighs a line's ten newest versions old enough, and says so when all of them add an advisory.
