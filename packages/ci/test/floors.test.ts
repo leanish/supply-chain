@@ -51,9 +51,23 @@ const guavaFloor = {
 };
 
 describe("floors file", () => {
-  it("reads entries and normalizes a single selector", () => {
+  it("reads entries and normalizes selectors: Gradle locations, npm key paths", () => {
     const [floor] = parseFloors({ floors: [{ ...guavaFloor, selector: ":checkstyle" }] });
-    expect(floor!.selector).toEqual([":checkstyle"]);
+    expect(floor!.locations).toEqual([":checkstyle"]);
+    const npm = { ...guavaFloor, ecosystem: "npm", package: "child", version: "2.0.0", declaredIn: "package.json" };
+    expect(parseFloors({ floors: [{ ...npm, selector: "child" }] })[0]!.overridePaths).toEqual([["child"]]);
+    expect(parseFloors({ floors: [{ ...npm, selector: [["parent@>=2.0.0", "child"], "child"] }] })[0]!.overridePaths).toEqual([
+      ["parent@>=2.0.0", "child"],
+      ["child"],
+    ]);
+  });
+
+  it("accepts separate floors for one package in disjoint configurations, not overlapping ones", () => {
+    const errorprone = { ...guavaFloor, selector: [":errorprone"], version: "33.8.0-jre" };
+    expect(parseFloors({ floors: [guavaFloor, errorprone] })).toHaveLength(2);
+    expect(() => parseFloors({ floors: [guavaFloor, { ...errorprone, selector: [":errorprone", ":checkstyle"] }] })).toThrow(
+      "duplicates an earlier floor for com.google.guava:guava in build.gradle.kts (:checkstyle)",
+    );
   });
 
   it("rejects malformed entries, security floors without advisories, and duplicates", () => {
@@ -65,6 +79,7 @@ describe("floors file", () => {
     expect(() => parseFloors({ floors: [{ ...guavaFloor, added: "2026-13-01" }] })).toThrow("real YYYY-MM-DD");
     expect(() => parseFloors({ floors: [{ ...guavaFloor, extra: 1 }] })).toThrow("unknown field(s): extra");
     expect(() => parseFloors({ floors: [guavaFloor, guavaFloor] })).toThrow("duplicates an earlier floor");
+    expect(() => parseFloors({ floors: [{ ...guavaFloor, selector: [[":checkstyle"]] }] })).toThrow("must list Gradle configuration locations");
   });
 });
 
@@ -126,10 +141,15 @@ describe("Gradle floors", () => {
     ]);
   });
 
-  it("notes a declaration whose reason names an advisory but has no floor entry", async () => {
-    const inventory = gradleInventory([{ id: ":checkstyle", declared: [{ ...guava("33.7.2-jre"), reason: "CVE-2026-102554 fix" }] }]);
-    expect((await checkFloors([], inventory, tree(files))).notes).toEqual([
-      'com.google.guava:guava:33.7.2-jre is declared because "CVE-2026-102554 fix" without an entry in .github/dependency-floors.json',
+  it("notes a because(...) declaration no floor entry covers in that configuration and version", async () => {
+    const inventory = gradleInventory([
+      { id: ":checkstyle", declared: [{ ...guava("33.7.2-jre"), reason: "CVE-2026-102554 fix" }], resolved: [guava("33.7.2-jre")] },
+      { id: ":errorprone", declared: [{ ...guava("33.7.2-jre"), reason: "needs the newer API" }], resolved: [guava("33.7.2-jre")] },
+    ]);
+    const floors = parseFloors({ floors: [{ ...guavaFloor, reason: "fix" }] });
+    const notes = (await checkFloors(floors, inventory, tree(files))).notes;
+    expect(notes).toEqual([
+      'com.google.guava:guava:33.7.2-jre is declared in :errorprone because "needs the newer API" without an entry in .github/dependency-floors.json',
     ]);
   });
 });
@@ -167,9 +187,21 @@ describe("npm floors", () => {
     for (const spec of ["5.0.10", "^5.0.10", "~5.0.11", ">=5.0.10"]) {
       expect(await checkFloors(floors, inventory(copies), tree(manifest({ "brace-expansion": spec })))).toEqual({ failures: [], notes: [] });
     }
-    const nested = parseFloors({ floors: [{ ...floor, selector: "minimatch>brace-expansion" }] });
+    const nested = parseFloors({ floors: [{ ...floor, selector: [["minimatch", "brace-expansion"]] }] });
     expect((await checkFloors(nested, inventory(copies), tree(manifest({ minimatch: { "brace-expansion": "5.0.10" } })))).failures).toEqual([]);
     expect((await checkFloors(nested, inventory(copies), tree(manifest({ minimatch: { "brace-expansion": { ".": "5.0.10" } } })))).failures).toEqual([]);
+    // A version-qualified key, which `>` can't separate.
+    const qualified = parseFloors({ floors: [{ ...floor, selector: [["minimatch@>=10.0.0", "brace-expansion@^5"]] }] });
+    expect((await checkFloors(qualified, inventory(copies), tree(manifest({ "minimatch@>=10.0.0": { "brace-expansion@^5": "5.0.10" } })))).failures).toEqual([]);
+  });
+
+  it("fails a selector that points at another package's override", async () => {
+    const floors = parseFloors({ floors: [{ ...floor, selector: "other" }] });
+    const copies = { "node_modules/brace-expansion": "5.0.11", "node_modules/other": "9.0.0" };
+    expect((await checkFloors(floors, inventory(copies), tree(manifest({ other: "9.0.0" })))).failures).toEqual([
+      "floor brace-expansion 5.0.10 (package.json): the override other is for other, not brace-expansion",
+      "package.json overrides other without an entry in .github/dependency-floors.json",
+    ]);
   });
 
   it("fails an override that admits lower versions, a copy below the floor, and an override without an entry", async () => {
@@ -185,7 +217,7 @@ describe("npm floors", () => {
     ]);
     expect((await checkFloors([], inventory({}), tree(manifest({ "brace-expansion": "5.0.10", vite: { esbuild: "0.25.0" } })))).failures).toEqual([
       "package.json overrides brace-expansion without an entry in .github/dependency-floors.json",
-      "package.json overrides vite>esbuild without an entry in .github/dependency-floors.json",
+      "package.json overrides vite > esbuild without an entry in .github/dependency-floors.json",
     ]);
   });
 });

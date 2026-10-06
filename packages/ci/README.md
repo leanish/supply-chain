@@ -87,8 +87,9 @@ A floor forces a minimum version on a dependency, usually a transitive one: a se
 ```
 
 - **Gradle:** in every configuration the `selector` names, Gradle must declare the package at exactly the floor version, with a `because(...)` that names every advisory (or, for compatibility, any reason), and resolve it at or above the floor by Gradle's own version ordering (which isn't Maven's: `33.7.2-jre` sorts before `33.7.2`). The declarations come from Gradle's inventory, catalog versions included, so no build file is parsed. Floors are explicit dependencies, never `constraints`.
-- **npm:** the `overrides` entry at the selector's path in `declaredIn` (`a>b` for a nested override) must be `x`, `^x`, `~x` or `>=x` with `x` at or above the floor, and every copy in the lockfile next to it must be at or above it. Every override in a checked lockfile's `package.json` needs an entry.
-- A Gradle declaration whose `because(...)` names an advisory without an entry is noted, not failed: a plugin can inject it (java-conventions' Guava floor shows up in its consumers' builds).
+- **npm:** the `selector` lists `overrides` key paths in `declaredIn` (a key, or a list of keys for a nested override: `[["aws-cdk-lib", "brace-expansion"]]`; keys may carry version ranges). Each must pin the floor's own package, as `x`, `^x`, `~x` or `>=x` with `x` at or above the floor, and every copy in the lockfile next to it must be at or above it. Every override in a checked lockfile's `package.json` needs an entry for its package.
+- One package can have separate floors in one file for disjoint configurations; two floors can't claim the same configuration or override.
+- A Gradle declaration with a `because(...)` that no entry covers (same package and version, in that configuration) is noted, not failed: a plugin can inject it (java-conventions' Guava floor shows up in its consumers' builds).
 
 ## Release age, source and identity (npm)
 
