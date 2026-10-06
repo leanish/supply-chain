@@ -64,6 +64,32 @@ Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, 
 - An unchanged `uses:` that doesn't resolve, and `docker://` uses, are coverage gaps: the PR didn't make them worse.
 - A young action version can pass by the young-fix rule like any other, its candidates being the repository's releases.
 
+## Floors: `.github/dependency-floors.json`
+
+A floor forces a minimum version on a dependency, usually a transitive one: a security fix (`purpose: "security"`, naming the advisories) or a compatibility need (`purpose: "compatibility"`, naming none). Every floor is recorded, so none outlives its reason unnoticed; secure-it removes security floors that are no longer needed.
+
+```json
+{
+  "floors": [
+    {
+      "ecosystem": "Maven",
+      "package": "com.google.guava:guava",
+      "version": "33.7.2-jre",
+      "declaredIn": "build.gradle.kts",
+      "selector": [":checkstyle", ":errorprone"],
+      "purpose": "security",
+      "advisories": ["CVE-2026-102554"],
+      "reason": "Checkstyle and Error Prone pull an affected Guava",
+      "added": "2026-10-04"
+    }
+  ]
+}
+```
+
+- **Gradle:** in every configuration the `selector` names, Gradle must declare the package at exactly the floor version, with a `because(...)` that names every advisory (or, for compatibility, any reason), and resolve it at or above the floor by Gradle's own version ordering (which isn't Maven's: `33.7.2-jre` sorts before `33.7.2`). The declarations come from Gradle's inventory, catalog versions included, so no build file is parsed. Floors are explicit dependencies, never `constraints`.
+- **npm:** the `overrides` entry at the selector's path in `declaredIn` (`a>b` for a nested override) must be `x`, `^x`, `~x` or `>=x` with `x` at or above the floor, and every copy in the lockfile next to it must be at or above it. Every override in a checked lockfile's `package.json` needs an entry.
+- A Gradle declaration whose `because(...)` names an advisory without an entry is noted, not failed: a plugin can inject it (java-conventions' Guava floor shows up in its consumers' builds).
+
 ## Release age, source and identity (npm)
 
 For every version a PR adds or changes:
@@ -134,4 +160,4 @@ Malware ids can't be excepted.
 
 ## Coming next
 
-The floors file, a `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.
+A `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.
