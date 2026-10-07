@@ -1,23 +1,58 @@
 # supply-chain
 
-Dependency security and freshness for npm and Gradle repositories:
+Dependency security and freshness for npm, Gradle and GitHub Actions, with one
+version/advisory policy shared by CI and the update tools.
 
-- a **CI gate** ([`packages/ci`](packages/ci)) that reads base and head against one advisory snapshot and fails a pull request only on what it makes worse; malware always fails;
-- **secure-it**, which fixes security findings at any depth with the smallest change;
-- **bump-it**, which keeps dependencies fresh: one PR for minors and patches, one per major.
+- **The CI gate** compares base and head against one advisory snapshot. A PR fails
+  on what it makes worse; malware always fails. Daily scans check the default
+  branch and refresh the verdict on open PRs.
+- **secure-it** batches actionable non-major security fixes, keeps malware fixes
+  together, and opens a separate PR per major. It can remove redundant security
+  floors only after a joint resolution without lockfiles proves them unnecessary.
+- **bump-it** chooses the highest eligible versions under the release-age policy:
+  one routine PR for minors, patches, npm transitives and Gradle wrappers, and one
+  per major. The tool computes npm files and generates wrappers; a coding agent
+  handles other edits and major adaptations. Every proposed change is verified.
 
-Work in progress: the pieces land through pull requests. Licensed under Apache-2.0.
+The gate runs in GitHub Actions. The tools run on macOS and propose PRs; they do
+not merge them. Node 24 is required; npm 11.17+ is needed for release-age exclusions.
+Packages remain private: adoption uses a reviewed Git commit, with no npm publish.
+The current version prepares **v0.1.0**; its release PR and tag follow the stack's
+merge and final validation. Licensed under Apache-2.0.
 
-- [Why this, and not just Dependabot, OSV-Scanner or Renovate](docs/why.md)
-- [Adopting the gate](packages/ci/README.md#adopting-the-gate), and everything it checks: [`packages/ci/README.md`](packages/ci/README.md)
-- [Adopting secure-it and bump-it](docs/adopting-tools.md): per-tool Keychain defaults, tokens, first preview, launchd, logs and troubleshooting
-- [Tool config reference](docs/tool-configuration.md): both agent.yaml files and links to repository policy
-- [Security model](docs/security-model.md): what runs where, and which token it can reach
-- [Coverage gaps](docs/coverage-gaps.md)
-- [`packages/secure-it`](packages/secure-it): batches non-major fixes from the gate's full scan, each major apart, and removes redundant security floors in a separate verified draft PR
-- [`packages/bump-it`](packages/bump-it): one routine PR for minor/patch updates, npm transitives and Gradle wrappers, each major separately, verified before publication
-- [`packages/remediation`](packages/remediation): what secure-it and bump-it share: config, their PRs (publication with race checks, review ticks), the command around a run and `run.sh`
-- [`packages/agent-basics`](packages/agent-basics): running a coding agent for secure-it and bump-it, copied for now from leanish-development's runtime ([provenance](packages/agent-basics/PROVENANCE.md))
+## Adoption and operation
+
+- [Why this adds value alongside dependency alerts](docs/why.md)
+- [Adopting the gate](packages/ci/README.md#adopting-the-gate), including
+  [repository policy, exceptions and floors](packages/ci/README.md)
+- [Adopting secure-it and bump-it](docs/adopting-tools.md): per-tool Keychain
+  defaults, PAT permissions, candidate preview, launchd, logs, costs and troubleshooting
+- [Tool configuration](docs/tool-configuration.md): both agent.yaml files and links
+  to the gate's configuration reference
+- [Security model](docs/security-model.md) and [coverage gaps](docs/coverage-gaps.md)
+- [Validation evidence](docs/validation.md): real wrapper and floor-removal proofs
+- [Release procedure](docs/releasing.md) and [CHANGELOG](CHANGELOG.md)
+
+Each tool uses distinct write/read PAT values. Default Keychain services are
+`leanish-secure-it-write` / `leanish-secure-it-read` and
+`leanish-bump-it-write` / `leanish-bump-it-read`; optional `secrets` overrides can
+share a pair between tools. PR labels are `leanish:secure-it` and `leanish:bump-it`;
+legacy labels remain recognised. GitHub App mode is future work; PAT mode will
+remain supported when it arrives.
+
+## Packages
+
+- [`ci`](packages/ci): inventories, advisory/version rules, candidate selection and
+  the reusable gate with daily open-PR rescans
+- [`secure-it`](packages/secure-it): security batches, separate majors and verified
+  removal of security floors; compatibility floors stay
+- [`bump-it`](packages/bump-it): routine/major plans, tool-computed npm changes and
+  checksummed Gradle wrapper generation
+- [`remediation`](packages/remediation): shared config, sandboxed inventories,
+  publication race checks and journal recovery, review ticks and `run.sh`
+- [`agent-basics`](packages/agent-basics): coding-agent support copied from
+  leanish-development's runtime, with [provenance](packages/agent-basics/PROVENANCE.md).
+  Applicable fixes are mirrored by hand until both repos share an agent-kit.
 
 ## Development
 
@@ -25,3 +60,8 @@ Work in progress: the pieces land through pull requests. Licensed under Apache-2
 npm ci --ignore-scripts
 npm run check
 ```
+
+CI also sets `SUPPLY_CHAIN_GRADLE_TESTS=1` to exercise a real Gradle inventory.
+Local checks skip those network/build tests unless enabled; the macOS Seatbelt
+probe skips when this process cannot apply a nested sandbox. Neither skip proves
+that integration boundary passed: inspect CI and the real-run evidence separately.
