@@ -1,0 +1,240 @@
+/**
+ * The exact npm files a bump-it unit lands (design item 26), computed by the
+ * tool in a scratch copy of the base, npm running under the sandbox:
+ *
+ *   - **routine**: each planned direct dependency's range moves to its target
+ *     (style kept), `npm install --package-lock-only` brings in what that
+ *     needs, `npm update --package-lock-only` refreshes the rest within the
+ *     ranges; then every copy gets the version code decides
+ *     (npm-targets.ts), and copies npm put elsewhere are locked exactly at it
+ *     (npm-pins.ts), in rounds until npm keeps every target;
+ *   - **a major**: only that dependency's range moves, `npm install` brings in
+ *     what it induces, and the dependency is locked exactly at its target.
+ *
+ * Every npm command gets the repository's release-age window
+ * (`--min-release-age`, own scopes in `--min-release-age-exclude`) and runs
+ * no package code (`--ignore-scripts`). The result is each `package.json`
+ * and lockfile that differs from the base, byte for byte, what moved, and
+ * what was left as it was and why.
+ */
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+import type { NpmDeclaration } from "../../ci/src/candidates.ts";
+import { directDependencies } from "../../ci/src/npm-lock.ts";
+
+import { NpmGraph, rewriteSpec } from "./npm-graph.ts";
+import { repositoryOverrides } from "./npm-overrides.ts";
+import { pinnedManifests } from "./npm-pins.ts";
+import { type Decision, decideTargets, type TargetSources } from "./npm-targets.ts";
+
+/** Runs npm with `args` in `cwd` (an absolute directory in the scratch copy). */
+export type NpmCommand = (cwd: string, args: ReadonlyArray<string>) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** A planned direct dependency's move in one declaration. */
+export interface DeclarationMove extends NpmDeclaration {
+  readonly name: string;
+  readonly to: string;
+}
+
+export interface NpmInputs {
+  readonly kind: "routine" | "major";
+  /** The scratch copy: the base's files. */
+  readonly dir: string;
+  /** The base's lockfiles (repo-relative) and their parsed contents. */
+  readonly baseLocks: ReadonlyMap<string, unknown>;
+  readonly moves: ReadonlyArray<DeclarationMove>;
+  readonly npm: NpmCommand;
+  readonly window: { readonly days: number; readonly exclude: ReadonlyArray<string> };
+  readonly sources: TargetSources;
+}
+
+/** A copy that moved, came or went. */
+export interface CopyChange {
+  readonly lockfile: string;
+  readonly path: string;
+  readonly name: string;
+  readonly from: string | undefined;
+  readonly to: string | undefined;
+}
+
+export interface NpmResult {
+  /** Repo-relative path → content, for each npm file that differs from the base. */
+  readonly files: ReadonlyMap<string, string>;
+  readonly changes: ReadonlyArray<CopyChange>;
+  /** Copies left as they were, and why. */
+  readonly notes: ReadonlyArray<string>;
+}
+
+/** How many lock passes a lockfile gets before bump-it gives up on npm keeping the targets. */
+export const MAX_PASSES = 4;
+
+type Manifest = Record<string, unknown>;
+
+export async function computeNpm(inputs: NpmInputs): Promise<NpmResult> {
+  const files = new Map<string, string>();
+  const changes: CopyChange[] = [];
+  const notes = new Set<string>();
+  const baseVersions = versionsByName(inputs.baseLocks);
+  const lockfiles = [...inputs.baseLocks.keys()].filter((lockfile) => inputs.kind === "routine" || inputs.moves.some((move) => move.lockfile === lockfile)).sort();
+  for (const lockfile of lockfiles) {
+    const result = await computeLockfile(lockfile, inputs, baseVersions);
+    for (const [path, content] of result.files) files.set(path, content);
+    changes.push(...result.changes);
+    for (const note of result.notes) notes.add(note);
+  }
+  return { files, changes, notes: [...notes].sort() };
+}
+
+async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions: ReadonlyMap<string, ReadonlyArray<string>>): Promise<NpmResult> {
+  const root = dirname(lockfile) === "." ? "" : dirname(lockfile);
+  const at = (path: string) => join(inputs.dir, root, path);
+  const repoPath = (path: string) => (root === "" ? path : `${root}/${path}`);
+  const baseLock = inputs.baseLocks.get(lockfile)!;
+  const baseGraph = new NpmGraph(baseLock);
+  const lockText = await readFile(at("package-lock.json"), "utf8");
+
+  // The root's and each workspace's package.json, as in the base, then with the planned ranges.
+  const declaring = ["", ...Object.keys(baseGraph.packages).filter((path) => path !== "" && !path.includes("node_modules/") && baseGraph.packages[path]?.link !== true)];
+  const baseTexts = new Map<string, string>();
+  for (const path of declaring) baseTexts.set(path, await readFile(at(manifestOf(path)), "utf8"));
+  const planned = plannedManifests(baseTexts, inputs.moves.filter((move) => move.lockfile === lockfile), lockfile);
+  const plannedParsed = new Map([...planned].map(([path, text]) => [path, JSON.parse(text) as Manifest]));
+  const writePlanned = async () => {
+    for (const [path, text] of planned) await writeFile(at(manifestOf(path)), text);
+  };
+  await writePlanned();
+
+  const flags = ["--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", `--min-release-age=${inputs.window.days}`, ...inputs.window.exclude.map((pattern) => `--min-release-age-exclude=${pattern}`)];
+  const npm = async (...args: string[]) => {
+    const result = await inputs.npm(join(inputs.dir, root), [...args, ...flags]);
+    if (result.code !== 0) throw new Error(`npm ${args.join(" ")} in ${root === "" ? "the root" : root} failed (exit ${result.code}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
+  };
+  await npm("install");
+  if (inputs.kind === "routine") await npm("update");
+
+  const overrides = repositoryOverrides(plannedParsed.get(""));
+  const plannedDirect = new Map(inputs.moves.filter((move) => move.lockfile === lockfile).map((move) => [`${move.workspace}:${move.declaredAs}`, move.to]));
+  const baseDirect = new Map(directDependencies(baseLock).map((dependency) => [`${dependency.workspace || "."}:${dependency.declaredAs}`, dependency.version]));
+  let decisions: Decision[] = [];
+  for (let pass = 0; ; pass++) {
+    const graph = new NpmGraph(JSON.parse(await readFile(at("package-lock.json"), "utf8")));
+    const direct = directTargets(graph, plannedDirect, inputs.kind === "routine" ? baseDirect : new Map());
+    decisions =
+      inputs.kind === "routine"
+        ? await decideTargets({ graph, base: baseGraph, baseVersions, overrides, direct }, inputs.sources)
+        : graph.copies().flatMap((copy) => (direct.has(copy.path) ? [{ copy, kind: "target" as const, target: direct.get(copy.path)!, direct: true }] : []));
+    const off = decisions.flatMap((decision) => (decision.kind !== "left-to-npm" && decision.target !== undefined && decision.target !== decision.copy.version ? [{ copy: decision.copy, target: decision.target }] : []));
+    if (off.length === 0) break;
+    if (pass === MAX_PASSES) {
+      throw new Error(`npm didn't keep the targets in ${lockfile} after ${MAX_PASSES} passes: ${off.map((pin) => `${pin.copy.name} at ${pin.copy.path} is ${pin.copy.version}, not ${pin.target}`).join("; ")}`);
+    }
+    const pinned = pinnedManifests(graph, off, plannedParsed, overrides);
+    for (const [path, manifest] of pinned) await writeFile(at(manifestOf(path)), `${JSON.stringify(manifest, null, 2)}\n`);
+    await npm("install");
+    await writePlanned();
+    await npm("install");
+  }
+
+  const files = new Map<string, string>();
+  for (const [path, text] of planned) {
+    const onDisk = await readFile(at(manifestOf(path)), "utf8");
+    if (onDisk !== text) throw new Error(`npm rewrote ${repoPath(manifestOf(path))}; bump-it lands only the ranges it planned`);
+    if (text !== baseTexts.get(path)) files.set(repoPath(manifestOf(path)), text);
+  }
+  const finalText = await readFile(at("package-lock.json"), "utf8");
+  if (finalText !== lockText) files.set(lockfile, finalText);
+  const notes = decisions.flatMap((decision) =>
+    decision.kind === "unresolved" ? [`${lockfile}: ${decision.copy.name} at ${decision.copy.path} stays at ${decision.target ?? decision.copy.version}: ${decision.why}`] : decision.kind === "left-to-npm" ? [`${lockfile}: ${decision.why}`] : [],
+  );
+  return { files, changes: changesBetween(lockfile, baseGraph, new NpmGraph(JSON.parse(finalText))), notes };
+}
+
+function manifestOf(declaringPath: string): string {
+  return declaringPath === "" ? "package.json" : `${declaringPath}/package.json`;
+}
+
+/**
+ * Each declaring manifest's text with the planned ranges. A manifest npm's
+ * own formatting reproduces is re-serialized; any other gets each spec
+ * replaced in place, so nothing else in it changes.
+ */
+function plannedManifests(texts: ReadonlyMap<string, string>, moves: ReadonlyArray<DeclarationMove>, lockfile: string): Map<string, string> {
+  const result = new Map(texts);
+  for (const move of moves) {
+    const path = move.workspace === "." ? "" : move.workspace;
+    const text = result.get(path);
+    if (text === undefined) throw new Error(`${lockfile} has no workspace ${move.workspace} declaring ${move.declaredAs}`);
+    const spec = rewriteSpec(move.spec, move.to);
+    if (spec === undefined) throw new Error(`${move.declaredAs}'s range '${move.spec}' in ${manifestOf(path)} can't be moved to ${move.to} mechanically`);
+    if (spec === move.spec) continue;
+    result.set(path, withSpec(text, move.declaredAs, move.spec, spec, manifestOf(path)));
+  }
+  return result;
+}
+
+function withSpec(text: string, key: string, from: string, to: string, file: string): string {
+  const manifest = JSON.parse(text) as Manifest;
+  let found = false;
+  for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    const deps = manifest[field] as Record<string, string> | undefined;
+    if (deps?.[key] === from) {
+      deps[key] = to;
+      found = true;
+    }
+  }
+  if (!found) throw new Error(`${file} doesn't declare ${key} as '${from}'`);
+  const indent = /^[ \t]+(?=")/m.exec(text)?.[0] ?? "  ";
+  const newline = text.includes("\r\n") ? "\r\n" : "\n";
+  const canonical = (value: unknown) => `${JSON.stringify(value, null, indent).replaceAll("\n", newline)}${text.endsWith(newline) ? newline : ""}`;
+  if (canonical(JSON.parse(text)) === text) return canonical(manifest);
+  // Not npm's own formatting: replace the pair in place, when it's there exactly once.
+  const pair = new RegExp(`${escape(JSON.stringify(key))}(\\s*:\\s*)${escape(JSON.stringify(from))}`, "g");
+  const matches = [...text.matchAll(pair)];
+  if (matches.length !== 1) throw new Error(`${file} isn't formatted the way npm writes it, and '${key}: ${from}' isn't there exactly once to replace`);
+  return text.replace(pair, (_whole, colon: string) => `${JSON.stringify(key)}${colon}${JSON.stringify(to)}`);
+}
+
+function escape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Copy path → the version each declared dependency's copy must be at: the
+ * planned target, else (routine) its declaration's version in the base. Two
+ * declarations sharing a copy must agree.
+ */
+function directTargets(graph: NpmGraph, planned: ReadonlyMap<string, string>, base: ReadonlyMap<string, string>): Map<string, string> {
+  const targets = new Map<string, string>();
+  for (const edge of graph.declaredEdges()) {
+    if (edge.to === undefined) continue;
+    const key = `${edge.from === "" ? "." : edge.from}:${edge.key}`;
+    const target = planned.get(key) ?? base.get(key);
+    if (target === undefined) continue;
+    const other = targets.get(edge.to);
+    if (other !== undefined && other !== target) throw new Error(`declarations sharing ${edge.to} want ${other} and ${target}`);
+    targets.set(edge.to, target);
+  }
+  return targets;
+}
+
+function versionsByName(locks: ReadonlyMap<string, unknown>): Map<string, string[]> {
+  const versions = new Map<string, Set<string>>();
+  for (const lock of locks.values()) {
+    for (const copy of new NpmGraph(lock).copies()) versions.set(copy.name, new Set([...(versions.get(copy.name) ?? []), copy.version]));
+  }
+  return new Map([...versions].map(([name, set]) => [name, [...set].sort()]));
+}
+
+function changesBetween(lockfile: string, base: NpmGraph, head: NpmGraph): CopyChange[] {
+  const before = new Map(base.copies().map((copy) => [copy.path, copy]));
+  const after = new Map(head.copies().map((copy) => [copy.path, copy]));
+  const changes: CopyChange[] = [];
+  for (const path of [...new Set([...before.keys(), ...after.keys()])].sort()) {
+    const was = before.get(path);
+    const now = after.get(path);
+    if (was?.name === now?.name && was?.version === now?.version) continue;
+    changes.push({ lockfile, path, name: now?.name ?? was!.name, from: was?.version, to: now?.version });
+  }
+  return changes;
+}
