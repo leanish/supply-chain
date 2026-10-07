@@ -18,14 +18,15 @@ import { namingFailures } from "../../ci/src/http.ts";
 import { runProcess } from "../../ci/src/process.ts";
 import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
+import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
 import { changedSince } from "../../remediation/src/git-copies.ts";
+import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
-import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "./inventory.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
 import { type ChangePlan, packageKey, planFor, selectWork } from "./plan.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
@@ -33,7 +34,6 @@ import { verifyPlan, type VerifyInputs } from "./verify.ts";
 
 export const RULES = ownPullRequests("secure-it");
 const SKILLS_DIR = fileURLToPath(new URL("../skills", import.meta.url));
-const FLOORS_FILE = ".github/dependency-floors.json";
 
 /** What the agent answers (the skill's output schema). */
 interface SkillAnswer {
@@ -280,16 +280,4 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   };
   const reviewed = await reviewOpenPullRequests({ ...publication }, steps);
   return { outcome: "reviewed", reviewed };
-}
-
-/** Dependency files (lockfiles, manifests, Gradle build, settings and catalog files, floors) whose conflicts take the base's side, the plan then re-applied on top. */
-function isMechanical(path: string): boolean {
-  const name = path.split("/").at(-1) ?? path;
-  return (
-    ["package-lock.json", "npm-shrinkwrap.json", "package.json", "gradle.lockfile", "buildscript-gradle.lockfile"].includes(name) ||
-    name.endsWith(".gradle") ||
-    name.endsWith(".gradle.kts") ||
-    path === FLOORS_FILE ||
-    path.endsWith("gradle/libs.versions.toml")
-  );
 }

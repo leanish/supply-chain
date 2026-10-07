@@ -112,6 +112,7 @@ describe("runToolCommand", () => {
     expect(code).toBe(0);
     expect(seen?.base).toBe("trunk");
     expect(seen?.releaseAgeDays).toBe(7);
+    expect(seen?.releaseAgeExclude).toEqual([]);
     expect(seen?.readToken).toBe("read-token");
     expect(seen?.isolation.env?.["npm_config_min_release_age"]).toBe("7");
     expect(seen?.isolation.env?.["PATH"]).toContain("agent-basics/guard");

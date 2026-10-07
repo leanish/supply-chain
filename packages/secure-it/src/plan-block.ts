@@ -6,9 +6,11 @@
  */
 import { createHash } from "node:crypto";
 
+import { planBlock, planPayload, withPlanSection as replaced } from "../../remediation/src/plan-blocks.ts";
+
 import type { ChangePlan, PlannedMove } from "./plan.ts";
 
-const BLOCK = /<!-- leanish:plan ([A-Za-z0-9+/=]+) -->/;
+const HEADING = "### What secure-it moved";
 
 /** A stable digest of what the plan moves: two runs with the same moves and targets get the same one. */
 export function planDigest(plan: ChangePlan): string {
@@ -24,9 +26,8 @@ export function planSection(plan: ChangePlan): string {
     (move) =>
       `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${move.advisories.join(", ")} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
   );
-  const encoded = Buffer.from(JSON.stringify(plan)).toString("base64");
   return [
-    "### What secure-it moved",
+    HEADING,
     "",
     "| Ecosystem | Package | Version | How | Fixes | Where |",
     "|---|---|---|---|---|---|",
@@ -34,29 +35,19 @@ export function planSection(plan: ChangePlan): string {
     "",
     "The versions are the ones the supply-chain gate's rule picks (`supply-chain candidates --rule security`); the gate verified the change before it was published.",
     "",
-    `<!-- leanish:plan ${encoded} -->`,
+    planBlock(plan),
   ].join("\n");
 }
 
 /** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none). */
 export function withPlanSection(body: string, plan: ChangePlan): string {
-  const start = body.indexOf("### What secure-it moved");
-  const block = BLOCK.exec(body);
-  if (start === -1 || block === null) return `${body.trimEnd()}\n\n${planSection(plan)}`;
-  const end = block.index + block[0].length;
-  return `${body.slice(0, start)}${planSection(plan)}${body.slice(end)}`;
+  return replaced(body, HEADING, planSection(plan));
 }
 
 /** The plan a PR's body carries, if it has one that parses. */
 export function planOf(body: string): ChangePlan | undefined {
-  const found = BLOCK.exec(body);
-  if (found === null) return undefined;
-  try {
-    const plan = JSON.parse(Buffer.from(found[1]!, "base64").toString("utf8")) as ChangePlan;
-    return Array.isArray(plan.moves) && plan.moves.every(isMove) ? plan : undefined;
-  } catch {
-    return undefined;
-  }
+  const plan = planPayload(body) as ChangePlan | undefined;
+  return plan !== undefined && typeof plan === "object" && plan !== null && Array.isArray(plan.moves) && plan.moves.every(isMove) ? plan : undefined;
 }
 
 function isMove(move: unknown): move is PlannedMove {

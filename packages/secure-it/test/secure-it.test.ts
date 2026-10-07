@@ -82,6 +82,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     logger: new ConsoleLogger({ minLevel: "error" }),
     now: NOW,
     releaseAgeDays: 7,
+    releaseAgeExclude: [],
     readToken: "read-token",
     isolation: {},
     agent: (async (call: { entrypoint: string; input: Record<string, unknown>; effort?: string }) => {

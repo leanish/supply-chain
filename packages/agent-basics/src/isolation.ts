@@ -2,7 +2,7 @@
 // `SENSITIVE_HOME_PATHS`) at e4f8a1e; see PROVENANCE.md.
 // Local changes: every input is explicit (the tool's config) instead of `AGENT_RUNTIME_*` variables; the agent's
 // commands get the configured commit identity instead of the developer's global git identity; the release age is
-// the repository's, not a fixed 7.
+// the repository's, not a fixed 7, with its own npm scopes excluded from it.
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -55,6 +55,8 @@ export interface IsolationSettings {
   readonly commandPath: ReadonlyArray<string>;
   /** The repository's release age, given to npm as `min-release-age`. */
   readonly releaseAgeDays: number;
+  /** npm package patterns exempt from it (the repository's own scopes, `@scope/*`), given to npm as `min-release-age-exclude`. */
+  readonly releaseAgeExclude: ReadonlyArray<string>;
   /** Where the build tools' caches go instead of `~/.gradle` and the like. */
   readonly buildCacheRoot: string;
 }
@@ -77,7 +79,8 @@ export interface Machine {
  *     stays readable, and so do toolchains and working copies under it;
  *   - replace the home's git and npm config (denied above, and able to hold
  *     credentials) with env: the configured commit identity, npm's
- *     `ignore-scripts` and the repository's `min-release-age`;
+ *     `ignore-scripts`, the repository's `min-release-age` and its own
+ *     packages' `min-release-age-exclude` (npm 11.17 or later reads it);
  *   - put `commandPath` (the guards) first on the PATH of the agent's
  *     commands — only theirs: the tool's own clone and push keep the real
  *     tools;
@@ -91,6 +94,9 @@ export function codexIsolation(settings: IsolationSettings, machine: Partial<Mac
   if (!Number.isInteger(settings.releaseAgeDays) || settings.releaseAgeDays < 0) {
     throw new Error(`releaseAgeDays must be a non-negative integer; got ${settings.releaseAgeDays}`);
   }
+  // npm splits the variable on commas.
+  const exclude = settings.releaseAgeExclude.find((pattern) => pattern.trim() === "" || pattern.includes(","));
+  if (exclude !== undefined) throw new Error(`releaseAgeExclude patterns must be non-empty and have no comma; got '${exclude}'`);
   const readDenied = [...SENSITIVE_HOME_PATHS.map((path) => join(home, path)).filter(exists), ...settings.readDeny];
   const path = nonEmpty(env["PATH"]);
   const commandPath = settings.commandPath.join(":");
@@ -108,6 +114,7 @@ export function codexIsolation(settings: IsolationSettings, machine: Partial<Mac
       npm_config_userconfig: "/dev/null",
       npm_config_ignore_scripts: "true",
       npm_config_min_release_age: String(settings.releaseAgeDays),
+      ...(settings.releaseAgeExclude.length > 0 ? { npm_config_min_release_age_exclude: settings.releaseAgeExclude.join(",") } : {}),
       ...(commandPath !== "" ? { PATH: path !== undefined ? `${commandPath}:${path}` : commandPath } : {}),
       GIT_AUTHOR_NAME: name,
       GIT_AUTHOR_EMAIL: email,

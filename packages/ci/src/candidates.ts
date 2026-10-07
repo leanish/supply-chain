@@ -229,7 +229,7 @@ async function isAged(pkg: PackageVersion, catalog: VersionCatalog, config: Conf
  * another: against every copy of the replaced version the lockfiles ship from
  * the registry, with the same exceptions. Other ecosystems have none.
  */
-class IdentityCheck {
+export class IdentityCheck {
   readonly #registry: NpmRegistry;
   readonly #lockfiles: ReadonlyArray<NpmLockfile>;
   readonly #exceptions: Exceptions;

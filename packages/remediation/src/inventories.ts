@@ -1,5 +1,5 @@
 /**
- * What secure-it reads about a tree. The Gradle inventory runs the build, so
+ * What the tools read about a tree. The Gradle inventory runs the build, so
  * it runs under the agent's sandbox (`runSandboxed`), never in the tool's
  * process; the rest is read as data: lockfiles and settings from git objects
  * or the working tree.
@@ -14,8 +14,9 @@ import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { treeSources } from "../../ci/src/gate.ts";
 import { type GradleInventory, parseGradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
-import { exportCommit } from "../../remediation/src/git-copies.ts";
-import { runSandboxed } from "../../remediation/src/sandboxed.ts";
+
+import { exportCommit } from "./git-copies.ts";
+import { runSandboxed } from "./sandboxed.ts";
 
 const GATE_CLI = fileURLToPath(new URL("../../ci/src/cli.ts", import.meta.url));
 
@@ -31,7 +32,7 @@ export function sandboxedGradleInventories(isolation: CodexRunnerOptions, workin
   const inventory = async (dir: string, tree: Tree, label: string): Promise<GradleInventory | undefined> => {
     const builds = (await treeSources(tree)).gradleBuilds;
     if (builds.length === 0) return undefined;
-    const outDir = await mkdtemp(join(tmpdir(), "secure-it-gradle-"));
+    const outDir = await mkdtemp(join(tmpdir(), "remediation-gradle-"));
     try {
       const out = join(outDir, "gradle.json");
       const result = await runSandboxed(
