@@ -60,6 +60,13 @@ export interface GradleInventory {
   readonly builds: ReadonlyArray<GradleBuild>;
 }
 
+export interface GradleInventoryOptions {
+  /** Applied before the inventory script so their Gradle lifecycle hooks run first. */
+  readonly additionalInitScripts?: ReadonlyArray<string>;
+  /** Extra Gradle system properties, passed as individual arguments (never through a shell). */
+  readonly systemProperties?: Readonly<Record<string, string>>;
+}
+
 /**
  * Runs the init script in every listed build and collects what it wrote,
  * nested builds included (buildSrc, included builds, plugin builds Gradle
@@ -72,6 +79,7 @@ export async function runGradleInventory(
   builds: ReadonlyArray<string>,
   tree: string,
   run: RunProcess,
+  options: GradleInventoryOptions = {},
 ): Promise<GradleInventory> {
   // Absolute: the wrapper runs with the repository as its working directory, so a relative path would resolve twice.
   const repoRoot = resolve(repoDir);
@@ -84,7 +92,21 @@ export async function runGradleInventory(
     const out = await mkdtemp(join(tmpdir(), "supply-chain-gradle-"));
     try {
       // A reused daemon keeps the sandbox it started in. Any daemon needed here must be single-use, CI included.
-      const args = ["-p", build, "--init-script", INIT_SCRIPT, `-DsupplyChain.out=${out}`, "--no-daemon", "--no-configuration-cache", "--quiet", "supplyChainInventory"];
+      const extraInitScripts = (options.additionalInitScripts ?? []).flatMap((script) => ["--init-script", script]);
+      const systemProperties = Object.entries(options.systemProperties ?? {}).map(([key, value]) => `-D${key}=${value}`);
+      const args = [
+        "-p",
+        build,
+        ...extraInitScripts,
+        "--init-script",
+        INIT_SCRIPT,
+        `-DsupplyChain.out=${out}`,
+        ...systemProperties,
+        "--no-daemon",
+        "--no-configuration-cache",
+        "--quiet",
+        "supplyChainInventory",
+      ];
       // The build is the repository's own code: it gets no credentials.
       const result = await run(join(repoRoot, "gradlew"), args, { cwd: repoRoot, env: withoutCredentials(process.env) });
       if (result.code !== 0) {

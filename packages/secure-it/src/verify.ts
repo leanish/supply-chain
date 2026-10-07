@@ -7,7 +7,8 @@
  *      action pin names, everything but that pin's ref and comment (checked
  *      first, since `compare` reads policy from head);
  *      recorded floors and their declarations are preserved, except exact
- *      planned security changes and additions; compatibility floors never change;
+ *      planned security changes, additions, or removals in a floor-removal plan;
+ *      compatibility floors never change;
  *   1. `compare` base → working tree passes (it judges every version that
  *      changed, transitives a parent update pulled in included);
  *   2. every planned move landed exactly: npm, the lockfile entry at each
@@ -41,6 +42,7 @@ import {
 import { lockfilesOf } from "../../remediation/src/inventories.ts";
 
 import { preservedFloors } from "./floor-checks.ts";
+import { verifyRemovalEdit } from "./floor-verification.ts";
 import { type ChangePlan, lockfileOf, packageKey } from "./plan.ts";
 
 export interface VerifyInputs {
@@ -63,6 +65,8 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   if (fenced.length > 0) return fenced;
   const floors = await preservedFloors(plan, base, head, gradle);
   if (floors.length > 0) return floors;
+
+  if (plan.kind === "floor-removal") return verifyRemovalEdit(inputs);
 
   const compared = await runCompare(base, head, env, gradle);
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));

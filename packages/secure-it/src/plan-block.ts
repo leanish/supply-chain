@@ -8,20 +8,27 @@ import { createHash } from "node:crypto";
 
 import { planBlock, planPayload, withPlanSection as replaced } from "../../remediation/src/plan-blocks.ts";
 
+import { floorIdentity, validRemoval } from "./floor-removal.ts";
 import type { ChangePlan, PlannedMove } from "./plan.ts";
 
 const HEADING = "### What secure-it moved";
 
-/** A stable digest of what the plan moves: two runs with the same moves and targets get the same one. */
+/** Identity includes version targets, or exact removed floor records and the jointly resolved npm bytes. */
 export function planDigest(plan: ChangePlan): string {
   const moves = [...plan.moves]
     .map((move) => ({ ...move, locations: [...move.locations].sort(), advisories: [...move.advisories].sort() }))
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return createHash("sha256").update(JSON.stringify(moves)).digest("hex");
+  const removal = plan.floorRemoval;
+  const identity = removal === undefined ? moves : {
+    floors: removal.floors.map(floorIdentity).sort(),
+    files: [...removal.files].sort((a, b) => a.path.localeCompare(b.path)),
+  };
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 /** The section secure-it adds to the agent's description: the moves, and the plan for later runs. */
 export function planSection(plan: ChangePlan): string {
+  if (plan.kind === "floor-removal" && plan.floorRemoval !== undefined) return removalSection(plan);
   const rows = plan.moves.map(
     (move) =>
       `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${fixesLabel(plan, move)} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
@@ -38,6 +45,17 @@ export function planSection(plan: ChangePlan): string {
     "",
     planBlock(plan),
   ].join("\n");
+}
+
+function removalSection(plan: ChangePlan): string {
+  const removal = plan.floorRemoval!;
+  const escape = (text: string) => text.replaceAll("|", "\\|").replace(/\s+/g, " ");
+  const rows = removal.floors.map((floor) => `| ${floor.ecosystem} | ${escape(floor.package)} | ${floor.version} | ${escape(floor.declaredIn)} | ${floor.advisories.join(", ")} |`);
+  const section = [HEADING, "", "Security floors removed after one joint resolution without dependency locks kept every recorded advisory fixed.", "",
+    "| Ecosystem | Package | Floor | Declaration | Advisories |", "|---|---|---|---|---|", ...rows, "",
+    ...removal.notes.map((note) => `- ${escape(note)}`), "", "Compatibility floors are preserved. All induced versions are judged by compare before publication.", "", planBlock(plan)].join("\n");
+  if (section.length > 43000) throw new Error("floor-removal plan is too large for a PR body");
+  return section;
 }
 
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
@@ -75,6 +93,8 @@ export function planOf(body: string): ChangePlan | undefined {
 }
 
 function validMetadata(plan: ChangePlan): boolean {
+  if (plan.kind === "floor-removal") return plan.topic === "floor-removal" && plan.malware === false && plan.moves.length === 0 && validRemoval(plan.floorRemoval);
+  if (plan.floorRemoval !== undefined) return false;
   if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
   if (plan.coupled !== undefined && (!Array.isArray(plan.coupled) || !plan.coupled.every((set) => Array.isArray(set) && set.every((name: unknown) => typeof name === "string")))) return false;
   if (plan.leftOut === undefined) return true;

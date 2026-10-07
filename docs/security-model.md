@@ -64,5 +64,14 @@ Both tools are in this tree: [`secure-it`](../packages/secure-it) and [`bump-it`
   scripts are protected against later agent edits, rather than independently compared with official scripts.
 - **The agent edits a clone whose git metadata it can't write.** It can't commit or push. The `gh` and `git` guards on its PATH stop writes before they reach GitHub; they are guard rails, not a boundary.
 - **The tool decides versions, verifies the result with this gate, and publishes.** Every write to a PR re-reads it first and stops unless it's still the tool's, at the expected head. Nothing merges by itself.
-- **Floor history stays intact.** secure-it compares recorded floors and their declarations before `compare`: compatibility floors never change, and security floors change only at exact planned targets with their scope and history preserved. New floors must be planned security additions. Remaining target advisories are checked using the head findings from compare's same snapshot.
+- **Floor history stays intact.** secure-it compares recorded floors and their declarations before `compare`: compatibility floors never change, and security floors change only at exact planned targets with their scope and history preserved. New floors must be planned security additions. Only a dedicated floor-removal plan may remove exact recorded security floors; compatibility records and declarations remain intact. Remaining target advisories are checked using the head findings from compare's same snapshot.
+- **Floor removal requires a joint unlocked proof.** secure-it exports the base into sandboxed scratch copies.
+  npm resolves without either adjacent lock format, without lifecycle scripts, under the configured window and own
+  scopes. Gradle uses a trusted init script to filter exact advisory-bearing floor declarations and disable
+  dependency locks, with `--no-daemon` and no configuration cache. All selected floors must stay fixed in one joint
+  resolution; incomplete data retains them. The tool writes exact npm/floor bytes; the agent only removes named
+  Gradle declarations. Final verification preserves policy, compatibility floors and unrelated direct declarations,
+  checks the planned npm hashes, and uses compare's head findings to reject any remaining target advisory.
+  Gradle still runs repository code and can misrepresent its own inventory, as documented above; this proof does
+  not create an independent Gradle resolver.
 - **A push and its plan recover together.** Before updating a PR branch, the tool journals the intended head/base, title, full body (including the plan), and adaptation count. If the body update fails after the push, the next run or review restores that exact content with a guarded re-read. A legacy head/base-only recovery forces recomputation and verified republication in a run; review refuses readiness or adaptation until then.
