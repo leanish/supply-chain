@@ -161,6 +161,9 @@ Malware ids can't be excepted.
 
 ## Adopting the gate
 
+The reusable gate runs every GitHub-hosted job on `ubuntu-26.04`. Pin a commit that includes this runner setting.
+
+
 The reusable workflow [`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml) runs all of it. Call it from a workflow of your own, pinned to a full commit SHA of this repository (the gate is checked out from the same commit, so that's the only pin):
 
 ```yaml

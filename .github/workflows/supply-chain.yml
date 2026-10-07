@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
       sides: ${{ steps.mode.outputs.sides }}
@@ -66,7 +66,7 @@ jobs:
   rescan-plan:
     needs: plan
     if: needs.plan.outputs.mode == 'rescan'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read
@@ -102,7 +102,7 @@ jobs:
   # Runs the build's own code: read-only, and its only output is the inventory file.
   inventory:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -141,7 +141,7 @@ jobs:
   supply-chain:
     needs: [plan, inventory]
     if: always() && needs.plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Require the inventories
         env:
@@ -199,7 +199,7 @@ jobs:
   rescan-inventory:
     needs: rescan-plan
     if: needs.rescan-plan.outputs.prs != '[]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -259,7 +259,7 @@ jobs:
   rescan:
     needs: [plan, rescan-plan, rescan-inventory]
     if: always() && needs.rescan-plan.result == 'success' && needs.rescan-plan.outputs.prs != '[]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pull-requests: read
