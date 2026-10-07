@@ -10,6 +10,8 @@ Work in progress: the pieces land through pull requests. Licensed under Apache-2
 
 - [Why this, and not just Dependabot, OSV-Scanner or Renovate](docs/why.md)
 - [Adopting the gate](packages/ci/README.md#adopting-the-gate), and everything it checks: [`packages/ci/README.md`](packages/ci/README.md)
+- [Adopting secure-it and bump-it](docs/adopting-tools.md): tokens, first preview, launchd, logs and troubleshooting
+- [Tool config reference](docs/tool-configuration.md): both agent.yaml files and links to repository policy
 - [Security model](docs/security-model.md): what runs where, and which token it can reach
 - [Coverage gaps](docs/coverage-gaps.md)
 - [`packages/secure-it`](packages/secure-it): batches non-major fixes from the gate's full scan, each major apart, and removes redundant security floors in a separate verified draft PR

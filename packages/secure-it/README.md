@@ -137,7 +137,10 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
 
 ## Setup
 
-- **Config:** `~/.config/leanish/secure-it/agent.yaml`. See [`packages/remediation`](../remediation) for its fields.
+See [Adopting the tools](../../docs/adopting-tools.md) for the first candidate preview, live run, Keychain
+permissions and launchd schedules, and the [config reference](../../docs/tool-configuration.md) for every field.
+
+- **Config:** `~/.config/leanish/secure-it/agent.yaml`. See the [config reference](../../docs/tool-configuration.md) for its fields.
 - **Tokens:** two fine-grained tokens in the Keychain:
   - one that writes (Contents, Pull requests and Workflows: write; Actions, Commit statuses and Metadata: read);
   - a read-only one for the agent.
