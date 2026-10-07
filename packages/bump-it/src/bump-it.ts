@@ -82,7 +82,7 @@ async function run(context: ToolRunContext, deps: BumpItDeps): Promise<Readonly<
         deferred.push(unit.package!);
         continue;
       }
-      const computed = await compute(execution, unit, base, gradle);
+      const computed = await compute(execution, unit, base, gradle, found.npmPeers);
       const result = await runUnit(execution, computed, unit, own, owned);
       if (unit.kind === "major" && result.outcome === "published") {
         openedMajors++;
@@ -192,7 +192,7 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
         throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
       }
       const unit = unitFor(previous, found.bumps);
-      const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle);
+      const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle, found.npmPeers);
       if (computed === undefined || empty(computed)) {
         await closeAndDelete(execution.publication, pr.number, pr.headSha, "Recomputed on the default branch: this unit has nothing left to move.");
         return "retired";

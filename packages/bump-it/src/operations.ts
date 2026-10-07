@@ -5,15 +5,17 @@ import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts"
 import type { PreparedBranch } from "../../agent-basics/src/types/working-copy.ts";
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
+import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import type { ToolRunContext } from "../../remediation/src/command.ts";
-import type { GradleInventories } from "../../remediation/src/inventories.ts";
+import { type GradleInventories, lockfilesOf } from "../../remediation/src/inventories.ts";
 import { branchFor, ownPullRequests, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, type PublicationContext, type PullRequestContent } from "../../remediation/src/publication.ts";
 
 import { constrainedUnit } from "./constraints.ts";
 import type { BumpItDeps } from "./deps.ts";
 import { formatManifest } from "./manifest-format.ts";
+import { coupledUnit, constrainedPeers } from "./peers.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, planFor, planSection } from "./plan.ts";
 import type { Unit } from "./units.ts";
 
@@ -40,11 +42,14 @@ interface SkillAnswer {
   readonly publication?: PullRequestContent;
 }
 
-export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"]): Promise<Computed> {
-  const bounded = await constrainedUnit(unit, base);
-  const npm = await execution.deps.npm(execution.context, bounded.unit, base, execution.env, gradle);
+export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner): Promise<Computed> {
+  const coupled = await coupledUnit(unit, peers === undefined ? new Map() : await lockfilesOf(base), peers);
+  const bounded = await constrainedUnit(coupled.unit, base);
+  const ready = constrainedPeers(coupled.unit, bounded.unit, coupled.sets);
+  const notes = [...coupled.notes, ...bounded.notes, ...ready.notes];
+  const npm = await execution.deps.npm(execution.context, ready.unit, base, execution.env, gradle);
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
-  const plan = await planFor(bounded.unit, { ...npm, notes: [...bounded.notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
+  const plan = await planFor(ready.unit, { ...npm, notes: [...notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
   return { plan, files: npm.files, base, gradle };
 }
 

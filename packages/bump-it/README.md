@@ -19,6 +19,14 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   PR, including every declaration of that package with a selected major move. Each unit starts from the default branch,
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
+- Before npm resolves a routine or major, code checks incoming and outgoing peer constraints against existing directs.
+  Rule-picked bump targets stay fixed; required companions are added explicitly at the lowest safe version in their
+  own compatible line that makes the set consistent, aged (own scopes: any age), with no new advisory group, malware
+  or rejected publisher identity. Compatible peers stay at base; a needed companion may move downward within its line.
+  One peer snapshot judges the fixed targets and all companions together. Impossible sets or repository constraints
+  that exclude a companion are reported and left out, while unrelated routine moves continue. Unreadable locked peer
+  metadata blocks npm moves because incoming constraints cannot be ruled out. New or purely transitive peers stay
+  with npm resolution and `compare`. A major's PR still belongs to its primary package and counts as one new major.
 - npm resolution runs in an exported scratch copy, under `codex sandbox`, with `--package-lock-only --ignore-scripts`,
   the release-age window and own-scope exclusions on every install/update. Packages with a young locked base version
   in any lockfile this unit computes also get a named npm age exclusion, so npm can keep the version already locked;
@@ -28,7 +36,7 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   then code weighs all transitive candidates within the dependents' ranges and existing override constraints on one
   advisory snapshot. Temporary exact specs/overrides lock targets, restoring the planned manifests before a second
   install. The final graph must keep every target (at most four pin passes). Majors install their own move without a
-  routine refresh; other direct declarations remain at base.
+  routine refresh, installing any explicit peer companions too; direct declarations outside the plan remain at base.
 - Unjudgeable copies stay at their base version, with an unresolved note. Complex scoped override rules are treated
   conservatively: their copies stay at base rather than claiming an R3 selection. If a new copy has no provable eligible
   target, or npm cannot retain a required target, that unit fails. Exact repository pins are reported separately as pins.

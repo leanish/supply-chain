@@ -24,7 +24,7 @@ export function planDigest(plan: ChangePlan): string {
 export function planSection(plan: ChangePlan): string {
   const rows = plan.moves.map(
     (move) =>
-      `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${move.advisories.join(", ")} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
+      `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${fixesLabel(plan, move)} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
   );
   return [
     HEADING,
@@ -34,10 +34,17 @@ export function planSection(plan: ChangePlan): string {
     ...rows,
     ...omittedSection(plan),
     "",
-    "The versions are the ones the supply-chain gate's rule picks (`supply-chain candidates --rule security`); the gate verified the change before it was published.",
+    "Security targets are the versions the supply-chain gate's rule picks (`supply-chain candidates --rule security`); code chose any required direct-peer companions at their lowest safe compatible versions. The gate verified the change before it was published.",
     "",
     planBlock(plan),
   ].join("\n");
+}
+
+/** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
+function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
+  if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
+  const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
+  return coupled ? "direct peer compatibility" : "";
 }
 
 /** Omissions are visible to reviewers as well as the command report and persisted plan. */
@@ -69,6 +76,7 @@ export function planOf(body: string): ChangePlan | undefined {
 
 function validMetadata(plan: ChangePlan): boolean {
   if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
+  if (plan.coupled !== undefined && (!Array.isArray(plan.coupled) || !plan.coupled.every((set) => Array.isArray(set) && set.every((name: unknown) => typeof name === "string")))) return false;
   if (plan.leftOut === undefined) return true;
   return Array.isArray(plan.leftOut) && plan.leftOut.every((entry) =>
     entry !== null && typeof entry === "object" && Array.isArray(entry.moves) && entry.moves.every(isMove) &&

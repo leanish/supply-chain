@@ -8,6 +8,7 @@ import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts"
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
 import { type SecurityCandidates, type SecurityFix, securityCandidates } from "../../ci/src/candidates.ts";
+import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
 import { namingFailures } from "../../ci/src/http.ts";
 import { runProcess } from "../../ci/src/process.ts";
@@ -28,7 +29,7 @@ import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../
 
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
-import { type ChangePlan, packageKey, planFor, selectWork, type SecurityUnit } from "./plan.ts";
+import { type ChangePlan, coupledWork, packageKey, planFor, type SecurityUnit } from "./plan.ts";
 import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { verifyPlan, type VerifyInputs } from "./verify.ts";
@@ -172,7 +173,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(tree, env, { head: base.gradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const selection = selectWork(found.fixes);
+  const selection = await coupledWork(found.fixes, found.npmPeers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
   if (selection.units.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps) };
@@ -336,8 +337,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const baseGradle = await inventories.ofCommit(base);
       const found = await deps.candidates(base, env, { head: baseGradle });
       if (found.incomplete.length > 0) throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
-      const unit = reviewUnit(previous, found.fixes);
-      const blocked = selectWork(found.fixes).blocked;
+      const { unit, blocked } = await reviewUnit(previous, found.fixes, found.npmPeers);
       if (blocked.length > 0) notes.push({ number: pr.number, blocked });
       if (unit === undefined) {
         await closeAndDelete(publication, pr.number, pr.headSha, "No actionable fixes remain for this security unit on the default branch. Blocked fixes are reported by secure-it.");
@@ -403,15 +403,14 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
 }
 
 /** New routine PRs recompute all non-majors; majors and legacy PRs retain their package scope. */
-function reviewUnit(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>): SecurityUnit | undefined {
+async function reviewUnit(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner) {
   if (previous.kind !== "malware" && !previous.malware && fixes.some((fix) => fix.malicious)) {
     throw new Error("malware on the new base must be fixed together before this security unit can verify");
   }
   const ours = new Set(previous.packages);
   const scoped = previous.kind === "routine" || previous.malware ? fixes : fixes.filter((fix) => ours.has(packageKey(fix)));
-  const selected = selectWork(scoped);
-  if (previous.malware || previous.kind === "malware") return selected.units.find((unit) => unit.kind === "malware");
-  if (previous.kind === "routine") return selected.units.find((unit) => unit.kind === "routine");
-  if (previous.kind === "major") return selected.units.find((unit) => unit.kind === "major");
-  return selected.units[0];
+  const selected = await coupledWork(scoped, peers);
+  const kind = previous.malware ? "malware" : previous.kind;
+  const unit = kind === undefined ? selected.units[0] : selected.units.find((unit) => unit.kind === kind);
+  return { unit, blocked: selected.blocked };
 }

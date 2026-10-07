@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SecurityFix } from "../../ci/src/candidates.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
-import { planFor, selectWork } from "../src/plan.ts";
+import { coupledWork, planFor, selectWork } from "../src/plan.ts";
 
 function fix(overrides: Partial<SecurityFix> & Pick<SecurityFix, "name" | "from">): SecurityFix {
   return {
@@ -23,6 +23,22 @@ const NO_TAGS = async () => undefined;
 const names = (fixes: ReadonlyArray<SecurityFix>) => fixes.map((f) => f.name);
 
 describe("selectWork", () => {
+  it("adds safe direct companions and reports an impossible peer set without blocking another package", async () => {
+    const vitest = fix({ name: "vitest", from: "4.1.7", to: { version: "4.1.11", line: "4", aged: true, major: false, blockers: [] } });
+    const other = fix({ name: "other", from: "1.0.0" });
+    const companion = { name: "@vitest/ui", from: "4.1.7", to: "4.1.11", locations: ["node_modules/@vitest/ui"], line: "4", aged: true, declarations: [] };
+    const peers = { resolve: async () => ({ additions: [companion], blocked: [], sets: [["vitest", "@vitest/ui"]] }) };
+    const selected = await coupledWork([vitest, other], peers);
+    expect(selected.units[0]?.work.map((entry) => entry.name)).toEqual(["other", "vitest", "@vitest/ui"]);
+    expect(selected.units[0]?.work[2]).toMatchObject({ targets: [], to: { version: "4.1.11", major: false } });
+    expect(selected.units[0]?.coupled).toEqual([["npm|vitest", "npm|@vitest/ui"]]);
+    const stuck = { resolve: async () => ({ additions: [], blocked: [{ moves: [{ ...vitest, to: "4.1.11" }], reason: "UI has no safe compatible peer" }], sets: [] }) };
+    const remaining = await coupledWork([vitest, other], stuck);
+    expect(remaining.units[0]?.work.map((entry) => entry.name)).toEqual(["other"]);
+    expect(remaining.blocked).toEqual([{ packages: ["npm|vitest"], reasons: ["UI has no safe compatible peer"] }]);
+    expect((await coupledWork([{ ...vitest, malicious: true }, other], stuck)).units).toEqual([]);
+  });
+
   it("takes malware together, otherwise batches non-majors in severity/name order", () => {
     const evil = fix({ name: "evil", from: "1.0.0", malicious: true, severity: undefined });
     const worse = fix({ name: "worse", from: "1.0.0", malicious: true });

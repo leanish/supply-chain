@@ -41,7 +41,7 @@ async function tree(locked: Record<string, string>, files: Record<string, string
 type Registry = Record<string, Record<string, string>>;
 
 /** Fake osv-scanner answering from `affected` (`name@version` → ids), fake npm registry from `registry`; records scans. */
-function environment(affected: Record<string, string[]>, registry: Registry, scans: string[][] = []): GateEnvironment {
+function environment(affected: Record<string, string[]>, registry: Registry, scans: string[][] = [], manifests: Record<string, object> = {}): GateEnvironment {
   const run: RunProcess = async (command, args, options) => {
     if (command !== "osv-scanner") return runProcess(command, args, options);
     if (args[0] === "--version") return { code: 0, stdout: "osv-scanner version: 2.6.0\n", stderr: "" };
@@ -71,7 +71,7 @@ function environment(affected: Record<string, string[]>, registry: Registry, sca
     Object.entries(registry).flatMap(([name, versions]) => [
       [
         `https://registry.npmjs.org/${name.replace("/", "%2F")}`,
-        { body: { time: versions, versions: Object.fromEntries(Object.keys(versions).map((version) => [version, manifest])) } },
+        { body: { time: versions, versions: Object.fromEntries(Object.keys(versions).map((version) => [version, { ...manifest, ...manifests[`${name}@${version}`] }])) } },
       ],
       // Each version's manifest, for its source repository (none here).
       ...Object.keys(versions).map((version) => [`https://registry.npmjs.org/${name.replace("/", "%2F")}/${version}`, { body: {} }]),
@@ -85,6 +85,39 @@ function moves(fixes: ReadonlyArray<SecurityFix>): Array<[string, string | undef
 }
 
 describe("securityCandidates", () => {
+  it("judges dtv-shaped coupled directs on the security batch's snapshot, reading each registry document once", async () => {
+    const names = ["vitest", "@vitest/ui", "@vitest/coverage-v8"];
+    const versions = ["4.1.7", "4.1.11", "4.1.12"];
+    const manifests = Object.fromEntries(names.flatMap((name) => versions.map((version) => [
+      `${name}@${version}`, name === "vitest" ? {} : { peerDependencies: { vitest: version } },
+    ])));
+    const lock = { lockfileVersion: 3, packages: {
+      "": { devDependencies: Object.fromEntries(names.map((name) => [name, "^4.1.7"])) },
+      ...Object.fromEntries(names.map((name) => [`node_modules/${name}`, {
+        version: "4.1.7", resolved: `https://registry.npmjs.org/${name}/-/${name}-4.1.7.tgz`, integrity: "sha512-AAAA", ...manifests[`${name}@4.1.7`],
+      }])),
+    } };
+    const head = await tree({}, { "package-lock.json": JSON.stringify(lock) });
+    const scans: string[][] = [];
+    const registry = Object.fromEntries(names.map((name) => [name, Object.fromEntries(versions.map((version) => [version, OLD]))]));
+    const env = environment({ "vitest@4.1.7": ["GHSA-a"] }, registry, scans, manifests);
+    const fetched: string[] = [];
+    const found = await securityCandidates(head, { ...env, fetch: async (url, init) => {
+      fetched.push(String(url));
+      return env.fetch(url, init);
+    } });
+    const resolved = await found.npmPeers!.resolve(found.fixes.map((fix) => ({ ...fix, to: fix.to!.version })));
+    expect(resolved.additions.map((move) => [move.name, move.to])).toEqual([["@vitest/coverage-v8", "4.1.11"], ["@vitest/ui", "4.1.11"]]);
+    expect(scans).toHaveLength(2);
+    expect(scans[1]).toContain("@vitest/coverage-v8@4.1.11");
+    expect(scans[1]).toContain("vitest@4.1.11");
+    for (const name of names) expect(fetched.filter((url) => url === `https://registry.npmjs.org/${name.replace("/", "%2F")}`)).toHaveLength(1);
+    const bumps = await bumpCandidates(head, environment({}, registry, [], manifests));
+    const major = bumps.bumps.find((bump) => bump.name === "vitest")!;
+    const coupled = await bumps.npmPeers!.resolve([{ name: major.name, from: major.from, to: major.minor!.version, locations: ["node_modules/vitest"] }]);
+    expect(coupled.additions.map((move) => move.to)).toEqual(["4.1.12", "4.1.12"]);
+  });
+
   it("picks the lowest aged fix in the version's own line, scanning every candidate with it in one snapshot", async () => {
     const scans: string[][] = [];
     const affected = { "lib@1.0.0": ["GHSA-a"], "lib@1.0.1": ["GHSA-a"] };

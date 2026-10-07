@@ -13,6 +13,15 @@ function plan(...moves: PlannedMove[]): ChangePlan {
 }
 
 describe("batch retry", () => {
+  it("omits a direct-peer set together and persists the reason for its companion too", () => {
+    const original = { ...plan(move("vitest"), move("@vitest/ui"), move("other")), coupled: [["npm|vitest", "npm|@vitest/ui", "npm|unchanged"]] };
+    const retry = retryWithoutNamed(original, ["vitest at node_modules/vitest is gone, not 1.0.1"]);
+    expect(retry.plan?.packages).toEqual(["npm|other"]);
+    expect(retry.leftOut).toHaveLength(2);
+    expect(retry.leftOut.every((entry) => entry.moves.length === 1 && entry.problems.length === 1)).toBe(true);
+    expect(planOf(planSection(retry.plan!))?.coupled).toEqual(original.coupled);
+  });
+
   it("drops all copies of a named package rather than silently publishing only some", () => {
     const original = plan(move("lib"), move("lib", "0.9.0"), move("other"));
     const retry = retryWithoutNamed(original, ["compare: new: lib@1.0.1: GHSA-new has no exception"]);

@@ -82,6 +82,24 @@ const major = (bump = candidate()) => majorUnits([bump])[0]!;
 const routine = (bump = candidate()) => routineUnit([bump]);
 
 describe("bump-it run", () => {
+  it("carries the candidate peer planner through routine and major computation before any agent", async () => {
+    const h = harness();
+    const found = await h.deps.candidates(tree(BASE_SHA, BASE_FILES), await h.deps.gate(h.context), {});
+    const calls: Unit[] = [];
+    const peers = { resolve: async () => ({ additions: [{ name: "companion", from: "1.0.0", to: "1.0.1", line: "1", aged: true,
+      locations: ["node_modules/companion"], declarations: [{ name: "companion", version: "1.0.0", path: "node_modules/companion",
+        declaredAs: "companion", workspace: "", lockfile: "package-lock.json", spec: "^1.0.0" }] }], blocked: [], sets: [["lib", "companion"]] }) };
+    const deps = { ...h.deps, candidates: async () => ({ ...found, npmPeers: peers }), npm: async (_context: ToolRunContext, unit: Unit) => {
+      calls.push(unit);
+      return npmOf(unit);
+    } };
+    expect(await bumpIt(deps).run(h.context)).toMatchObject({ units: [{ outcome: "published" }, { outcome: "published" }] });
+    expect(calls.map((unit) => unit.moves.map((move) => move.name))).toEqual([["lib", "companion"], ["lib", "companion"]]);
+    expect(h.verified.every((plan) => plan.moves.some((move) => move.name === "companion"))).toBe(true);
+    expect(h.agentCalls).toHaveLength(1);
+    expect(h.agentCalls[0]?.input["moves"]).toEqual(expect.arrayContaining([expect.objectContaining({ name: "companion", to: "1.0.1", major: false })]));
+  });
+
   it("publishes npm routine without a model and each major with high effort, always from the original base", async () => {
     const h = harness();
     expect(await bumpIt(h.deps).run(h.context)).toMatchObject({ units: [{ topic: "routine", outcome: "published" }, { topic: "lib-major", outcome: "published" }] });

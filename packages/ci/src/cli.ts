@@ -181,7 +181,8 @@ async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: 
     const head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
     const headGradle = await gradleInput(values["head-gradle"], head, (await treeSources(head)).gradleBuilds, "head", repo);
     const found = values.rule === "security" ? await securityCandidates(head, gate, { head: headGradle }) : await bumpCandidates(head, gate, { head: headGradle });
-    const json = `${JSON.stringify({ tree: head.id, ...found }, null, 2)}\n`;
+    // The in-process peer planner is for remediation tools, not the JSON report.
+    const json = `${JSON.stringify({ tree: head.id, ...found, npmPeers: undefined }, null, 2)}\n`;
     if (values.out === undefined) process.stdout.write(json);
     else await writeFile(values.out, json);
     for (const problem of found.incomplete) console.error(`✗ incomplete inventory: ${problem}`);

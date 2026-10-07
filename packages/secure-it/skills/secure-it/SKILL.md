@@ -104,6 +104,10 @@ Apply every explicit move together. A routine plan batches non-major fixes acros
 plan keeps that package's failing copies together; malware is one indivisible plan. Never silently omit a move or
 publish only the easiest ones. If you cannot apply the supplied plan, answer `cannot-apply`. The tool owns the one
 verification retry that may remove named package groups, and records those omissions in the report and PR body.
+The moves may include direct peer companions with no advisory targets (for example vitest's UI and coverage
+packages). Code chose their exact versions to make the set consistent; apply them too. Never choose or add further
+direct companions yourself. Report an unhandled peer conflict as `cannot-apply`; the tool does not parse your prose
+to invent version choices.
 
 ## npm's release window
 

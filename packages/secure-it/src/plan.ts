@@ -19,6 +19,7 @@ import { dirname } from "node:path";
 import semver from "semver";
 
 import { type SecurityFix, severityRank } from "../../ci/src/candidates.ts";
+import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
 import type { Ecosystem } from "../../ci/src/versions.ts";
 
@@ -61,6 +62,8 @@ export interface ChangePlan {
   readonly severity: string | undefined;
   /** Explicit moves left out after a failed batch, visible in the report and PR. */
   readonly leftOut?: ReadonlyArray<OmittedMoves>;
+  /** Connected npm packages must be omitted together if a verification retry drops one. */
+  readonly coupled?: ReadonlyArray<ReadonlyArray<string>>;
 }
 
 /** What the plan reads about the tree: its npm lockfiles (path → parsed JSON) and its Gradle inventory. */
@@ -77,6 +80,39 @@ export interface SecurityUnit {
   readonly kind: PlanKind;
   readonly topic: string;
   readonly work: ReadonlyArray<SecurityFix>;
+  readonly coupled?: ReadonlyArray<ReadonlyArray<string>>;
+}
+
+/** Complete each unit's direct-peer set before an agent sees it; an unsatisfiable set is reported. */
+export async function coupledWork(fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner): Promise<Selection> {
+  const selected = selectWork(fixes);
+  if (peers === undefined) return selected;
+  const units: SecurityUnit[] = [];
+  const blocked = [...selected.blocked];
+  for (const unit of selected.units) {
+    const result = await peers.resolve(unit.work.filter((fix) => fix.ecosystem === "npm").map((fix) => ({ ...fix, to: fix.to!.version })));
+    const omitted = new Set(result.blocked.flatMap((group) => group.moves.map((move) => move.name)));
+    // Copies of a package and their connected companions remain indivisible across lockfiles too.
+    for (;;) {
+      const size = omitted.size;
+      for (const set of result.sets) {
+        if (set.some((name) => omitted.has(name))) for (const name of set) omitted.add(name);
+      }
+      if (omitted.size === size) break;
+    }
+    if (result.blocked.length > 0) blocked.push({ packages: [...omitted].map((name) => `npm|${name}`).sort(), reasons: result.blocked.map((group) => group.reason) });
+    if (unit.kind === "malware" && omitted.size > 0) continue;
+    const work = unit.work.filter((fix) => fix.ecosystem !== "npm" || !omitted.has(fix.name));
+    if (work.length === 0) continue;
+    const companions: SecurityFix[] = result.additions.filter((move) => !omitted.has(move.name)).map((move) => ({
+      ecosystem: "npm", name: move.name, from: move.from, locations: move.locations, targets: [], unfixable: [], malicious: false,
+      severity: undefined, problem: undefined,
+      to: { version: move.to, line: move.line, aged: move.aged, major: false, blockers: [] },
+    }));
+    const coupled = result.sets.filter((set) => !set.some((name) => omitted.has(name))).map((set) => set.map((name) => `npm|${name}`));
+    units.push({ ...unit, work: [...work, ...companions], coupled });
+  }
+  return { units, blocked };
 }
 
 export interface Selection {
@@ -123,7 +159,7 @@ function rankedGroups(fixes: ReadonlyArray<SecurityFix>): Array<[string, Securit
 }
 
 /** The plan for `work` (from `selectWork`); fails on a fix without a move. */
-export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInputs, unit?: Pick<SecurityUnit, "kind" | "topic">): Promise<ChangePlan> {
+export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInputs, unit?: Pick<SecurityUnit, "kind" | "topic" | "coupled">): Promise<ChangePlan> {
   if (work.length === 0) throw new Error("planFor needs at least one fix");
   const moves: PlannedMove[] = [];
   for (const fix of work) {
@@ -156,7 +192,7 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
   const severity = work.map((fix) => fix.severity).reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
   const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");
   const topic = unit?.topic ?? (kind === "malware" ? "malware" : kind === "routine" ? "security" : `${work[0]!.name}-major`);
-  return { kind, topic, malware, packages, moves, severity };
+  return { kind, topic, malware, packages, moves, severity, ...(unit?.coupled === undefined ? {} : { coupled: unit.coupled }) };
 }
 
 /** The lockfile a gate npm location (`<lockfile dir>/node_modules/…`) belongs to, and the lockfile key inside it. */

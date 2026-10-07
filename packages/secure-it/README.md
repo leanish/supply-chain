@@ -20,7 +20,14 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
      version of a planned package left in the tree. Advisories no version fixes stay, inherited.
    - Malware takes priority: every malicious package goes together, and if any malicious fix cannot move, nothing
      else is planned. No other unit runs while malware remains on the base.
-4. **Plans the change** (`plan.ts`), for each version and location:
+4. **Plans the change** (`plan.ts`), for each version and location. For npm, code reads locked and candidate manifests
+   to find direct peer constraints in either direction. Rule-picked security targets stay fixed. A direct that must
+   move with them gets the lowest safe version in its own compatible line that makes the connected set consistent:
+   aged (own scopes: any age), adding no advisory group or malware, and passing the gate's publisher identity check.
+   Unchanged compatible peers stay at base; a companion may move downward within its line when necessary. All these
+   choices use the security batch's same advisory snapshot, and each registry document is read once. An impossible
+   set leaves the batch as blocked, with the conflicting peer ranges reported; unrelated fixes proceed. Unreadable
+   locked manifests leave npm work blocked because incoming peer constraints cannot be ruled out.
 
    | Ecosystem | Situation | Mechanism |
    |---|---|---|
@@ -37,7 +44,9 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
 6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
    npm may resolve transitive changes a planned move requires, under the supplied release-age window and exclusions.
    The agent does not hand-edit those versions, add unplanned overrides, or refresh unrelated packages. Direct
-   dependencies outside the plan stay unchanged. These induced versions are npm's choice, not additional rule-picked
+   dependencies outside the plan stay unchanged. Direct peers selected by code are explicit moves, even when they
+   have no advisory themselves. New or purely transitive peers remain npm's resolution under `compare`.
+   These induced versions are npm's choice, not additional rule-picked
    targets: `compare` judges each changed version's advisories, age and identity. They may differ from another open
    PR's target; that PR doesn't constrain resolution. A failed comparison prevents publishing that edit rather than silently
    choosing a coupled target. The PR description lists required transitive changes too.
@@ -50,7 +59,8 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    - only dependency files changed, unless a move is a major.
 
    A routine batch that fails verification may retry **once**, from the original base, without the whole package
-   groups named by its problems. Every problem must identify a planned move through a version-labelled finding or
+   groups named by its problems, including their whole connected direct-peer set. Every problem must identify a
+   planned move through a version-labelled finding or
    a named landing/declaration failure. A global or unplanned induced-transitive failure cannot identify a parent
    safely, so it gets no reduction. If no moves remain, or the second verification fails, nothing is published.
    Malware and major units are never reduced. Omitted moves and the original problems appear in the run report,

@@ -129,6 +129,22 @@ async function vitePr(overrides: Partial<GitHubPullRequest> = {}, fix = vite()):
 }
 
 describe("secure-it run", () => {
+  it("plans companions before invoking the agent and reports a blocked set while applying the rest", async () => {
+    const h = harness({ fixes: [vite(), leftPad()] });
+    const found = await h.deps.candidates(tree(BASE_SHA), await h.deps.gate(h.context), {});
+    const peers = { resolve: async () => ({ additions: [{ name: "@vitest/ui", from: "4.1.7", to: "4.1.11", line: "4", aged: true,
+      locations: ["node_modules/@vitest/ui"], declarations: [] }], blocked: [], sets: [["vite", "@vitest/ui"]] }) };
+    const deps = { ...h.deps, candidates: async () => ({ ...found, npmPeers: peers }) };
+    expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.agentCalls[0]?.input["moves"]).toEqual(expect.arrayContaining([expect.objectContaining({ name: "@vitest/ui", to: "4.1.11" })]));
+    expect(planOf(h.github.prs.get(42)!.body)?.coupled).toEqual([["npm|vite", "npm|@vitest/ui"]]);
+    const blocked = harness({ fixes: [vite(), leftPad()] });
+    const blockedDeps = { ...blocked.deps, candidates: async () => ({ ...found, npmPeers: { resolve: async () => ({ additions: [], sets: [],
+      blocked: [{ moves: [{ name: "vite", from: "8.3.1", to: "8.3.3", locations: ["node_modules/vite"] }], reason: "peer set has no aged compatible version" }] }) } }) };
+    expect(await secureIt(blockedDeps).run(blocked.context)).toMatchObject({ outcome: "published", waiting: ["peer set has no aged compatible version"] });
+    expect(blocked.agentCalls[0]?.input["moves"]).toMatchObject([{ name: "left-pad" }]);
+  });
+
   it("batches non-major packages, verifies them, and opens one security PR carrying the plan", async () => {
     const h = harness({ fixes: [vite(), vite({ name: "left-pad", from: "1.0.0", locations: ["node_modules/left-pad"], severity: "LOW", to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } })] });
     const result = await secureIt(h.deps).run(h.context);

@@ -18,9 +18,17 @@ export function retryWithoutNamed(plan: ChangePlan, problems: ReadonlyArray<stri
     return { plan: undefined, named, leftOut: [] };
   }
   const keys = new Set(named.flatMap((entry) => entry.moves.map(moveKey)));
+  for (;;) {
+    const size = keys.size;
+    for (const set of plan.coupled ?? []) {
+      if (set.some((key) => keys.has(key))) for (const key of set) keys.add(key);
+    }
+    if (keys.size === size) break;
+  }
+  for (const key of keys) if (!plan.packages.includes(key)) keys.delete(key);
   const leftOut = [...keys].sort().map((key) => ({
     moves: plan.moves.filter((move) => moveKey(move) === key),
-    problems: named.filter((entry) => entry.moves.some((move) => moveKey(move) === key)).map((entry) => entry.problem),
+    problems: named.filter((entry) => entry.moves.some((move) => moveKey(move) === key || (plan.coupled ?? []).some((set) => set.includes(key) && set.includes(moveKey(move))))).map((entry) => entry.problem),
   }));
   const moves = plan.moves.filter((move) => !keys.has(moveKey(move)));
   if (moves.length === 0) return { plan: undefined, named, leftOut };
