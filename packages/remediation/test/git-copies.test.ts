@@ -1,0 +1,57 @@
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
+import { changedSince, exportCommit, sameTreeAs } from "../src/git-copies.ts";
+
+let root: string;
+let workingCopy: WorkingCopy;
+let first: string;
+
+function git(args: ReadonlyArray<string>): string {
+  const result = spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: workingCopy.path, encoding: "utf8" });
+  if (result.status !== 0) throw new Error(result.stderr);
+  return result.stdout.trim();
+}
+
+beforeAll(async () => {
+  root = await mkdtemp(join(tmpdir(), "git-copies-"));
+  workingCopy = { projectId: "leanish/widget", path: join(root, "wc"), branch: "main", headSha: "", gitDir: join(root, "git") };
+  spawnSync("git", ["init", "-q", "-b", "main", "--separate-git-dir", workingCopy.gitDir!, workingCopy.path]);
+  await writeFile(join(workingCopy.path, "package.json"), '{"name":"a"}\n');
+  await writeFile(join(workingCopy.path, ".gitignore"), "build/\n");
+  git(["add", "-A"]);
+  git(["commit", "-q", "-m", "one"]);
+  first = git(["rev-parse", "HEAD"]);
+});
+
+afterAll(async () => {
+  if (root !== undefined) await rm(root, { recursive: true, force: true });
+});
+
+describe("git copies", () => {
+  it("exports a commit's files into a fresh directory, and removes it", async () => {
+    await writeFile(join(workingCopy.path, "package.json"), '{"name":"b"}\n');
+    const copy = await exportCommit(workingCopy, first);
+    expect(await readFile(join(copy.dir, "package.json"), "utf8")).toBe('{"name":"a"}\n');
+    await copy.remove();
+    await expect(readFile(join(copy.dir, "package.json"))).rejects.toThrow();
+    await expect(exportCommit(workingCopy, "HEAD")).rejects.toThrow("full commit sha");
+  });
+
+  it("lists what the working tree changed since a commit, untracked files included and ignored ones not", async () => {
+    await writeFile(join(workingCopy.path, "package.json"), '{"name":"b"}\n');
+    await writeFile(join(workingCopy.path, "new.txt"), "x\n");
+    spawnSync("mkdir", ["-p", join(workingCopy.path, "build")]);
+    await writeFile(join(workingCopy.path, "build", "out.txt"), "x\n");
+    expect(await changedSince(workingCopy, first)).toEqual(["new.txt", "package.json"]);
+    expect(await sameTreeAs(workingCopy, first)).toBe(false);
+    await writeFile(join(workingCopy.path, "package.json"), '{"name":"a"}\n');
+    await rm(join(workingCopy.path, "new.txt"));
+    expect(await sameTreeAs(workingCopy, first)).toBe(true);
+  });
+});

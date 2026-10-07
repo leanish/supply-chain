@@ -56,11 +56,13 @@ describe.skipIf(!hasCodex || process.platform !== "darwin")("runSandboxed", () =
 
 describe("runSandboxed arguments", () => {
   it("runs codex sandbox with the write profile and the command after --, in the working copy", async () => {
-    const calls: Array<{ command: string; args: ReadonlyArray<string>; cwd: string | undefined }> = [];
+    const calls: Array<{ command: string; args: ReadonlyArray<string>; cwd: string | undefined; env: NodeJS.ProcessEnv | undefined }> = [];
     await runSandboxed({ readDenied: ["/Users/dev/.ssh"], buildCacheRoot: "/cache", env: {} }, { workingCopy, command: ["./gradlew", "--version"] }, async (command, args, options) => {
-      calls.push({ command, args, cwd: options?.cwd });
+      calls.push({ command, args, cwd: options?.cwd, env: options?.env });
       return { code: 0, stdout: "", stderr: "" };
     });
+    expect(calls[0]?.env?.["GRADLE_USER_HOME"]).toBe("/cache/gradle");
+    expect(calls[0]?.env?.["npm_config_cache"]).toBe("/cache/npm");
     expect(calls[0]?.command).toBe("codex");
     expect(calls[0]?.args[0]).toBe("sandbox");
     expect(calls[0]?.args.slice(-3)).toEqual(["--", "./gradlew", "--version"]);

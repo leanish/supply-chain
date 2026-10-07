@@ -45,7 +45,10 @@ export async function runSandboxed(
       readDenied: isolation.readDenied ?? [],
       readAllowed: [],
     });
-    const env = { ...withoutAmbientCredentials(scrubbedProcessEnv()), ...isolation.env, CODEX_HOME: stagedHome };
+    // The build tools' caches go where the agent's do (CodexRunner's buildCacheRoot), not ~/.gradle, which is denied.
+    const caches =
+      isolation.buildCacheRoot === undefined ? {} : { GRADLE_USER_HOME: join(isolation.buildCacheRoot, "gradle"), npm_config_cache: join(isolation.buildCacheRoot, "npm") };
+    const env = { ...withoutAmbientCredentials(scrubbedProcessEnv()), ...isolation.env, ...caches, CODEX_HOME: stagedHome };
     return await run(codex, ["sandbox", ...args, "--", ...command], { cwd: workingCopy.path, env });
   } finally {
     await rm(stagedHome, { recursive: true, force: true });
