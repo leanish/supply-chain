@@ -178,9 +178,10 @@ export function directDependencies(lock: unknown): DirectDependency[] {
     if (workspace.includes("node_modules/") || entry.link === true) continue;
     const declared = { ...entry.optionalDependencies, ...entry.devDependencies, ...entry.dependencies };
     for (const [declaredAs, spec] of Object.entries(declared)) {
-      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)@(.+)$/.exec(spec.trim());
+      // `npm:lib`, `npm:@acme/lib` (any version, as npm reads them) or with a range: `npm:lib@^1`.
+      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.+))?$/.exec(spec.trim());
       if (alias === null && !isRegistryRange(spec)) continue;
-      if (alias !== null && !isRegistryRange(alias[2]!)) continue;
+      if (alias !== null && alias[2] !== undefined && !isRegistryRange(alias[2])) continue;
       const path = installedFor(packages, workspace, declaredAs);
       const installed = path === undefined ? undefined : packages[path];
       if (path === undefined || installed?.version === undefined || installed.link === true) continue;

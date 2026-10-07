@@ -326,18 +326,21 @@ describe("bumpCandidates", () => {
     const head = await tree(
       {},
       {},
-      { name: "app", workspaces: ["apps/a", "apps/a/b"], dependencies: { compat: "npm:lib@^1.0.0" } },
+      { name: "app", workspaces: ["apps/a", "apps/a/b"], dependencies: { compat: "npm:lib@^1.0.0" }, devDependencies: { any: "npm:lib", scoped: "npm:@acme/kit" } },
       {
         "node_modules/lib": { version: "2.0.0", ...tarball("2.0.0") },
         "node_modules/compat": { name: "lib", version: "1.0.0", ...tarball("1.0.0") },
+        "node_modules/any": { name: "lib", version: "1.0.0", ...tarball("1.0.0") },
+        "node_modules/scoped": { name: "@acme/kit", version: "1.0.0", resolved: "https://registry.npmjs.org/@acme/kit/-/kit-1.0.0.tgz", integrity: "sha512-AAAA" },
         "apps/a": { name: "a", dependencies: { lib: "^1.0.0" } },
         "apps/a/node_modules/lib": { version: "1.0.0", ...tarball("1.0.0") },
         "apps/a/b": { name: "b", dependencies: { lib: "^1.0.0" } },
       },
     );
-    const found = await bumpCandidates(head, environment({}, registry));
-    expect(found.bumps.map((bump) => [bump.name, bump.from, bump.declarations.map((d) => `${d.workspace}:${d.declaredAs}`), bump.minor?.version])).toEqual([
-      ["lib", "1.0.0", [".:compat", "apps/a:lib", "apps/a/b:lib"], "1.1.0"],
+    const found = await bumpCandidates(head, environment({}, { ...registry, "@acme/kit": { "1.0.0": OLD, "1.1.0": OLD } }));
+    expect(found.bumps.map((bump) => [bump.name, bump.from, bump.declarations.map((d) => `${d.workspace}:${d.declaredAs}=${d.spec}`), bump.minor?.version])).toEqual([
+      ["@acme/kit", "1.0.0", [".:scoped=npm:@acme/kit"], "1.1.0"],
+      ["lib", "1.0.0", [".:any=npm:lib", ".:compat=npm:lib@^1.0.0", "apps/a:lib=^1.0.0", "apps/a/b:lib=^1.0.0"], "1.1.0"],
     ]);
   });
 });
