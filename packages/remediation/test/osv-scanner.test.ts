@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { ensureOsvScanner, isInside, osvPlatform, verifyingRun } from "../src/osv-scanner.ts";
+import { canonical, ensureOsvScanner, isInside, osvPlatform, verifyingRun } from "../src/osv-scanner.ts";
 
 let cache: string;
 
@@ -25,7 +25,7 @@ describe("ensureOsvScanner", () => {
 
   it("installs when the binary is missing or swapped, and refuses an install that doesn't match", async () => {
     const calls: string[] = [];
-    const binaryDir = join(cache, "tools", "osv-scanner-2.6.0");
+    const binaryDir = join(await realpath(cache), "tools", "osv-scanner-2.6.0");
     // A fake installer writing content whose hash isn't the pinned one.
     const installer = async (_command: string, args: ReadonlyArray<string>) => {
       calls.push(args[0]!);
@@ -64,5 +64,23 @@ describe("ensureOsvScanner", () => {
     await expect(run("/state/tools/osv-scanner", ["scan"])).rejects.toThrow("no longer matches");
     await run("git", ["status"]);
     expect(ran).toEqual(["/state/tools/osv-scanner", "git"]);
+  });
+
+  it("installs, checks and runs the binary by its canonical path, never through a link a sandboxed command could retarget", async () => {
+    const protectedDir = join(cache, "protected-state");
+    const writable = join(cache, "writable-cache");
+    await mkdir(protectedDir, { recursive: true });
+    await mkdir(writable, { recursive: true });
+    // The configured state directory is a link inside a writable place, pointing at protected state.
+    const alias = join(writable, "state-link");
+    await symlink(protectedDir, alias);
+    const installs: string[] = [];
+    const installer = async (_command: string, args: ReadonlyArray<string>) => {
+      installs.push(args[0]!);
+      return { code: 1, stdout: "", stderr: "offline" };
+    };
+    await expect(ensureOsvScanner(alias, [writable], installer, "darwin_arm64")).rejects.toThrow("installing OSV-Scanner");
+    expect(installs).toEqual([join(await realpath(protectedDir), "tools", "osv-scanner-2.6.0")]);
+    expect(canonical(join(alias, "tools"))).toBe(join(await realpath(protectedDir), "tools"));
   });
 });

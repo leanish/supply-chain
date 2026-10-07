@@ -200,5 +200,18 @@ describe("verifyPlan", () => {
       "the edit changed .github/workflows/ci.yml beyond its planned action pins: the gate's own policy, which no plan may change",
     ]);
     expect((await verifyWith("[push, pull_request]")).filter((problem) => problem.includes("policy"))).toEqual([]);
+
+    // A line inside a block scalar that only looks like a `uses:` isn't masked: changing it is a policy change.
+    const withScript = (line: string, ref: string, tag: string) =>
+      `on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@${ref} # ${tag}\n      - run: |\n          ${line}\n`;
+    const script = await verifyPlan({
+      plan: pinPlan,
+      base: tree("b".repeat(40), { ".github/workflows/ci.yml": withScript("echo hi", old, "v4.2.2") }),
+      head: tree("worktree", { ".github/workflows/ci.yml": withScript("uses: actions/checkout@$(touch${IFS}/tmp/pwn)", pin, "v4.2.3") }),
+      env: environment({}),
+      gradle: {},
+      changedFiles: [".github/workflows/ci.yml"],
+    });
+    expect(script).toEqual(["the edit changed .github/workflows/ci.yml beyond its planned action pins: the gate's own policy, which no plan may change"]);
   });
 });

@@ -46,7 +46,9 @@ export async function ensureOsvScanner(
   const { version, sha256 } = pinned["osv-scanner"];
   const expected = sha256[platform];
   if (expected === undefined) throw new Error(`tools.json pins no OSV-Scanner sha256 for ${platform}`);
-  const dir = join(stateDir, "tools", `osv-scanner-${version}`);
+  // The canonical path, used from here on to install, check and run: an alias (a symlink somewhere writable that points
+  // here) could be retargeted between the check and the run.
+  const dir = canonical(join(stateDir, "tools", `osv-scanner-${version}`));
   const binary = join(dir, "osv-scanner");
   const writable = sandboxWritable.find((root) => isInside(binary, root));
   if (writable !== undefined) throw new Error(`OSV-Scanner would live in ${writable}, which sandboxed commands can write`);
@@ -78,7 +80,7 @@ export function isInside(path: string, root: string): boolean {
 }
 
 /** `path` with its deepest existing ancestor's real path: symlinks resolved even for a file that doesn't exist yet. */
-function canonical(path: string): string {
+export function canonical(path: string): string {
   const absolute = resolve(path);
   const missing: string[] = [];
   let existing = absolute;

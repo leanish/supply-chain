@@ -23,6 +23,8 @@
  */
 import { basename } from "node:path";
 
+import { isMap, isScalar, isSeq, parseDocument } from "yaml";
+
 import { readActionsInventory, commentTag } from "../../ci/src/actions-inventory.ts";
 import { findingsOf } from "../../ci/src/findings.ts";
 import { type GateEnvironment, type GradleInputs, readScanState, runCompare } from "../../ci/src/gate.ts";
@@ -56,7 +58,9 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   for (const path of inputs.changedFiles.filter((changed) => pinned.has(changed))) {
     const before = pinsMasked(await base.read(path), pinnedActions);
     const after = pinsMasked(await head.read(path), pinnedActions);
-    if (before !== after) return [`the edit changed ${path} beyond its planned action pins: the gate's own policy, which no plan may change`];
+    if (before === undefined || after === undefined || before !== after) {
+      return [`the edit changed ${path} beyond its planned action pins: the gate's own policy, which no plan may change`];
+    }
   }
 
   const compared = await runCompare(base, head, env, gradle);
@@ -179,17 +183,43 @@ async function directVersions(tree: Tree, gradle: GradleInventory | undefined): 
   return versions;
 }
 
-/** A workflow's text with the ref and comment of each use of `actions` masked: what a planned pin may change. */
+/**
+ * A workflow's text with the value and trailing comment of each `uses:` of
+ * `actions` masked: what a planned pin may change. The `uses:` keys come from
+ * parsing the YAML, so text inside a block scalar (a `run: |` script) is never
+ * taken for one. A file that doesn't parse can't be compared: undefined.
+ */
 function pinsMasked(text: string | undefined, actions: ReadonlySet<string>): string | undefined {
   if (text === undefined) return undefined;
-  return text
-    .split("\n")
-    .map((line) => {
-      const use = /^(\s*(?:-\s*)?uses:\s*)(["']?)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)((?:\/[^@\s"']*)?)@[^\s"'#]+\2(\s+#.*)?\s*$/.exec(line);
-      if (use === null || !actions.has(use[3]!.toLowerCase())) return line;
-      return `${use[1]}${use[2]}${use[3]}${use[4]}@<pinned>${use[2]}`;
-    })
-    .join("\n");
+  const doc = parseDocument(text);
+  if (doc.errors.length > 0) return undefined;
+  const ranges: Array<[number, number]> = [];
+  const visited = new Set<unknown>();
+  const walk = (node: unknown): void => {
+    if (visited.has(node)) return;
+    visited.add(node);
+    if (isMap(node)) {
+      for (const pair of node.items) {
+        const value = pair.value;
+        if (isScalar(pair.key) && pair.key.value === "uses" && isScalar(value) && typeof value.value === "string" && value.range !== undefined && value.range !== null) {
+          const action = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/.exec(value.value)?.[1]?.toLowerCase();
+          if (action !== undefined && actions.has(action)) {
+            // The scalar, then whatever follows it on its line if that's only a comment.
+            const lineEnd = text.indexOf("\n", value.range[1]);
+            const rest = text.slice(value.range[1], lineEnd === -1 ? text.length : lineEnd);
+            ranges.push([value.range[0], /^\s*(#.*)?$/.test(rest) ? value.range[1] + rest.length : value.range[1]]);
+          }
+        }
+        walk(value);
+      }
+    } else if (isSeq(node)) {
+      for (const item of node.items) walk(item);
+    }
+  };
+  walk(doc.contents);
+  let masked = text;
+  for (const [from, to] of ranges.sort((a, b) => b[0] - a[0])) masked = `${masked.slice(0, from)}<pinned>${masked.slice(to)}`;
+  return masked;
 }
 
 /** The gate's policy: its config and exceptions, and every workflow and action file (only planned pins may change one). */
