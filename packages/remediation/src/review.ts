@@ -3,15 +3,17 @@
  * every open PR of the tool, in this order, and never lets one PR's problem
  * stop the others:
  *
- *   1. someone else pushed (the head isn't the one the tool recorded) →
- *      leave the PR alone, report it;
+ *   1. someone else pushed (the head is neither the one the PR's body
+ *      records nor, after a failed body update, the one the tool's journal
+ *      records) → leave the PR alone, report it;
  *   2. the base moved (any merge, conflicts or not) → `steps.rebase`, before
  *      anything else: the tool recomputes its plan on the new base, retires
  *      what the base already has, or merges the base and re-applies (the agent
  *      only when code needs adapting);
  *   3. CI pending → nothing; green → ready for review; no checks → report;
  *   4. CI failed → `steps.adapt` (the agent), at most `MAX_ADAPTATIONS` times
- *      per PR, counted in its body; after that, close it with a comment.
+ *      per PR, each attempt counted in its body before the agent starts (a
+ *      failed attempt counts too); after that, close it with a comment.
  *
  * Steps 1 and 3 need no model.
  */
@@ -21,8 +23,9 @@ import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/w
 import type { Workspace } from "../../agent-basics/src/working-copy/workspace.ts";
 
 import { classifyCi } from "./ci-state.ts";
-import { type OwnPullRequests, stateOf } from "./own-pr.ts";
-import { closeAndDelete, markReady, ownOpenPullRequests, type PublicationContext } from "./publication.ts";
+import type { PublicationJournal } from "./journal.ts";
+import { type OwnPullRequests, type PullRequestState, stateOf } from "./own-pr.ts";
+import { closeAndDelete, markReady, ownOpenPullRequests, type PublicationContext, recordState } from "./publication.ts";
 
 /** How many times the agent may adapt one PR after a failed CI before the tool gives it up. */
 export const MAX_ADAPTATIONS = 2;
@@ -52,18 +55,21 @@ export interface ReviewEntry {
 export interface ReviewSteps {
   /**
    * The base moved since the PR was published: recompute the plan on it and
-   * either retire the PR (the base already has everything, or the merge
-   * conflicts and the next run redoes it; the step closes it) or publish the
-   * reconciled change on `merge.prepared`, the PR's branch with the new base
-   * merged in. Returns which.
+   * either retire the PR (the base already has everything; the step closes
+   * it) or publish the reconciled change on `merge.prepared`: the PR's branch
+   * with the new base merged in, or with the merge in progress and
+   * `merge.conflicted` to resolve in the working tree first (mechanically for
+   * dependency files, the agent for code). Returns which.
    */
   rebase(pr: GitHubPullRequest, merge: BaseMerge, context: PublicationContext): Promise<"retired" | "rebased">;
   /** CI failed: the agent adapts the change once (`attempt` from 1); whether a change was published. */
   adapt(pr: GitHubPullRequest, prepared: PreparedBranch, context: PublicationContext, attempt: number): Promise<boolean>;
 }
 
-/** The PR's branch with the new base merged in, or a conflict (nothing checked out). */
-export type BaseMerge = { readonly kind: "merged"; readonly prepared: PreparedBranch } | { readonly kind: "conflict"; readonly remoteHead: string };
+/** The PR's branch with the new base merged in, or with the merge in progress and its conflicted paths. */
+export type BaseMerge =
+  | { readonly kind: "merged"; readonly prepared: PreparedBranch }
+  | { readonly kind: "conflicted"; readonly prepared: PreparedBranch; readonly conflicted: ReadonlyArray<string> };
 
 export interface ReviewContext {
   readonly rules: OwnPullRequests;
@@ -73,6 +79,7 @@ export interface ReviewContext {
   readonly logger: Logger;
   readonly repo: string;
   readonly base: string;
+  readonly journal: PublicationJournal;
 }
 
 /** Runs one tick over the tool's open PRs in `repo`; one entry per PR. */
@@ -95,11 +102,20 @@ export async function reviewOpenPullRequests(context: ReviewContext, steps: Revi
 
 async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubPullRequest): Promise<ReviewEntry> {
   const result = (outcome: ReviewOutcome, detail?: string): ReviewEntry => ({ number: pr.number, url: pr.url, outcome, detail });
-  const state = stateOf(pr.body);
-  if (state === undefined) return result("left-alone", "its body no longer has the tool's state; someone rewrote it");
-  if (pr.headSha !== state.head) return result("left-alone", `someone else pushed (${pr.headSha.slice(0, 12)}, the tool published ${state.head.slice(0, 12)})`);
-
   const publication: PublicationContext = { ...context };
+  const recorded = stateOf(pr.body);
+  if (recorded === undefined) return result("left-alone", "its body no longer has the tool's state; someone rewrote it");
+  let state: PullRequestState = recorded;
+  if (pr.headSha !== recorded.head) {
+    const pushed = await context.journal.last(context.repo, pr.number);
+    if (pushed?.head !== pr.headSha) {
+      return result("left-alone", `someone else pushed (${pr.headSha.slice(0, 12)}, the tool published ${recorded.head.slice(0, 12)})`);
+    }
+    // The tool's own push, whose body update failed: repair the body and go on.
+    state = { head: pushed.head, base: pushed.base, adaptations: recorded.adaptations };
+    await recordState(publication, pr.number, pr.headSha, state);
+  }
+
   const checkedOut = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote" });
   if (checkedOut.kind !== "prepared") throw new Error(`${pr.headRef} couldn't be checked out`);
   if (checkedOut.prepared.remoteHeadSha !== pr.headSha) {
@@ -107,8 +123,14 @@ async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubP
   }
 
   if (checkedOut.prepared.baseSha !== state.base) {
-    const merged = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote-merged" });
-    const merge: BaseMerge = merged.kind === "prepared" ? { kind: "merged", prepared: merged.prepared } : { kind: "conflict", remoteHead: pr.headSha };
+    const merged = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote-merging" });
+    if (merged.kind === "conflict") throw new Error(`${pr.headRef}: remote-merging reported a conflict without leaving it in progress`);
+    // Someone may have pushed between the two preparations: the PR is only the tool's at the head it checked.
+    if (merged.prepared.remoteHeadSha !== pr.headSha) {
+      return result("left-alone", `the branch moved while the tick read it (${merged.prepared.remoteHeadSha ?? "gone"})`);
+    }
+    const merge: BaseMerge =
+      merged.kind === "prepared" ? { kind: "merged", prepared: merged.prepared } : { kind: "conflicted", prepared: merged.prepared, conflicted: merged.conflicted };
     const outcome = await steps.rebase(pr, merge, publication);
     return result(outcome, `base moved from ${state.base.slice(0, 12)} to ${checkedOut.prepared.baseSha.slice(0, 12)}`);
   }
@@ -130,6 +152,9 @@ async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubP
     );
     return result("closed", `CI failed after ${state.adaptations} adaptation(s)`);
   }
-  const pushed = await steps.adapt(pr, checkedOut.prepared, publication, state.adaptations + 1);
-  return result(pushed ? "adapted" : "adaptation-unchanged", `attempt ${state.adaptations + 1} of ${MAX_ADAPTATIONS}`);
+  // Counted before the agent starts: an attempt that fails or publishes nothing still uses one up.
+  const attempt = state.adaptations + 1;
+  await recordState(publication, pr.number, pr.headSha, { ...state, adaptations: attempt });
+  const pushed = await steps.adapt(pr, checkedOut.prepared, publication, attempt);
+  return result(pushed ? "adapted" : "adaptation-unchanged", `attempt ${attempt} of ${MAX_ADAPTATIONS}`);
 }

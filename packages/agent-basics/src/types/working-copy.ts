@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/types/working-copy.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: the `remote-merging` start and its `conflicted` result.
 /**
  * Runtime-owned references to checked-out project working copies. Returned
  * by `runtime.syncWorkingCopies(projects)` and consumed by `runtime.runSkill`.
@@ -62,9 +63,12 @@ export interface SyncResult {
  *   - `default` — a new branch at the tracked (default) branch's remote head;
  *   - `remote` — the branch's own remote head, as is;
  *   - `remote-merged` — the branch's remote head with the default branch's
- *     remote head merged in (no merge commit when it's already contained).
+ *     remote head merged in (no merge commit when it's already contained);
+ *   - `remote-merging` — the same, but a conflicting merge is left in
+ *     progress for its conflicts to be resolved in the working tree;
+ *     `publishBranch` then commits the merge.
  */
-export type PrepareBranchStart = "default" | "remote" | "remote-merged";
+export type PrepareBranchStart = "default" | "remote" | "remote-merged" | "remote-merging";
 
 export interface PrepareBranchArgs {
   readonly branch: string;
@@ -85,7 +89,12 @@ export interface PreparedBranch {
 export type PrepareBranchResult =
   | { readonly kind: "prepared"; readonly prepared: PreparedBranch }
   /** `remote-merged` only: merging the default branch conflicted; nothing is checked out for an agent. */
-  | { readonly kind: "conflict" };
+  | { readonly kind: "conflict" }
+  /**
+   * `remote-merging` only: merging the default branch conflicted and the merge is in progress: `conflicted` lists
+   * the paths to resolve in the working tree (`prepared.preparedSha` is the branch's head, the merge's first parent).
+   */
+  | { readonly kind: "conflicted"; readonly prepared: PreparedBranch; readonly conflicted: ReadonlyArray<string> };
 
 export interface PublishBranchArgs {
   /** The commit message for the agent's working-tree changes (one commit). */

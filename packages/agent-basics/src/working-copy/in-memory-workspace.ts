@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/in-memory-workspace.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`.
+// Local changes: `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json).
 import type { RepoSource as Project } from "../types/repo-source.ts";
 
 import type {
@@ -94,10 +94,13 @@ export class InMemoryWorkspace implements Workspace {
 
   async prepareBranch(workingCopy: WorkingCopy, args: PrepareBranchArgs): Promise<PrepareBranchResult> {
     this.preparations.push({ projectId: workingCopy.projectId, args });
-    if (args.start === "remote-merged" && this.#conflicts.delete(args.branch)) return { kind: "conflict" };
     const baseSha = workingCopy.headSha;
     const remoteHeadSha = args.start === "default" ? null : (this.#remoteHeads.get(args.branch) ?? "a".repeat(40));
-    const preparedSha = args.start === "remote-merged" ? "b".repeat(40) : (remoteHeadSha ?? baseSha);
+    if (args.start === "remote-merged" && this.#conflicts.delete(args.branch)) return { kind: "conflict" };
+    if (args.start === "remote-merging" && this.#conflicts.delete(args.branch)) {
+      return { kind: "conflicted", prepared: { branch: args.branch, baseSha, remoteHeadSha, preparedSha: remoteHeadSha! }, conflicted: ["package-lock.json"] };
+    }
+    const preparedSha = args.start === "remote-merged" || args.start === "remote-merging" ? "b".repeat(40) : (remoteHeadSha ?? baseSha);
     return { kind: "prepared", prepared: { branch: args.branch, baseSha, remoteHeadSha, preparedSha } };
   }
 

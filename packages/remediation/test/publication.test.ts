@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ConsoleLogger } from "../../agent-basics/src/logger/console-logger.ts";
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { InMemoryWorkspace } from "../../agent-basics/src/working-copy/in-memory-workspace.ts";
+import { MemoryJournal } from "../src/journal.ts";
 import { stateOf, withMarker } from "../src/own-pr.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, publishNew, publishUpdate, type PublicationContext } from "../src/publication.ts";
 import { BASE_SHA, FakeGitHub, HEAD_SHA, OWN_BRANCH, ownPr, PUSHED_SHA, RULES } from "./fake-github.ts";
@@ -10,8 +11,8 @@ import { BASE_SHA, FakeGitHub, HEAD_SHA, OWN_BRANCH, ownPr, PUSHED_SHA, RULES } 
 const WC: WorkingCopy = { projectId: "leanish/widget", path: "/synthetic/leanish/widget", branch: "main", headSha: BASE_SHA, gitDir: "/x/.git" };
 const CONTENT = { title: "fixing snappy-java", body: "Moves snappy-java to 1.1.10.10.", commitMessage: "moving snappy-java to 1.1.10.10" };
 
-function context(github: FakeGitHub, workspace = new InMemoryWorkspace()): PublicationContext {
-  return { rules: RULES, github, workspace, logger: new ConsoleLogger({ minLevel: "error" }), repo: "leanish/widget", base: "main", workingCopy: WC };
+function context(github: FakeGitHub, workspace = new InMemoryWorkspace(), journal = new MemoryJournal()): PublicationContext {
+  return { rules: RULES, github, workspace, logger: new ConsoleLogger({ minLevel: "error" }), repo: "leanish/widget", base: "main", workingCopy: WC, journal };
 }
 
 const fresh: PreparedBranch = { branch: "secure-it/2026-10-07-vite", baseSha: BASE_SHA, remoteHeadSha: null, preparedSha: BASE_SHA };
@@ -46,6 +47,15 @@ describe("publication", () => {
     expect(unchanged.prs.get(7)?.isDraft).toBe(false);
     // The adaptation count carries over unless the caller sets it.
     expect(stateOf(result.pr.body)).toEqual({ head: HEAD_SHA, base: BASE_SHA, adaptations: 1 });
+  });
+
+  it("records a push in the journal before the body says so, so a failed update leaves a trace", async () => {
+    const github = new FakeGitHub(ownPr());
+    github.fail("updatePullRequest");
+    const journal = new MemoryJournal();
+    await expect(publishUpdate(context(github, new InMemoryWorkspace(), journal), existing, 7, CONTENT)).rejects.toThrow("unexpected response");
+    expect(await journal.last("leanish/widget", 7)).toEqual({ head: PUSHED_SHA, base: BASE_SHA });
+    expect(stateOf(github.prs.get(7)!.body)?.head).toBe(HEAD_SHA);
   });
 
   it("refuses to publish over a PR that moved or stopped being the tool's", async () => {

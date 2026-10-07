@@ -4,6 +4,7 @@ import { ConsoleLogger } from "../../agent-basics/src/logger/console-logger.ts";
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { InMemoryWorkspace } from "../../agent-basics/src/working-copy/in-memory-workspace.ts";
+import { MemoryJournal } from "../src/journal.ts";
 import { stateOf, withMarker } from "../src/own-pr.ts";
 import { closeAndDelete, publishUpdate, type PublicationContext } from "../src/publication.ts";
 import { type BaseMerge, MAX_ADAPTATIONS, type ReviewContext, reviewOpenPullRequests, type ReviewSteps } from "../src/review.ts";
@@ -17,9 +18,9 @@ function workingCopy(baseSha = BASE_SHA): WorkingCopy {
   return { projectId: REPO, path: "/synthetic/leanish/widget", branch: "main", headSha: baseSha, gitDir: "/synthetic/leanish/widget/.git" };
 }
 
-function context(github: FakeGitHub, workspace = new InMemoryWorkspace(), wc = workingCopy()): ReviewContext {
+function context(github: FakeGitHub, workspace = new InMemoryWorkspace(), wc = workingCopy(), journal = new MemoryJournal()): ReviewContext {
   workspace.setRemoteHead("secure-it/2026-10-05-snappy-java", HEAD_SHA);
-  return { rules: RULES, github, workspace, workingCopy: wc, logger: new ConsoleLogger({ minLevel: "error" }), repo: REPO, base: "main" };
+  return { rules: RULES, github, workspace, workingCopy: wc, logger: new ConsoleLogger({ minLevel: "error" }), repo: REPO, base: "main", journal };
 }
 
 /** Steps that record what they were asked, rebasing by updating the PR and adapting by pushing. */
@@ -31,7 +32,6 @@ function steps(calls: string[] = [], outcome: "retired" | "rebased" = "rebased")
         await closeAndDelete(publication, pr.number, pr.headSha, "the default branch has these versions now");
         return "retired";
       }
-      if (merge.kind !== "merged") throw new Error("expected a merge");
       await publishUpdate(publication, merge.prepared, pr.number, { title: pr.title, body: pr.body, commitMessage: "merging the default branch" });
       return "rebased";
     },
@@ -87,7 +87,7 @@ describe("reviewOpenPullRequests", () => {
     const retired: string[] = [];
     const entries = await reviewOpenPullRequests(context(conflicting, workspace, workingCopy(NEW_BASE)), steps(retired, "retired"));
     expect(entries[0]?.outcome).toBe("retired");
-    expect(retired).toEqual(["rebase #7 conflict"]);
+    expect(retired).toEqual(["rebase #7 conflicted"]);
     expect(conflicting.prs.get(7)?.state).toBe("closed");
     expect(workspace.deletions.map((deletion) => deletion.args)).toEqual([{ branch: "secure-it/2026-10-05-snappy-java", expectedSha: HEAD_SHA }]);
   });
@@ -123,5 +123,53 @@ describe("reviewOpenPullRequests", () => {
       [7, "error", "checks unreadable"],
       [8, "marked-ready", undefined],
     ]);
+  });
+
+  it("leaves the PR alone when someone pushes between the two preparations of a moved base", async () => {
+    const github = new FakeGitHub(ownPr());
+    const workspace = new InMemoryWorkspace();
+    const prepare = workspace.prepareBranch.bind(workspace);
+    workspace.prepareBranch = async (wc, args) => {
+      // A push lands right after the first look.
+      if (args.start === "remote-merging") workspace.setRemoteHead("secure-it/2026-10-05-snappy-java", "9".repeat(40));
+      return prepare(wc, args);
+    };
+    const calls: string[] = [];
+    const entries = await reviewOpenPullRequests(context(github, workspace, workingCopy(NEW_BASE)), steps(calls));
+    expect(entries[0]).toMatchObject({ outcome: "left-alone", detail: expect.stringContaining("moved while the tick read it") });
+    expect(calls).toEqual([]);
+  });
+
+  it("repairs the body after its own push whose update failed, from the journal's exact head, and nothing else", async () => {
+    const journal = new MemoryJournal();
+    await journal.pushed(REPO, 7, { head: PUSHED_SHA, base: BASE_SHA });
+    const github = new FakeGitHub(ownPr({ headSha: PUSHED_SHA }));
+    const workspace = new InMemoryWorkspace();
+    const ctx = { ...context(github, workspace, workingCopy(), journal) };
+    workspace.setRemoteHead("secure-it/2026-10-05-snappy-java", PUSHED_SHA);
+    const entries = await reviewOpenPullRequests(ctx, steps());
+    expect(entries[0]?.outcome).toBe("marked-ready");
+    expect(stateOf(github.prs.get(7)!.body)).toEqual({ head: PUSHED_SHA, base: BASE_SHA, adaptations: 0 });
+
+    const other = new FakeGitHub(ownPr({ headSha: "9".repeat(40) }));
+    expect((await reviewOpenPullRequests(context(other, new InMemoryWorkspace(), workingCopy(), journal), steps()))[0]?.outcome).toBe("left-alone");
+  });
+
+  it("counts an adaptation before the agent starts, so failing attempts still run out", async () => {
+    const github = new FakeGitHub(ownPr());
+    github.checks = RED;
+    let calls = 0;
+    const failing: ReviewSteps = {
+      ...steps(),
+      async adapt() {
+        calls++;
+        throw new Error("the agent's answer failed its schema");
+      },
+    };
+    expect((await reviewOpenPullRequests(context(github), failing))[0]).toMatchObject({ outcome: "error" });
+    expect(stateOf(github.prs.get(7)!.body)?.adaptations).toBe(1);
+    expect((await reviewOpenPullRequests(context(github), failing))[0]).toMatchObject({ outcome: "error" });
+    expect((await reviewOpenPullRequests(context(github), failing))[0]).toMatchObject({ outcome: "closed" });
+    expect(calls).toBe(2);
   });
 });

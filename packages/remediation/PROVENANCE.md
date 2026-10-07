@@ -11,4 +11,4 @@ Parts of this package are adapted from [leanish/leanish-development](https://git
 | `test/ci-state.test.ts` | `agents/bump-it/test/ci-state.test.ts` | copied | imports |
 | `test/fake-github.ts` | `agents/bump-it/test/fake-github.ts` | adapted | secure-it's rules and PR state; no Dependabot PR factory |
 | `test/run-sh.test.ts` | `agents/bump-it/test/local-run.test.ts` | adapted | the lock, the final-line handshake and the phases, with a fake tool command |
-| `src/config.ts`, `src/review.ts`, `src/command.ts` and their tests | — | new | — |
+| `src/config.ts`, `src/review.ts`, `src/command.ts`, `src/journal.ts`, `src/sandboxed.ts` and their tests | — | new | — |

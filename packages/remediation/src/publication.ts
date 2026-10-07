@@ -7,6 +7,7 @@ import type { Logger } from "../../agent-basics/src/types/logger.ts";
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import type { Workspace } from "../../agent-basics/src/working-copy/workspace.ts";
 
+import type { PublicationJournal } from "./journal.ts";
 import { isOwnPullRequest, type OwnPullRequests, type PullRequestState, stateOf, withMarker } from "./own-pr.ts";
 
 /**
@@ -28,6 +29,8 @@ export interface PublicationContext {
   /** The default branch every PR of the tool targets. */
   readonly base: string;
   readonly workingCopy: WorkingCopy;
+  /** Where each push is recorded before the PR's body says so (see journal.ts). */
+  readonly journal: PublicationJournal;
 }
 
 /** A PR's title, description and the commit message of the agent's change. */
@@ -97,6 +100,7 @@ export async function publishUpdate(
   const current = await reReadOwn(context, number, remoteHead);
   if (!current.isDraft) await github.convertToDraft({ nodeId: current.nodeId });
   const pushed = await context.workspace.publishBranch(context.workingCopy, prepared, { message: content.commitMessage });
+  if (pushed.kind === "pushed") await context.journal.pushed(repo, current.number, { head: pushed.sha, base: prepared.baseSha });
   // GitHub may still report the old head for a moment after a push; anything else is someone else's push.
   await reReadOwn(context, current.number, remoteHead, ...(pushed.kind === "pushed" ? [pushed.sha] : []));
   const head = pushed.kind === "pushed" ? pushed.sha : remoteHead;
@@ -110,6 +114,16 @@ export async function publishUpdate(
   if (pushed.kind === "unchanged" && !current.isDraft) await markReady(context, current.number, remoteHead);
   await ensureLabel(context, updated);
   return { pr: updated, pushed: pushed.kind === "pushed" };
+}
+
+/**
+ * Rewrite the state in the PR's body (its text kept), once it's still the
+ * tool's at `expectedHead`: to count an adaptation before the agent starts, or
+ * to repair the head a failed update left behind.
+ */
+export async function recordState(context: PublicationContext, number: number, expectedHead: string, state: PullRequestState): Promise<GitHubPullRequest> {
+  const current = await reReadOwn(context, number, expectedHead);
+  return context.github.updatePullRequest({ repo: context.repo, number, title: current.title, body: withMarker(context.rules, current.body, state) });
 }
 
 /** Mark the PR ready, once it's still the tool's draft at `expectedHead`. */

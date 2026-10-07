@@ -1,7 +1,10 @@
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -156,4 +159,50 @@ describe("runToolCommand", () => {
     expect(await runToolCommand(handlers(async () => ({})), ["review", "leanish/widget", "--config", "/config/agent.yaml"], reviewing.fake)).toBe(0);
     expect(reviewing.finalLine()).toMatchObject({ status: "ok", result: { reviewed: [] } });
   });
+
+  it("tells run.sh it reported only once the final line is out, and reports even when the marker can't be written", async () => {
+    const marker = join(skillsDir, "marker");
+    const tracked = machine({ reportMarker: marker });
+    let seenDuringRun: boolean | undefined;
+    const listeners = process.listenerCount("SIGTERM");
+    expect(
+      await runToolCommand(
+        handlers(async () => {
+          seenDuringRun = existsSync(marker);
+          return {};
+        }),
+        ["run", "leanish/widget", "--config", "/config/agent.yaml"],
+        tracked.fake,
+      ),
+    ).toBe(0);
+    expect(seenDuringRun).toBe(false);
+    expect(readFileSync(marker, "utf8")).toBe("reported\n");
+    expect(tracked.finalLine()).toMatchObject({ status: "ok" });
+
+    const unwritable = machine({ reportMarker: join(skillsDir, "no-such-dir", "marker") });
+    expect(await runToolCommand(handlers(async () => ({})), ["run", "leanish/widget", "--config", "/config/agent.yaml"], unwritable.fake)).toBe(0);
+    expect(unwritable.finalLine()).toMatchObject({ status: "ok" });
+    expect(process.listenerCount("SIGTERM")).toBe(listeners);
+  });
+
+  it("writes the final line and then the marker when a signal stops the run", async () => {
+    const marker = join(skillsDir, "signal-marker");
+    const fixture = fileURLToPath(new URL("./fixtures/command-on-signal.ts", import.meta.url));
+    const child = spawn(process.execPath, [fixture, marker], { stdio: ["ignore", "ignore", "pipe"] });
+    let log = "";
+    const waiting = new Promise<void>((ready) =>
+      child.stderr.on("data", (chunk: Buffer) => {
+        log += chunk.toString("utf8");
+        if (log.includes("waiting to be killed")) ready();
+      }),
+    );
+    const exited = new Promise<NodeJS.Signals | null>((done) => child.on("exit", (_code, signal) => done(signal)));
+    await waiting;
+    expect(existsSync(marker)).toBe(false);
+    child.kill("SIGTERM");
+    expect(await exited).toBe("SIGTERM");
+    const finals = log.split("\n").filter((line) => line.includes('"run finished"'));
+    expect(finals.map((line) => JSON.parse(line))).toEqual([expect.objectContaining({ status: "interrupted", exitCode: 143, tool: "secure-it" })]);
+    expect(readFileSync(marker, "utf8")).toBe("reported\n");
+  }, 20_000);
 });

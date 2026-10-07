@@ -7,9 +7,11 @@
  * agent, hands everything to the tool's `run` or `review`, and always ends with
  * the `run finished` line on stderr, interruptions included.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Writable } from "node:stream";
 import { parseArgs } from "node:util";
 
 import { createGitHubClient } from "../../agent-basics/src/github/github-client.ts";
@@ -71,7 +73,7 @@ export interface Machine {
   readonly readText: (path: string) => Promise<string>;
   readonly workspace: (root: string, token: string, config: ToolConfig) => Workspace;
   readonly runner: (config: ToolConfig, releaseAgeDays: number) => CodingAgentRunner;
-  /** run.sh's marker file (`TOOL_REPORT_MARKER`): written once this command reports, so run.sh doesn't. */
+  /** run.sh's marker file (`TOOL_REPORT_MARKER`): written once the final line is out, so run.sh doesn't write one too. */
   readonly reportMarker: string | undefined;
 }
 
@@ -81,14 +83,20 @@ export const USAGE = (tool: ToolName) => `usage: ${tool} run|review <owner/repo>
 export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray<string>, machine: Partial<Machine> = {}): Promise<number> {
   const m: Machine = { ...defaultMachine(), ...machine };
   const report = new RunReport();
-  const stopReporting = reportOnTerminationSignals(report, m.stderr);
-  if (m.reportMarker !== undefined && m.reportMarker !== "") await writeFile(m.reportMarker, "tool reports\n");
+  // The final line goes through this stream, on the normal path and on a signal's: it tells run.sh once the line is out.
+  const finalLines = acknowledging(m.stderr, m.reportMarker);
+  let stopReporting: () => void = () => undefined;
   const finish = async (exitCode: number, status: "ok" | "error", extra: { error?: string; result?: Readonly<Record<string, unknown>> } = {}) => {
     stopReporting();
     const line = report.finish({ status, exitCode, ...extra });
-    if (line !== undefined) await writeFinalLine(m.stderr, line);
+    if (line !== undefined) await writeFinalLine(finalLines, line);
     return exitCode;
   };
+  try {
+    stopReporting = reportOnTerminationSignals(report, finalLines);
+  } catch (err) {
+    return finish(70, "error", { error: `couldn't start reporting: ${(err as Error).message}` });
+  }
 
   let command: string;
   let repoName: string;
@@ -160,6 +168,29 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
     logger.error(`${handlers.tool} ${command} failed`, { error: message });
     return finish(1, "error", { error: message });
   }
+}
+
+/**
+ * `out`, which writes run.sh's marker right after a `run finished` line went
+ * through. Writing it is best effort: if it fails, run.sh writes its own line
+ * as well, a duplicate rather than none.
+ */
+function acknowledging(out: NodeJS.WritableStream, marker: string | undefined): Writable {
+  return new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      out.write(chunk, (err) => {
+        if ((err === undefined || err === null) && marker !== undefined && marker !== "" && chunk.toString("utf8").includes('"msg":"run finished"')) {
+          try {
+            // Synchronous: on a signal, the process dies right after this callback.
+            writeFileSync(marker, "reported\n");
+          } catch {
+            // run.sh reports instead (see above).
+          }
+        }
+        callback(err ?? null);
+      });
+    },
+  });
 }
 
 /** The repository's default branch, read with the tool's token. */
