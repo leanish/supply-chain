@@ -54,7 +54,7 @@ describe("code-decided transitive targets", () => {
     expect(child(await decideTargets(inputs(), s))).toMatchObject({ kind: "unresolved", target: "1.0.0" });
   });
   it("keeps repository pins and reports complex override constraints without claiming R3", async () => {
-    expect(child(await decideTargets(inputs("^1", { overrides: { child: "1.1.0" } }), sources()))).toMatchObject({ target: "1.1.0", kind: "unresolved" });
+    expect(child(await decideTargets(inputs("^1", { overrides: { child: "1.1.0" } }), sources()))).toMatchObject({ target: "1.1.0", kind: "pinned" });
     expect(child(await decideTargets(inputs("^1", { overrides: { parent: { child: "1.0.0" } } }), sources()))).toMatchObject({ target: "1.0.0", kind: "unresolved" });
   });
   it("uses any base copy for inherited findings, and all incoming ranges for the target", async () => {

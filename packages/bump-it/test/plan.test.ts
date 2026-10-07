@@ -40,6 +40,13 @@ describe("units and persisted plan", () => {
     expect(planOf(planBlock({ ...plan, moves: [{ name: "lib" }] }))).toBeUndefined();
     expect(planOf("<!-- leanish:plan Zm9v -->")).toBeUndefined();
   });
+  it.each(["kind", "ecosystem"])("rejects an array coerced into the %s enum", async (field) => {
+    const plan = await planFor(routineUnit([candidate()]), npm, async () => undefined);
+    const malformed = field === "kind"
+      ? { ...plan, kind: [plan.kind] }
+      : { ...plan, moves: plan.moves.map((move) => ({ ...move, ecosystem: [move.ecosystem] })) };
+    expect(planOf(planBlock(malformed))).toBeUndefined();
+  });
   it("resolves and persists action tag commits, failing closed when absent", async () => {
     const unit = routineUnit([candidate({ ecosystem: "GitHub Actions", name: "actions/checkout", declarations: [], locations: [".github/workflows/ci.yml"] })]);
     expect((await planFor(unit, { ...npm, files: new Map() }, async () => "a".repeat(40))).moves[0]?.commitSha).toBe("a".repeat(40));

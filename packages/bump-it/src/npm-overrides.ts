@@ -1,11 +1,6 @@
-/**
- * The `overrides` a repository's `package.json` already has (its own, and
- * the npm floors secure-it records as overrides). bump-it keeps them as they
- * are (design item 26): a package with a plain top-level override
- * (`"lib": "^1.4.0"`, or `"$lib"` for the root's own range) moves only within
- * it; one the overrides name in any other way (a key with a version, a
- * nested rule) is frozen at its base version and reported as unresolved.
- */
+/** Plain repository overrides constrain targets; scoped or complex rules keep copies at base. */
+import semver from "semver";
+
 import { rangeOf } from "./npm-graph.ts";
 
 export interface RepositoryOverrides {
@@ -17,6 +12,14 @@ export interface RepositoryOverrides {
   readonly topLevelKeys: ReadonlySet<string>;
 }
 
+/** An exact pin after repositoryOverrides has resolved any `$lib` reference. */
+export function isExactOverride(spec: string | undefined): boolean {
+  if (spec === undefined) {
+    return false;
+  }
+  return semver.valid(rangeOf(spec) ?? "") !== null;
+}
+
 /** The overrides of the root `package.json` (parsed). */
 export function repositoryOverrides(manifest: unknown): RepositoryOverrides {
   const root = (manifest ?? {}) as { overrides?: unknown; dependencies?: Record<string, string>; devDependencies?: Record<string, string>; optionalDependencies?: Record<string, string> };
@@ -26,10 +29,14 @@ export function repositoryOverrides(manifest: unknown): RepositoryOverrides {
   const own = { ...root.optionalDependencies, ...root.devDependencies, ...root.dependencies };
   const visit = (rules: Record<string, unknown>, nested: boolean) => {
     for (const [key, value] of Object.entries(rules)) {
-      if (key === ".") continue;
+      if (key === ".") {
+        continue;
+      }
       const { name, spec } = splitKey(key);
       if (isObject(value)) {
-        if ("." in value) complex.add(name);
+        if ("." in value) {
+          complex.add(name);
+        }
         visit(value, true);
         continue;
       }
@@ -39,8 +46,11 @@ export function repositoryOverrides(manifest: unknown): RepositoryOverrides {
       }
       // `$lib` means the root's own spec for lib.
       const range = value.startsWith("$") ? own[value.slice(1)] : value;
-      if (range === undefined || rangeOf(range) === undefined) complex.add(name);
-      else ranges.set(name, range);
+      if (range === undefined || rangeOf(range) === undefined) {
+        complex.add(name);
+      } else {
+        ranges.set(name, range);
+      }
     }
   };
   visit(overrides, false);

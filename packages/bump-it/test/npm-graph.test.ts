@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { NpmGraph, rangeOf, rewriteSpec } from "../src/npm-graph.ts";
-import { repositoryOverrides, splitKey } from "../src/npm-overrides.ts";
+import { isExactOverride, repositoryOverrides, splitKey } from "../src/npm-overrides.ts";
 import { pinnedManifests } from "../src/npm-pins.ts";
 
 const lock = { packages: { "": { name: "root", dependencies: { parent: "^1", compat: "npm:lib@^1" } }, "node_modules/parent": { version: "1.0.0", dependencies: { lib: "^1" } }, "node_modules/parent/node_modules/lib": { version: "1.8.0" }, "node_modules/compat": { name: "lib", version: "1.9.0" } } };
@@ -22,6 +22,20 @@ describe("lockfile graph", () => {
   it("refuses a lockfile without a packages map", () => expect(() => new NpmGraph({})).toThrow("packages"));
 });
 describe("repository overrides", () => {
+  it.each([
+    ["1.4.0", true],
+    ["^1.4.0", false],
+    ["$lib", false],
+    [undefined, false],
+  ] as const)("detects an exact resolved pin in %s", (spec, expected) => {
+    expect(isExactOverride(spec)).toBe(expected);
+  });
+  it("detects $lib as exact only when its root declaration is exact", () => {
+    const exact = repositoryOverrides({ dependencies: { lib: "1.4.0" }, overrides: { lib: "$lib" } });
+    const ranged = repositoryOverrides({ dependencies: { lib: "^1.4.0" }, overrides: { lib: "$lib" } });
+    expect(isExactOverride(exact.rangeFor("lib"))).toBe(true);
+    expect(isExactOverride(ranged.rangeFor("lib"))).toBe(false);
+  });
   it("recognises plain ranges, root references and scoped names, conservatively marking complex rules", () => {
     const rules = repositoryOverrides({ dependencies: { lib: "^1" }, overrides: { lib: "$lib", "@org/x": "1.2.3", "child@^1": "1.2.0", parent: { nested: "2" }, invalid: "latest" } });
     expect(rules.rangeFor("lib")).toBe("^1");

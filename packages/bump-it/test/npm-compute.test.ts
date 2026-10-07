@@ -106,6 +106,14 @@ describe("exact npm computation", () => {
     expect(result.notes).toMatchObject([expect.stringContaining("child at node_modules/child stays at 1.0.0")]);
     expect(result.changes).toMatchObject([{ name: "parent", to: "1.1.0" }]);
   });
+  it("reports exact repository pins separately from unresolved lookups", async () => {
+    const h = await fixture(async (dir) => {
+      await writeFile(join(dir, "package-lock.json"), json(lock("1.1.0")));
+    });
+    await writeFile(join(h.dir, "package.json"), json({ ...manifest, overrides: { child: "1.0.0" } }));
+    const result = await computeNpm(h.inputs);
+    expect(result.notes).toEqual(["package-lock.json: child at node_modules/child is pinned at 1.0.0 by the repository override"]);
+  });
   it("uses a configured shrinkwrap and refuses a shadowed package-lock", async () => {
     const h = await fixture();
     await writeFile(join(h.dir, "npm-shrinkwrap.json"), json(lock()));

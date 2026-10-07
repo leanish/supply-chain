@@ -10,7 +10,9 @@ export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, bas
     for (const build of inventory?.builds ?? []) {
       for (const configuration of build.configurations) {
         for (const declaration of configuration.declared) {
-          if (declaration.version === undefined) continue;
+          if (declaration.version === undefined) {
+            continue;
+          }
           const location = gradleLocation(build.build, configuration.id);
           const name = `${declaration.group}:${declaration.name}`;
           entries.set(`${location}|${name}`, { location, name });
@@ -24,13 +26,20 @@ export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, bas
     const after = declaredAt(head, location, name).sort();
     const selected = planned.filter((move) => move.name === name && move.locations.includes(location));
     const expected = before.map((version) => selected.find((move) => move.from === version)?.to ?? version).sort();
-    if (JSON.stringify(expected) === JSON.stringify(after)) continue;
-    if (selected.length === 1 && before.length === 1) problems.push(`${location} must declare ${name} exactly ${selected[0]!.to}`);
-    else problems.push(`${name} declarations at ${location} changed outside the plan: expected ${expected.join(", ") || "none"}, got ${after.join(", ") || "none"}`);
+    if (JSON.stringify(expected) === JSON.stringify(after)) {
+      continue;
+    }
+    if (selected.length === 1 && before.length === 1) {
+      problems.push(`${location} must declare ${name} exactly ${selected[0]!.to}`);
+    } else {
+      problems.push(`${name} declarations at ${location} changed outside the plan: expected ${expected.join(", ") || "none"}, got ${after.join(", ") || "none"}`);
+    }
   }
   for (const move of planned) {
     for (const location of move.locations) {
-      if (!declaredAt(base, location, move.name).includes(move.from)) problems.push(`${location} has no source declaration of ${move.name} ${move.from}`);
+      if (!declaredAt(base, location, move.name).includes(move.from)) {
+        problems.push(`${location} has no source declaration of ${move.name} ${move.from}`);
+      }
     }
   }
   return problems;

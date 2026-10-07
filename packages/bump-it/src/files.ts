@@ -5,16 +5,24 @@ import { dirname, join, relative } from "node:path";
 import { safePath } from "./plan.ts";
 
 export async function assertLocalFile(root: string, path: string): Promise<void> {
-  if (!safePath(path)) throw new Error(`unsafe npm path: ${path}`);
+  if (!safePath(path)) {
+    throw new Error(`unsafe npm path: ${path}`);
+  }
   const canonicalRoot = await realpath(root);
   const canonicalParent = await realpath(dirname(join(root, path)));
   const rel = relative(canonicalRoot, canonicalParent);
-  if (rel === ".." || rel.startsWith("../")) throw new Error(`${path} points outside the working copy`);
+  if (rel === ".." || rel.startsWith("../")) {
+    throw new Error(`${path} points outside the working copy`);
+  }
   try {
     const stat = await lstat(join(root, path));
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`${path} must be a regular file`);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`${path} must be a regular file`);
+    }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
   }
 }
 

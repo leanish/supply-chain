@@ -1,24 +1,4 @@
-/**
- * The version every npm copy should land on (design item 26), decided by
- * code, not by npm:
- *
- *   - a direct dependency's copy: its planned target, or the version its
- *     declaration had in the base;
- *   - every other copy: the highest version within all its dependents'
- *     ranges (or within the repository's plain override for it, which
- *     replaces them), at or above its base version, at least
- *     `releaseAgeDays` old (own packages any age), that adds no advisory
- *     group the package doesn't already have in the base (the gate's
- *     `compare` rule), isn't malware and doesn't break the publisher
- *     identity — every candidate weighed on one snapshot; its base version
- *     when nothing newer is eligible;
- *   - a copy whose candidates can't all be judged (the registry can't list
- *     them, a publish time is unknown, a dependent's spec isn't a range) is
- *     unresolved: it stays at its base version, and is reported, never claimed as the rule's choice; a new copy
- *     with no provable target fails the unit;
- *   - a package the repository's overrides name in a way this doesn't reason
- *     about is kept at base and reported as unresolved.
- */
+/** Code selects each npm copy on one advisory snapshot; repository pins and unresolved copies are reported. */
 import semver from "semver";
 
 import type { PackageVersion } from "../../ci/src/package-version.ts";
@@ -26,7 +6,7 @@ import type { Snapshot } from "../../ci/src/snapshot.ts";
 import { groupsOf } from "../../ci/src/young-fixes.ts";
 
 import { type Copy, type NpmGraph, rangeOf } from "./npm-graph.ts";
-import type { RepositoryOverrides } from "./npm-overrides.ts";
+import { isExactOverride, type RepositoryOverrides } from "./npm-overrides.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -58,6 +38,7 @@ export interface TargetInputs {
 
 export type Decision =
   | { readonly copy: Copy; readonly kind: "target"; readonly target: string; readonly direct: boolean }
+  | { readonly copy: Copy; readonly kind: "pinned"; readonly target: string }
   | { readonly copy: Copy; readonly kind: "unresolved"; readonly target: string | undefined; readonly why: string };
 
 /** The target of every copy that can move on its own (bundled ones ride with their parent). */
@@ -72,28 +53,49 @@ export async function decideTargets(inputs: TargetInputs, sources: TargetSources
       decisions.push({ copy, kind: "target", target: planned, direct: true });
       continue;
     }
-    if ((overrides.isComplex(copy.installedAs) || overrides.isComplex(copy.name))) {
-      decisions.push({ copy, kind: "unresolved", target: baseVersionOf(copy, inputs, () => true), why: `the repository's scoped overrides name ${copy.name}; keeping its base version instead of claiming a choice` });
+    if (overrides.isComplex(copy.installedAs) || overrides.isComplex(copy.name)) {
+      decisions.push({
+        copy,
+        kind: "unresolved",
+        target: baseVersionOf(copy, inputs, () => true),
+        why: `the repository's scoped overrides name ${copy.name}; keeping its base version instead of claiming a choice`,
+      });
       continue;
     }
     const found = await candidatesOf(copy, inputs, sources);
-    if ("why" in found) decisions.push({ copy, kind: "unresolved", target: found.baseVersion, why: found.why });
-    else pending.push({ copy, ...found });
+    if ("why" in found) {
+      decisions.push({ copy, kind: "unresolved", target: found.baseVersion, why: found.why });
+    } else {
+      pending.push({ copy, ...found });
+    }
   }
-  if (pending.length === 0) return decisions;
+  if (pending.length === 0) {
+    return decisions;
+  }
 
   const names = [...new Set(pending.map(({ copy }) => copy.name))];
   const baseline = names.flatMap((name) => (inputs.baseVersions.get(name) ?? []).map((version) => ({ ecosystem: "npm" as const, name, version })));
   const weighed = pending.flatMap(({ copy, candidates }) => candidates.map((version) => ({ ecosystem: "npm" as const, name: copy.name, version })));
   let snapshot: Snapshot;
-  try { snapshot = await sources.snapshot(baseline, weighed); }
-  catch (err) {
-    return [...decisions, ...pending.map(({ copy, baseVersion }) => ({ copy, kind: "unresolved" as const, target: baseVersion, why: `advisory lookup failed: ${(err as Error).message}` }))];
+  try {
+    snapshot = await sources.snapshot(baseline, weighed);
+  } catch (err) {
+    return [
+      ...decisions,
+      ...pending.map(({ copy, baseVersion }) => ({
+        copy,
+        kind: "unresolved" as const,
+        target: baseVersion,
+        why: `advisory lookup failed: ${(err as Error).message}`,
+      })),
+    ];
   }
   for (const { copy, baseVersion, candidates } of pending) {
     let target: string | undefined;
     try {
-      if ([...(inputs.baseVersions.get(copy.name) ?? []), ...candidates].some((version) => !snapshot.covers({ ecosystem: "npm", name: copy.name, version }))) throw new Error("the snapshot does not cover every candidate and base version");
+      if ([...(inputs.baseVersions.get(copy.name) ?? []), ...candidates].some((version) => !snapshot.covers({ ecosystem: "npm", name: copy.name, version }))) {
+        throw new Error("the snapshot does not cover every candidate and base version");
+      }
       const inherited = new Set((inputs.baseVersions.get(copy.name) ?? []).flatMap((version) => [...groupsOf(snapshot, { ecosystem: "npm", name: copy.name, version })]));
       for (const version of candidates) {
         if (await eligible(copy.name, version, baseVersion, inherited, snapshot, sources)) {
@@ -106,9 +108,13 @@ export async function decideTargets(inputs: TargetInputs, sources: TargetSources
       continue;
     }
     target ??= baseVersion;
-    if (target === undefined) decisions.push({ copy, kind: "unresolved", target: undefined, why: `no version of ${copy.name} within its ranges is eligible, and it's new here` });
-    else if (semver.valid(rangeOf(overrides.rangeFor(copy.installedAs) ?? overrides.rangeFor(copy.name) ?? "*") ?? "") !== null) decisions.push({ copy, kind: "unresolved", target, why: "the repository override pins this copy" });
-    else decisions.push({ copy, kind: "target", target, direct: false });
+    if (target === undefined) {
+      decisions.push({ copy, kind: "unresolved", target: undefined, why: `no version of ${copy.name} within its ranges is eligible, and it's new here` });
+    } else if (isExactOverride(overrides.rangeFor(copy.installedAs) ?? overrides.rangeFor(copy.name))) {
+      decisions.push({ copy, kind: "pinned", target });
+    } else {
+      decisions.push({ copy, kind: "target", target, direct: false });
+    }
   }
   return decisions;
 }
@@ -124,14 +130,18 @@ async function candidatesOf(
   const ranges = specs.map(rangeOf);
   const within = (version: string) => ranges.every((range) => range !== undefined && semver.satisfies(version, range));
   const baseVersion = baseVersionOf(copy, inputs, ranges.some((range) => range === undefined) ? () => true : within);
-  if (ranges.some((range) => range === undefined)) return { baseVersion, why: `a dependent of ${copy.name} at ${copy.path} asks for '${specs.find((spec) => rangeOf(spec) === undefined)}', not a version range` };
+  if (ranges.some((range) => range === undefined)) {
+    return { baseVersion, why: `a dependent of ${copy.name} at ${copy.path} asks for '${specs.find((spec) => rangeOf(spec) === undefined)}', not a version range` };
+  }
   let listed: ReadonlyArray<string> | undefined;
   try {
     listed = await sources.versions(copy.name);
   } catch (err) {
     return { baseVersion, why: `the registry couldn't list ${copy.name}'s versions: ${(err as Error).message}` };
   }
-  if (listed === undefined) return { baseVersion, why: `the registry doesn't list ${copy.name}'s versions completely` };
+  if (listed === undefined) {
+    return { baseVersion, why: `the registry doesn't list ${copy.name}'s versions completely` };
+  }
   const prerelease = semver.prerelease(copy.version) !== null;
   const inRange = listed
     .filter((version) => semver.valid(version) !== null && (prerelease || semver.prerelease(version) === null) && within(version))
@@ -145,10 +155,17 @@ async function candidatesOf(
       continue;
     }
     let published: Date | undefined;
-    try { published = await sources.published(copy.name, version); }
-    catch (err) { return { baseVersion, why: `publish-time lookup failed: ${(err as Error).message}` }; }
-    if (published === undefined) return { baseVersion, why: `the registry has no publish time for ${copy.name}@${version}, so its age can't be judged` };
-    if ((sources.now.getTime() - published.getTime()) / DAY_MS >= sources.releaseAgeDays) candidates.push(version);
+    try {
+      published = await sources.published(copy.name, version);
+    } catch (err) {
+      return { baseVersion, why: `publish-time lookup failed: ${(err as Error).message}` };
+    }
+    if (published === undefined) {
+      return { baseVersion, why: `the registry has no publish time for ${copy.name}@${version}, so its age can't be judged` };
+    }
+    if ((sources.now.getTime() - published.getTime()) / DAY_MS >= sources.releaseAgeDays) {
+      candidates.push(version);
+    }
   }
   return { baseVersion, candidates };
 }
@@ -161,7 +178,9 @@ async function candidatesOf(
 function baseVersionOf(copy: Copy, inputs: TargetInputs, within: (version: string) => boolean): string | undefined {
   const copies = inputs.base?.copies().filter((other) => other.name === copy.name) ?? [];
   const same = copies.find((other) => other.path === copy.path);
-  if (same !== undefined && within(same.version)) return same.version;
+  if (same !== undefined && within(same.version)) {
+    return same.version;
+  }
   return copies
     .map((other) => other.version)
     .filter(within)
@@ -170,8 +189,14 @@ function baseVersionOf(copy: Copy, inputs: TargetInputs, within: (version: strin
 
 async function eligible(name: string, version: string, baseVersion: string | undefined, inherited: ReadonlySet<string>, snapshot: Snapshot, sources: TargetSources): Promise<boolean> {
   const pkg = { ecosystem: "npm" as const, name, version };
-  if (snapshot.advisories(pkg).some((advisory) => advisory.malicious)) return false;
-  if ([...groupsOf(snapshot, pkg)].some((group) => !inherited.has(group))) return false;
-  if (baseVersion === undefined || version === baseVersion) return true;
+  if (snapshot.advisories(pkg).some((advisory) => advisory.malicious)) {
+    return false;
+  }
+  if ([...groupsOf(snapshot, pkg)].some((group) => !inherited.has(group))) {
+    return false;
+  }
+  if (baseVersion === undefined || version === baseVersion) {
+    return true;
+  }
   return (await sources.identity(name, baseVersion, version)).length === 0;
 }

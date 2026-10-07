@@ -122,6 +122,21 @@ describe("bump-it run", () => {
     expect(human.github.prs.get(42)?.headRef).toBe("bump-it/2026-10-07-routine-2");
     expect(human.github.prs.get(7)?.headSha).toBe(pr.headSha);
   });
+  it("reuses its suffixed PR, but leaves a human push to that branch alone", async () => {
+    const old = routine(candidate({ minor: { version: "1.0.1", line: "1" } }));
+    const pr = await prFor(old, { headRef: "bump-it/2026-10-05-routine-2" });
+    const own = harness({ prs: [pr], bumps: [candidate({ major: undefined })] });
+    expect(await bumpIt(own.deps).run(own.context)).toMatchObject({ units: [{ outcome: "updated", pullRequest: pr.url }] });
+    expect(own.workspace.preparations[0]?.args).toMatchObject({ branch: pr.headRef, start: "remote-merging" });
+    expect(own.github.prs.size).toBe(1);
+
+    const humanHead = "9".repeat(40);
+    const human = harness({ prs: [{ ...pr, headSha: humanHead }], bumps: [candidate({ major: undefined })] });
+    expect(await bumpIt(human.deps).run(human.context)).toMatchObject({ units: [{ outcome: "published" }] });
+    expect(human.github.prs.get(pr.number)?.headSha).toBe(humanHead);
+    expect(human.workspace.preparations[0]?.args).toMatchObject({ start: "default" });
+    expect(human.workspace.preparations[0]?.args.branch).not.toBe(pr.headRef);
+  });
   it("makes room for a human-owned long major branch with a suffix that survives truncation", async () => {
     const bump = candidate({ name: "x".repeat(80) });
     const unit = major(bump);
@@ -229,17 +244,24 @@ describe("bump-it review", () => {
     expect(h.agentCalls).toMatchObject([{ effort: "high", input: { mode: "adapt", failingChecks: ["check"] } }]);
     expect(stateOf(h.github.prs.get(7)!.body)?.adaptations).toBe(1);
   });
-  it("preserves a major's manifest script adaptation across a clean same-target merge", async () => {
+  it.each([
+    ["four spaces, CRLF and a final newline", "    ", "\r\n", true],
+    ["tabs, LF and no final newline", "\t", "\n", false],
+    ["compact JSON", undefined, "\n", false],
+  ] as const)("preserves a major's script adaptation and %s across a clean same-target merge", async (_name, indent, newline, finalNewline) => {
     const h = harness({ prs: [await prFor(major())], baseSha: NEW_BASE });
+    let expected = "";
     const prepare = h.workspace.prepareBranch.bind(h.workspace);
     h.workspace.prepareBranch = async (wc, args) => {
       const result = await prepare(wc, args);
       const manifest = JSON.parse(h.files["package.json"]!);
-      h.files["package.json"] = JSON.stringify({ ...manifest, scripts: { test: "new-cli --changed" } });
+      expected = JSON.stringify({ ...manifest, scripts: { test: "new-cli --changed" } }, null, indent)
+        .replaceAll("\n", newline) + (finalNewline ? newline : "");
+      h.files["package.json"] = expected;
       return result;
     };
     expect(await bumpIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ outcome: "rebased" }] });
-    expect(JSON.parse(h.files["package.json"]!).scripts).toEqual({ test: "new-cli --changed" });
+    expect(h.files["package.json"]).toBe(expected);
     expect(h.agentCalls).toEqual([]);
   });
   it("checks recorded lockfile hashes before letting a major adapt", async () => {

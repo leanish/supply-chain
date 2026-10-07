@@ -1,7 +1,8 @@
 # bump-it
 
 Keeps dependencies fresh with the supply-chain gate's version rule: the highest eligible version at least seven days
-old (or the repository's `releaseAgeDays`), adding no advisory group or malware. Own npm scopes skip the wait alone.
+old (or the repository's `releaseAgeDays`), adding no advisory group or malware. Packages in the repository's own npm
+scopes skip the wait (their dependencies don't).
 Actions pins and Dockerfile CLIs represented by configured npm manifest/lockfiles use the same rule.
 The tool decides versions, computes npm files and verifies every edit before opening a draft PR. The coding agent
 handles Gradle declarations, Actions pins and major migrations.
@@ -26,11 +27,12 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   routine refresh; other direct declarations remain at base.
 - Unjudgeable copies stay at their base version, with an unresolved note. Complex scoped override rules are treated
   conservatively: their copies stay at base rather than claiming an R3 selection. If a new copy has no provable eligible
-  target, or npm cannot retain a required target, that unit fails.
+  target, or npm cannot retain a required target, that unit fails. Exact repository pins are reported separately as pins.
 - The agent never changes npm dependency fields or lockfiles. It may adapt code and manifest scripts/config only for a
   major, using `majorEffort` (configure Sol with high effort). The [skill](skills/bump-it/SKILL.md) defines the boundary.
 - Verification fences off policy changes first, requires exact planned lockfiles and dependency fields, exact planned
-  Gradle declarations, unchanged unplanned declarations and floors, and correct action pins; `compare` must pass.
+  Gradle declarations, unchanged unplanned declarations and floors, and correct action pins. Only after every local
+  check passes does it run `compare`, which must also pass. A report of local problems means `compare` has not run.
 - Open PRs count only when the head matches their body state or the exact tool journal entry. Same plan: leave it to
   review. Changed plan: merge base, revert all old PR edits to base, apply the new plan, verify and push a normal commit.
   A human push is left alone; a separate PR is opened. Other tools' overlapping PRs never suppress work.
@@ -56,8 +58,9 @@ R7's daily main scan and open-PR rescan remain CI's responsibility; this tick re
 ## Setup and isolation
 
 Use `~/.config/leanish/bump-it/agent.yaml`, with explicit repository opt-in and the shared
-[configuration](../remediation). Requires Node 24, git, gh and authenticated Codex. **npm >= 11.17.0 is required when
-ownPackages produces a min-release-age-exclude list**; older npm fails clearly before computation. Without exclusions,
+[configuration](../remediation). Requires Node 24, git, gh and authenticated Codex. **npm 11.17.0 or later is required
+when the repository has own npm scopes**, for `min-release-age-exclude`. With older npm, the run reports the affected
+unit as failed with the required and detected versions, before computation or publication. Without exclusions,
 use npm with min-release-age support. No npm installation or registry requests are needed for the unit tests.
 
 Two separate Keychain tokens: the tool alone receives the write token; the agent receives only the read token. npm,

@@ -1,16 +1,4 @@
-/**
- * What one bump-it run works on, decided without a model (design item 25),
- * from the gate's `candidates --rule bump`:
- *
- *   - **one routine unit**: every dependency's move to the highest acceptable
- *     version in its own line (npm, Gradle, Actions), plus, computed later,
- *     the npm transitive refresh;
- *   - **one unit per major**: a dependency's move to the highest acceptable
- *     version of the highest newer line, every declaration of it together.
- *
- * Majors come most-depended-on first (locations, then name), so a cap on new
- * major PRs opens the ones that matter most first and the rest in later runs.
- */
+/** Group minor/patch moves in one routine unit and each major separately, most-depended-on first. */
 import type { BumpCandidate, NpmDeclaration } from "../../ci/src/candidates.ts";
 import type { Ecosystem } from "../../ci/src/versions.ts";
 
@@ -57,7 +45,9 @@ export function routineUnit(bumps: ReadonlyArray<BumpCandidate>): Unit {
 export function majorUnits(bumps: ReadonlyArray<BumpCandidate>): Unit[] {
   const byPackage = new Map<string, DirectMove[]>();
   for (const bump of bumps) {
-    if (bump.major === undefined) continue;
+    if (bump.major === undefined) {
+      continue;
+    }
     const move = moveOf(bump, bump.major.version, true);
     byPackage.set(packageKey(move), [...(byPackage.get(packageKey(move)) ?? []), move]);
   }

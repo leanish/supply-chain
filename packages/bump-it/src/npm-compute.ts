@@ -1,29 +1,11 @@
-/**
- * The exact npm files a bump-it unit lands (design item 26), computed by the
- * tool in a scratch copy of the base, npm running under the sandbox:
- *
- *   - **routine**: each planned direct dependency's range moves to its target
- *     (style kept), `npm install --package-lock-only` brings in what that
- *     needs, `npm update --package-lock-only` refreshes the rest within the
- *     ranges; then every copy gets the version code decides
- *     (npm-targets.ts), and copies npm put elsewhere are locked exactly at it
- *     (npm-pins.ts), in rounds until npm keeps every target;
- *   - **a major**: only that dependency's range moves, `npm install` brings in
- *     what it induces, and the dependency is locked exactly at its target.
- *
- * Every npm command gets the repository's release-age window
- * (`--min-release-age`, own scopes in `--min-release-age-exclude`) and runs
- * no package code (`--ignore-scripts`). The result is each `package.json`
- * and lockfile that differs from the base, byte for byte, what moved, and
- * what was left as it was and why.
- */
+/** Compute exact npm files in a sandboxed scratch copy, pin targets, then restore planned manifests. */
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import type { NpmDeclaration } from "../../ci/src/candidates.ts";
 
 import { assertLocalFile } from "./files.ts";
-
+import { formatManifest } from "./manifest-format.ts";
 import { NpmGraph, rewriteSpec } from "./npm-graph.ts";
 import { repositoryOverrides } from "./npm-overrides.ts";
 import { pinnedManifests } from "./npm-pins.ts";
@@ -77,12 +59,18 @@ export async function computeNpm(inputs: NpmInputs): Promise<NpmResult> {
   const changes: CopyChange[] = [];
   const notes = new Set<string>();
   const baseVersions = versionsByName(inputs.baseLocks);
-  const lockfiles = [...inputs.baseLocks.keys()].filter((lockfile) => inputs.kind === "routine" || inputs.moves.some((move) => move.lockfile === lockfile)).sort();
+  const lockfiles = [...inputs.baseLocks.keys()]
+    .filter((lockfile) => inputs.kind === "routine" || inputs.moves.some((move) => move.lockfile === lockfile))
+    .sort();
   for (const lockfile of lockfiles) {
     const result = await computeLockfile(lockfile, inputs, baseVersions);
-    for (const [path, content] of result.files) files.set(path, content);
+    for (const [path, content] of result.files) {
+      files.set(path, content);
+    }
     changes.push(...result.changes);
-    for (const note of result.notes) notes.add(note);
+    for (const note of result.notes) {
+      notes.add(note);
+    }
   }
   return { files, changes, notes: [...notes].sort() };
 }
@@ -93,11 +81,19 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   const repoPath = (path: string) => (root === "" ? path : `${root}/${path}`);
   const baseLock = inputs.baseLocks.get(lockfile)!;
   if (basename(lockfile) === "package-lock.json") {
-    try { await lstat(at("npm-shrinkwrap.json")); throw new Error(`${lockfile} is shadowed by npm-shrinkwrap.json; configure the shrinkwrap instead`); }
-    catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
+    try {
+      await lstat(at("npm-shrinkwrap.json"));
+      throw new Error(`${lockfile} is shadowed by npm-shrinkwrap.json; configure the shrinkwrap instead`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+    }
   }
   const lockName = basename(lockfile);
-  if (!["package-lock.json", "npm-shrinkwrap.json"].includes(lockName)) throw new Error(`unsupported npm lockfile: ${lockfile}`);
+  if (!["package-lock.json", "npm-shrinkwrap.json"].includes(lockName)) {
+    throw new Error(`unsupported npm lockfile: ${lockfile}`);
+  }
   await assertLocalFile(inputs.dir, lockfile);
   const baseGraph = new NpmGraph(baseLock);
   const lockText = await readFile(at(lockName), "utf8");
@@ -112,17 +108,27 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   const planned = plannedManifests(baseTexts, inputs.moves.filter((move) => move.lockfile === lockfile), lockfile);
   const plannedParsed = new Map([...planned].map(([path, text]) => [path, JSON.parse(text) as Manifest]));
   const writePlanned = async () => {
-    for (const [path, text] of planned) await writeFile(at(manifestOf(path)), text);
+    for (const [path, text] of planned) {
+      await writeFile(at(manifestOf(path)), text);
+    }
   };
   await writePlanned();
 
-  const flags = ["--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", `--min-release-age=${inputs.window.days}`, ...inputs.window.exclude.map((pattern) => `--min-release-age-exclude=${pattern}`)];
+  const flags = [
+    "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
+    `--min-release-age=${inputs.window.days}`,
+    ...inputs.window.exclude.map((pattern) => `--min-release-age-exclude=${pattern}`),
+  ];
   const npm = async (...args: string[]) => {
     const result = await inputs.npm(join(inputs.dir, root), [...args, ...flags]);
-    if (result.code !== 0) throw new Error(`npm ${args.join(" ")} in ${root === "" ? "the root" : root} failed (exit ${result.code}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
+    if (result.code !== 0) {
+      throw new Error(`npm ${args.join(" ")} in ${root === "" ? "the root" : root} failed (exit ${result.code}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
+    }
   };
   await npm("install");
-  if (inputs.kind === "routine") await npm("update");
+  if (inputs.kind === "routine") {
+    await npm("update");
+  }
 
   const overrides = repositoryOverrides(plannedParsed.get(""));
   const plannedDirect = new Map(inputs.moves.filter((move) => move.lockfile === lockfile).map((move) => [`${move.workspace}:${move.declaredAs}`, move.to]));
@@ -143,12 +149,16 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
       throw new Error(`a new copy in ${lockfile} has no eligible target: ${decisions.filter((decision) => decision.kind === "unresolved").map((decision) => decision.why).join("; ")}`);
     }
     const off = decisions.flatMap((decision) => (decision.target !== undefined && decision.target !== decision.copy.version ? [{ copy: decision.copy, target: decision.target }] : []));
-    if (off.length === 0) break;
+    if (off.length === 0) {
+      break;
+    }
     if (pass === MAX_PASSES) {
       throw new Error(`npm didn't keep the targets in ${lockfile} after ${MAX_PASSES} passes: ${off.map((pin) => `${pin.copy.name} at ${pin.copy.path} is ${pin.copy.version}, not ${pin.target}`).join("; ")}`);
     }
     const pinned = pinnedManifests(graph, off, plannedParsed, overrides);
-    for (const [path, manifest] of pinned) await writeFile(at(manifestOf(path)), `${JSON.stringify(manifest, null, 2)}\n`);
+    for (const [path, manifest] of pinned) {
+      await writeFile(at(manifestOf(path)), `${JSON.stringify(manifest, null, 2)}\n`);
+    }
     await npm("install");
     await writePlanned();
     await npm("install");
@@ -157,15 +167,30 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   const files = new Map<string, string>();
   for (const [path, text] of planned) {
     const onDisk = await readFile(at(manifestOf(path)), "utf8");
-    if (onDisk !== text) throw new Error(`npm rewrote ${repoPath(manifestOf(path))}; bump-it lands only the ranges it planned`);
-    if (text !== baseTexts.get(path)) files.set(repoPath(manifestOf(path)), text);
+    if (onDisk !== text) {
+      throw new Error(`npm rewrote ${repoPath(manifestOf(path))}; bump-it lands only the ranges it planned`);
+    }
+    if (text !== baseTexts.get(path)) {
+      files.set(repoPath(manifestOf(path)), text);
+    }
   }
   const finalText = await readFile(at(lockName), "utf8");
-  if (finalText !== lockText) files.set(lockfile, finalText);
-  const notes = decisions.flatMap((decision) =>
-    decision.kind === "unresolved" ? [`${lockfile}: ${decision.copy.name} at ${decision.copy.path} stays at ${decision.target ?? decision.copy.version}: ${decision.why}`] : [],
-  );
+  if (finalText !== lockText) {
+    files.set(lockfile, finalText);
+  }
+  const notes = decisions.flatMap((decision) => decisionNotes(lockfile, decision));
   return { files, changes: changesBetween(lockfile, baseGraph, new NpmGraph(JSON.parse(finalText))), notes };
+}
+
+function decisionNotes(lockfile: string, decision: Decision): string[] {
+  const location = `${lockfile}: ${decision.copy.name} at ${decision.copy.path}`;
+  if (decision.kind === "pinned") {
+    return [`${location} is pinned at ${decision.target} by the repository override`];
+  }
+  if (decision.kind === "unresolved") {
+    return [`${location} stays at ${decision.target ?? decision.copy.version}: ${decision.why}`];
+  }
+  return [];
 }
 
 function manifestOf(declaringPath: string): string {
@@ -182,10 +207,16 @@ function plannedManifests(texts: ReadonlyMap<string, string>, moves: ReadonlyArr
   for (const move of moves) {
     const path = move.workspace === "." ? "" : move.workspace;
     const text = result.get(path);
-    if (text === undefined) throw new Error(`${lockfile} has no workspace ${move.workspace} declaring ${move.declaredAs}`);
+    if (text === undefined) {
+      throw new Error(`${lockfile} has no workspace ${move.workspace} declaring ${move.declaredAs}`);
+    }
     const spec = rewriteSpec(move.spec, move.to);
-    if (spec === undefined) throw new Error(`${move.declaredAs}'s range '${move.spec}' in ${manifestOf(path)} can't be moved to ${move.to} mechanically`);
-    if (spec === move.spec) continue;
+    if (spec === undefined) {
+      throw new Error(`${move.declaredAs}'s range '${move.spec}' in ${manifestOf(path)} can't be moved to ${move.to} mechanically`);
+    }
+    if (spec === move.spec) {
+      continue;
+    }
     result.set(path, withSpec(text, move.declaredAs, move.spec, spec, manifestOf(path)));
   }
   return result;
@@ -201,15 +232,18 @@ function withSpec(text: string, key: string, from: string, to: string, file: str
       found = true;
     }
   }
-  if (!found) throw new Error(`${file} doesn't declare ${key} as '${from}'`);
-  const indent = /^[ \t]+(?=")/m.exec(text)?.[0] ?? "  ";
-  const newline = text.includes("\r\n") ? "\r\n" : "\n";
-  const canonical = (value: unknown) => `${JSON.stringify(value, null, indent).replaceAll("\n", newline)}${text.endsWith(newline) ? newline : ""}`;
-  if (canonical(JSON.parse(text)) === text) return canonical(manifest);
+  if (!found) {
+    throw new Error(`${file} doesn't declare ${key} as '${from}'`);
+  }
+  if (formatManifest(text, JSON.parse(text)) === text) {
+    return formatManifest(text, manifest);
+  }
   // Not npm's own formatting: replace the pair in place, when it's there exactly once.
   const pair = new RegExp(`${escape(JSON.stringify(key))}(\\s*:\\s*)${escape(JSON.stringify(from))}`, "g");
   const matches = [...text.matchAll(pair)];
-  if (matches.length !== 1) throw new Error(`${file} isn't formatted the way npm writes it, and '${key}: ${from}' isn't there exactly once to replace`);
+  if (matches.length !== 1) {
+    throw new Error(`${file} isn't formatted the way npm writes it, and '${key}: ${from}' isn't there exactly once to replace`);
+  }
   return text.replace(pair, (_whole, colon: string) => `${JSON.stringify(key)}${colon}${JSON.stringify(to)}`);
 }
 
@@ -228,24 +262,36 @@ function directTargets(graph: NpmGraph, planned: ReadonlyMap<string, string>, ba
   for (const edge of graph.declaredEdges()) {
     const key = `${edge.from === "" ? "." : edge.from}:${edge.key}`;
     if (edge.to === undefined) {
-      if (planned.has(key) || base.has(key)) throw new Error(`declared dependency ${key} disappeared from the npm graph`);
+      if (planned.has(key) || base.has(key)) {
+        throw new Error(`declared dependency ${key} disappeared from the npm graph`);
+      }
       continue;
     }
     seen.add(key);
     const target = planned.get(key) ?? base.get(key);
-    if (target === undefined) continue;
+    if (target === undefined) {
+      continue;
+    }
     const other = targets.get(edge.to);
-    if (other !== undefined && other !== target) throw new Error(`declarations sharing ${edge.to} want ${other} and ${target}`);
+    if (other !== undefined && other !== target) {
+      throw new Error(`declarations sharing ${edge.to} want ${other} and ${target}`);
+    }
     targets.set(edge.to, target);
   }
-  for (const key of planned.keys()) if (!seen.has(key)) throw new Error(`planned declaration ${key} disappeared from the npm graph`);
+  for (const key of planned.keys()) {
+    if (!seen.has(key)) {
+      throw new Error(`planned declaration ${key} disappeared from the npm graph`);
+    }
+  }
   return targets;
 }
 
 function versionsByName(locks: ReadonlyMap<string, unknown>): Map<string, string[]> {
   const versions = new Map<string, Set<string>>();
   for (const lock of locks.values()) {
-    for (const copy of new NpmGraph(lock).copies()) versions.set(copy.name, new Set([...(versions.get(copy.name) ?? []), copy.version]));
+    for (const copy of new NpmGraph(lock).copies()) {
+      versions.set(copy.name, new Set([...(versions.get(copy.name) ?? []), copy.version]));
+    }
   }
   return new Map([...versions].map(([name, set]) => [name, [...set].sort()]));
 }
@@ -257,7 +303,9 @@ function changesBetween(lockfile: string, base: NpmGraph, head: NpmGraph): CopyC
   for (const path of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const was = before.get(path);
     const now = after.get(path);
-    if (was?.name === now?.name && was?.version === now?.version) continue;
+    if (was?.name === now?.name && was?.version === now?.version) {
+      continue;
+    }
     changes.push({ lockfile, path, name: now?.name ?? was!.name, from: was?.version, to: now?.version });
   }
   return changes;

@@ -49,14 +49,20 @@ export class NpmGraph {
 
   constructor(lock: unknown) {
     const packages = (lock as { packages?: unknown } | null)?.packages;
-    if (typeof packages !== "object" || packages === null || Array.isArray(packages)) throw new Error("the lockfile has no `packages` map");
+    if (typeof packages !== "object" || packages === null || Array.isArray(packages)) {
+      throw new Error("the lockfile has no `packages` map");
+    }
     this.packages = packages as Record<string, LockEntry>;
     this.#edges = [];
     for (const [from, entry] of Object.entries(this.packages)) {
-      if (entry.link === true) continue;
+      if (entry.link === true) {
+        continue;
+      }
       const declared = !from.includes("node_modules/");
       const specs = { ...entry.peerDependencies, ...entry.optionalDependencies, ...(declared ? entry.devDependencies : {}), ...entry.dependencies };
-      for (const [key, spec] of Object.entries(specs)) this.#edges.push({ from, key, spec, declared, to: nearestCopy(this.packages, from, key) });
+      for (const [key, spec] of Object.entries(specs)) {
+        this.#edges.push({ from, key, spec, declared, to: nearestCopy(this.packages, from, key) });
+      }
     }
   }
 
@@ -64,7 +70,9 @@ export class NpmGraph {
   copies(): Copy[] {
     return Object.entries(this.packages).flatMap(([path, entry]) => {
       const marker = path.lastIndexOf("node_modules/");
-      if (marker === -1 || entry.link === true || entry.version === undefined) return [];
+      if (marker === -1 || entry.link === true || entry.version === undefined) {
+        return [];
+      }
       const installedAs = path.slice(marker + "node_modules/".length);
       return [{ path, name: entry.name ?? installedAs, installedAs, version: entry.version, bundled: entry.inBundle === true }];
     });
@@ -83,8 +91,12 @@ export class NpmGraph {
   /** The package name of the root, a workspace or an installed package at `path`. */
   nameAt(path: string): string | undefined {
     const entry = this.packages[path];
-    if (entry === undefined) return undefined;
-    if (entry.name !== undefined) return entry.name;
+    if (entry === undefined) {
+      return undefined;
+    }
+    if (entry.name !== undefined) {
+      return entry.name;
+    }
     const marker = path.lastIndexOf("node_modules/");
     return marker === -1 ? undefined : path.slice(marker + "node_modules/".length);
   }
@@ -95,8 +107,12 @@ export function nearestCopy(packages: Readonly<Record<string, unknown>>, from: s
   let dir = from;
   for (;;) {
     const candidate = dir === "" ? `node_modules/${key}` : `${dir}/node_modules/${key}`;
-    if (packages[candidate] !== undefined) return candidate;
-    if (dir === "") return undefined;
+    if (packages[candidate] !== undefined) {
+      return candidate;
+    }
+    if (dir === "") {
+      return undefined;
+    }
     const cut = dir.lastIndexOf("/node_modules/");
     dir = cut !== -1 ? dir.slice(0, cut) : dir.includes("/") && !dir.startsWith("node_modules/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
   }
@@ -122,8 +138,12 @@ export function rewriteSpec(spec: string, to: string): string | undefined {
   const alias = /^(npm:(?:@[^/@]+\/)?[^@]+)(?:@(.+))?$/.exec(trimmed);
   const prefix = alias === null ? "" : `${alias[1]}@`;
   const range = alias === null ? trimmed : alias[2];
-  if (range === undefined) return undefined;
+  if (range === undefined) {
+    return undefined;
+  }
   const simple = /^(\^|~|>=|=)?v?\d+(?:\.\d+(?:\.\d+(?:-[0-9A-Za-z.-]+)?)?)?$/.exec(range);
-  if (simple !== null) return `${prefix}${simple[1] ?? ""}${to}`;
+  if (simple !== null) {
+    return `${prefix}${simple[1] ?? ""}${to}`;
+  }
   return semver.validRange(range) !== null && semver.satisfies(to, range) ? spec : undefined;
 }
