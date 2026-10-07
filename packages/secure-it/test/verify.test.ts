@@ -174,4 +174,31 @@ describe("verifyPlan", () => {
       `the action use .github/workflows/ci.yml: actions/cache@${"c".repeat(40)} # v4.2.4 changed outside the plan`,
     ]);
   });
+
+  it("lets a planned pin change only its own ref and comment in the workflow", async () => {
+    const old = "a".repeat(40);
+    const pin = "c".repeat(40);
+    const workflow = (trigger: string, ref: string, tag: string) =>
+      `on: ${trigger}\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@${ref} # ${tag}\n`;
+    const pinPlan: ChangePlan = {
+      topic: "actions/checkout",
+      malware: false,
+      packages: ["GitHub Actions|actions/checkout"],
+      severity: "HIGH",
+      moves: [{ ecosystem: "GitHub Actions", name: "actions/checkout", from: "v4.2.2", to: "v4.2.3", mechanism: "action-pin", locations: [".github/workflows/ci.yml"], advisories: [], major: false, commitSha: pin, declaredAs: undefined }],
+    };
+    const verifyWith = (trigger: string) =>
+      verifyPlan({
+        plan: pinPlan,
+        base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("[push, pull_request]", old, "v4.2.2") }),
+        head: tree("worktree", { ".github/workflows/ci.yml": workflow(trigger, pin, "v4.2.3") }),
+        env: environment({}),
+        gradle: {},
+        changedFiles: [".github/workflows/ci.yml"],
+      });
+    expect(await verifyWith("workflow_dispatch")).toEqual([
+      "the edit changed .github/workflows/ci.yml beyond its planned action pins: the gate's own policy, which no plan may change",
+    ]);
+    expect((await verifyWith("[push, pull_request]")).filter((problem) => problem.includes("policy"))).toEqual([]);
+  });
 });

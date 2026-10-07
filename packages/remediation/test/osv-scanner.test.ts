@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { ensureOsvScanner, osvPlatform, verifyingRun } from "../src/osv-scanner.ts";
+import { ensureOsvScanner, isInside, osvPlatform, verifyingRun } from "../src/osv-scanner.ts";
 
 let cache: string;
 
@@ -37,6 +37,17 @@ describe("ensureOsvScanner", () => {
     expect(calls).toEqual([binaryDir]);
     const failing = async () => ({ code: 1, stdout: "", stderr: "curl: (6) Could not resolve host\n" });
     await expect(ensureOsvScanner(cache, [], failing, "darwin_arm64")).rejects.toThrow("installing OSV-Scanner 2.6.0 failed: curl: (6) Could not resolve host");
+  });
+
+  it("compares canonical paths by whole components", async () => {
+    if (process.platform === "darwin") {
+      // macOS's /tmp is a symlink to /private/tmp.
+      expect(isInside("/tmp/x/osv-scanner", "/private/tmp")).toBe(true);
+      expect(isInside("/private/tmp/x/osv-scanner", "/tmp")).toBe(true);
+    }
+    expect(isInside(join(cache, "..trusted", "osv-scanner"), cache)).toBe(true);
+    expect(isInside(join(cache, "..", "elsewhere"), cache)).toBe(false);
+    expect(isInside(`${cache}-sibling/osv-scanner`, cache)).toBe(false);
   });
 
   it("refuses to keep the binary where sandboxed commands can write", async () => {

@@ -3,8 +3,9 @@
  * (design item 23). Any problem stops the publication:
  *
  *   0. the gate's own policy is untouched, major or not: its config, its
- *      exceptions, and every workflow and action file outside the planned
- *      action pins (checked first, since `compare` reads policy from head);
+ *      exceptions, and every workflow and action file — in a file a planned
+ *      action pin names, everything but that pin's ref and comment (checked
+ *      first, since `compare` reads policy from head);
  *   1. `compare` base → working tree passes (it judges every version that
  *      changed, transitives a parent update pulled in included);
  *   2. every planned move landed exactly: npm, the lockfile entry at each
@@ -51,6 +52,12 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const pinned = new Set(plan.moves.filter((move) => move.mechanism === "action-pin").flatMap((move) => move.locations));
   const policy = inputs.changedFiles.filter((path) => isPolicyFile(path) && !pinned.has(path));
   if (policy.length > 0) return [`the edit changed ${policy.join(", ")}: the gate's own policy, which no plan may change`];
+  const pinnedActions = new Set(plan.moves.filter((move) => move.mechanism === "action-pin").map((move) => move.name.toLowerCase()));
+  for (const path of inputs.changedFiles.filter((changed) => pinned.has(changed))) {
+    const before = pinsMasked(await base.read(path), pinnedActions);
+    const after = pinsMasked(await head.read(path), pinnedActions);
+    if (before !== after) return [`the edit changed ${path} beyond its planned action pins: the gate's own policy, which no plan may change`];
+  }
 
   const compared = await runCompare(base, head, env, gradle);
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));
@@ -170,6 +177,19 @@ async function directVersions(tree: Tree, gradle: GradleInventory | undefined): 
     }
   }
   return versions;
+}
+
+/** A workflow's text with the ref and comment of each use of `actions` masked: what a planned pin may change. */
+function pinsMasked(text: string | undefined, actions: ReadonlySet<string>): string | undefined {
+  if (text === undefined) return undefined;
+  return text
+    .split("\n")
+    .map((line) => {
+      const use = /^(\s*(?:-\s*)?uses:\s*)(["']?)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)((?:\/[^@\s"']*)?)@[^\s"'#]+\2(\s+#.*)?\s*$/.exec(line);
+      if (use === null || !actions.has(use[3]!.toLowerCase())) return line;
+      return `${use[1]}${use[2]}${use[3]}${use[4]}@<pinned>${use[2]}`;
+    })
+    .join("\n");
 }
 
 /** The gate's policy: its config and exceptions, and every workflow and action file (only planned pins may change one). */

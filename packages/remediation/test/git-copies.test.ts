@@ -66,4 +66,21 @@ describe("git copies", () => {
     await rm(join(workingCopy.path, "new.txt"));
     expect(await sameTreeAs(workingCopy, first)).toBe(true);
   });
+
+  it("refuses a tree with an entry under its own symlink, case-insensitively: a symlink A and a file under a/", async () => {
+    const input = (args: ReadonlyArray<string>, stdin: string) => {
+      const result = spawnSync("git", ["--git-dir", workingCopy.gitDir!, ...args], { input: stdin, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr);
+      return result.stdout.trim();
+    };
+    const file = input(["hash-object", "-w", "--stdin"], "written through the link\n");
+    const link = input(["hash-object", "-w", "--stdin"], "/tmp");
+    const sub = input(["mktree"], `100644 blob ${file}\tfile\n`);
+    const root = input(["mktree"], `120000 blob ${link}\tA\n040000 tree ${sub}\ta\n`);
+    const commit = input(["-c", "user.email=t@example.com", "-c", "user.name=t", "commit-tree", root, "-m", "collision"], "");
+    await expect(exportCommit(workingCopy, commit)).rejects.toThrow("has a/file under its symlink A");
+    const twins = input(["mktree"], `100644 blob ${file}\tREADME\n100644 blob ${file}\treadme\n`);
+    const twinCommit = input(["-c", "user.email=t@example.com", "-c", "user.name=t", "commit-tree", twins, "-m", "twins"], "");
+    await expect(exportCommit(workingCopy, twinCommit)).rejects.toThrow("has paths that collide: README and readme");
+  });
 });

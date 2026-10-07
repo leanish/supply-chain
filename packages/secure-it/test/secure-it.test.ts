@@ -65,7 +65,7 @@ interface Harness {
   readonly journal: MemoryJournal;
 }
 
-function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; answer?: unknown; problems?: string[]; same?: boolean; baseSha?: string } = {}): Harness {
+function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; answer?: unknown; problems?: string[]; baseSha?: string } = {}): Harness {
   const github = new FakeGitHub(...(options.prs ?? []));
   const workspace = new InMemoryWorkspace();
   const workingCopy: WorkingCopy = { projectId: REPO, path: "/synthetic/leanish/widget", branch: "main", headSha: options.baseSha ?? BASE_SHA, gitDir: "/synthetic/.git" };
@@ -97,7 +97,6 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     verify: async () => options.problems ?? [],
     staleScan: async () => ({ stale: false, lastSuccess: "2026-10-07T05:17:00Z", detail: "fresh" }),
     changedSince: async () => ["package.json", "package-lock.json"],
-    sameTreeAs: async () => options.same ?? false,
     journal: () => journal,
     writeFile: async (_wc, path, content) => {
       written.push(`${path}=${content}`);
@@ -184,10 +183,11 @@ describe("secure-it review", () => {
     expect(fixedOnBase.github.prs.get(7)?.state).toBe("closed");
     expect(fixedOnBase.agentCalls).toEqual([]);
 
-    const retired = harness({ prs: [await vitePr()], baseSha: NEW_BASE, same: true });
-    retired.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
-    expect(await secureIt(retired.deps).review(retired.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "retired" }] });
-    expect(retired.github.prs.get(7)?.state).toBe("closed");
+    // Fixes remain on the new base, but the re-applied edit doesn't verify: an error, never a quiet retirement.
+    const lost = harness({ prs: [await vitePr()], baseSha: NEW_BASE, problems: ["vite at node_modules/vite is 8.3.1, not 8.3.3"] });
+    lost.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
+    expect(await secureIt(lost.deps).review(lost.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "error", detail: expect.stringContaining("after merging the default branch") }] });
+    expect(lost.github.prs.get(7)?.state).toBe("open");
 
     const merged = harness({ prs: [await vitePr()], baseSha: NEW_BASE });
     merged.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);

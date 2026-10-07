@@ -47,8 +47,11 @@ export async function exportCommit(workingCopy: WorkingCopy, sha: string, run: R
         return { mode, type, object, path: line.slice(tab + 1) };
       });
     const blobs = entries.filter((entry) => entry.type === "blob");
+    assertSafePaths(sha, entries);
     const contents = await catFileBatch(workingCopy, blobs.map((blob) => blob.object));
-    for (const blob of blobs) {
+    // Regular files first, symlinks last: no write ever goes through a link the tree brought.
+    const ordered = [...blobs.filter((blob) => blob.mode !== "120000"), ...blobs.filter((blob) => blob.mode === "120000")];
+    for (const blob of ordered) {
       const target = join(dir, normalize(blob.path));
       if (!target.startsWith(`${dir}/`)) throw new Error(`${sha} has a path outside its tree: ${blob.path}`);
       await mkdir(dirname(target), { recursive: true });
@@ -56,7 +59,7 @@ export async function exportCommit(workingCopy: WorkingCopy, sha: string, run: R
       if (blob.mode === "120000") {
         await symlink(content.toString("utf8"), target);
       } else {
-        await writeFile(target, content);
+        await writeFile(target, content, { flag: "wx" });
         if (blob.mode === "100755") await chmod(target, 0o755);
       }
     }
@@ -66,6 +69,30 @@ export async function exportCommit(workingCopy: WorkingCopy, sha: string, run: R
   } catch (err) {
     await remove();
     throw err;
+  }
+}
+
+/**
+ * Refuses a tree whose paths would collide on this filesystem (`A` and `a` on
+ * a case-insensitive one: checked case-insensitively everywhere) or that puts
+ * an entry under one of its own symlinks: either could write outside the copy.
+ */
+function assertSafePaths(sha: string, entries: ReadonlyArray<{ readonly mode: string; readonly path: string }>): void {
+  const seen = new Map<string, string>();
+  const links = new Set<string>();
+  for (const entry of entries) {
+    const folded = normalize(entry.path).toLowerCase();
+    const earlier = seen.get(folded);
+    if (earlier !== undefined) throw new Error(`${sha} has paths that collide: ${earlier} and ${entry.path}`);
+    seen.set(folded, entry.path);
+    if (entry.mode === "120000") links.add(folded);
+  }
+  for (const folded of seen.keys()) {
+    const parts = folded.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const ancestor = parts.slice(0, i).join("/");
+      if (links.has(ancestor)) throw new Error(`${sha} has ${seen.get(folded)} under its symlink ${seen.get(ancestor)}`);
+    }
   }
 }
 

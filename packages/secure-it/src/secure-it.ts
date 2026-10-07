@@ -18,7 +18,7 @@ import { namingFailures } from "../../ci/src/http.ts";
 import { runProcess } from "../../ci/src/process.ts";
 import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
-import { changedSince, sameTreeAs } from "../../remediation/src/git-copies.ts";
+import { changedSince } from "../../remediation/src/git-copies.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
@@ -51,7 +51,6 @@ export interface SecureItDeps {
   readonly verify: (inputs: VerifyInputs) => Promise<string[]>;
   readonly staleScan: (context: ToolRunContext) => Promise<StaleScan>;
   readonly changedSince: (workingCopy: WorkingCopy, sha: string) => Promise<string[]>;
-  readonly sameTreeAs: (workingCopy: WorkingCopy, sha: string) => Promise<boolean>;
   readonly journal: (context: ToolRunContext) => PublicationJournal;
   /** Writes `content` at `path` (relative to the working copy): taking the base's side of a conflicted dependency file. */
   readonly writeFile: (workingCopy: WorkingCopy, path: string, content: string) => Promise<void>;
@@ -71,7 +70,6 @@ export function defaultDeps(): SecureItDeps {
     verify: verifyPlan,
     staleScan: (context) => staleScanStatus(context.repo.repo, context.base, context.readToken, context.now, context.config.staleScanHours ?? 36),
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
-    sameTreeAs: (workingCopy, sha) => sameTreeAs(workingCopy, sha),
     journal: (context) => new FileJournal(context.config.dirs.state),
     writeFile: (workingCopy, path, content) => writeFile(join(workingCopy.path, path), content),
   };
@@ -258,10 +256,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         });
         if (answer.outcome !== "applied") throw new Error(`the agent couldn't re-apply the plan on the new base: ${answer.summary}`);
       }
-      if (await deps.sameTreeAs(context.workingCopy, baseSha)) {
-        await closeAndDelete(publication, pr.number, pr.headSha, "The default branch has these versions now, so this PR has nothing left to change.");
-        return "retired";
-      }
+      // Fixes remain (the recomputation said so): an edit that left the base as it was fails verification, it isn't retired.
       const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
       if (problems.length > 0) throw new Error(`after merging the default branch: ${problems.join("; ")}`);
       await publishUpdate(publication, merge.prepared, pr.number, { title: pr.title, body: withPlanSection(pr.body, plan), commitMessage: `merging ${context.base}` });

@@ -8,7 +8,8 @@
  */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runProcess, type RunProcess } from "../../ci/src/process.ts";
@@ -70,9 +71,28 @@ export function verifyingRun(run: RunProcess, binary: TrustedBinary): RunProcess
   };
 }
 
-function isInside(path: string, root: string): boolean {
-  const from = relative(resolve(root), resolve(path));
-  return from === "" || (!from.startsWith("..") && !isAbsolute(from));
+/** Whether `path` is `root` or under it, both canonical (symlinks such as /tmp → /private/tmp resolved), by whole components. */
+export function isInside(path: string, root: string): boolean {
+  const from = relative(canonical(root), canonical(path));
+  return from === "" || (from !== ".." && !from.startsWith(`..${sep}`) && !isAbsolute(from));
+}
+
+/** `path` with its deepest existing ancestor's real path: symlinks resolved even for a file that doesn't exist yet. */
+function canonical(path: string): string {
+  const absolute = resolve(path);
+  const missing: string[] = [];
+  let existing = absolute;
+  for (;;) {
+    try {
+      return join(realpathSync(existing), ...missing.reverse());
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      const parent = dirname(existing);
+      if (parent === existing) return absolute;
+      missing.push(basename(existing));
+      existing = parent;
+    }
+  }
 }
 
 async function sha256Of(path: string): Promise<string | undefined> {
