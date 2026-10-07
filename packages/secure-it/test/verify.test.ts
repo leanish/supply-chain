@@ -213,5 +213,17 @@ describe("verifyPlan", () => {
       changedFiles: [".github/workflows/ci.yml"],
     });
     expect(script).toEqual(["the edit changed .github/workflows/ci.yml beyond its planned action pins: the gate's own policy, which no plan may change"]);
+
+    // The pin may change the ref and comment, never which reusable workflow it calls.
+    const reusable = (path: string, ref: string, tag: string) => `on: push\njobs:\n  gate:\n    uses: actions/checkout/.github/workflows/${path}@${ref} # ${tag}\n`;
+    const subpath = await verifyPlan({
+      plan: pinPlan,
+      base: tree("b".repeat(40), { ".github/workflows/ci.yml": reusable("gate.yml", old, "v4.2.2") }),
+      head: tree("worktree", { ".github/workflows/ci.yml": reusable("deploy.yml", pin, "v4.2.3") }),
+      env: environment({}),
+      gradle: {},
+      changedFiles: [".github/workflows/ci.yml"],
+    });
+    expect(subpath).toEqual(["the edit changed .github/workflows/ci.yml beyond its planned action pins: the gate's own policy, which no plan may change"]);
   });
 });

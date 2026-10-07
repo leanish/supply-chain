@@ -184,8 +184,9 @@ async function directVersions(tree: Tree, gradle: GradleInventory | undefined): 
 }
 
 /**
- * A workflow's text with the value and trailing comment of each `uses:` of
- * `actions` masked: what a planned pin may change. The `uses:` keys come from
+ * A workflow's text with the ref and trailing comment of each `uses:` of
+ * `actions` masked: what a planned pin may change (its `owner/repo[/path]`
+ * stays, so a pin can't also switch the action or workflow it points at). The `uses:` keys come from
  * parsing the YAML, so text inside a block scalar (a `run: |` script) is never
  * taken for one. A file that doesn't parse can't be compared: undefined.
  */
@@ -203,11 +204,12 @@ function pinsMasked(text: string | undefined, actions: ReadonlySet<string>): str
         const value = pair.value;
         if (isScalar(pair.key) && pair.key.value === "uses" && isScalar(value) && typeof value.value === "string" && value.range !== undefined && value.range !== null) {
           const action = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/.exec(value.value)?.[1]?.toLowerCase();
-          if (action !== undefined && actions.has(action)) {
-            // The scalar, then whatever follows it on its line if that's only a comment.
+          const at = text.indexOf("@", value.range[0]);
+          if (action !== undefined && actions.has(action) && at !== -1 && at < value.range[1]) {
+            // From the ref on, then whatever follows the scalar on its line if that's only a comment.
             const lineEnd = text.indexOf("\n", value.range[1]);
             const rest = text.slice(value.range[1], lineEnd === -1 ? text.length : lineEnd);
-            ranges.push([value.range[0], /^\s*(#.*)?$/.test(rest) ? value.range[1] + rest.length : value.range[1]]);
+            ranges.push([at + 1, /^\s*(#.*)?$/.test(rest) ? value.range[1] + rest.length : value.range[1]]);
           }
         }
         walk(value);
