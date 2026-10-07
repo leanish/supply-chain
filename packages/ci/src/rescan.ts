@@ -112,7 +112,7 @@ export interface RescanSteps {
   prepare(pr: PlannedPr): Promise<{ base: string; head: string }>;
   /** The gate on the pair, with the PR's Gradle inventory files when there are any. */
   compare(base: string, head: string, gradle: { base: string | undefined; head: string | undefined }): Promise<RescanOutcome>;
-  /** `npm ci --ignore-scripts` and `npm audit signatures` on the merged checkout; the problems, if any. */
+  /** On a passing comparison only: install and verify in clean npm projects, without repository config or executable sources. */
   signatures(): Promise<string[]>;
   /** Back to a clean checkout before the next PR. */
   reset(): Promise<void>;
@@ -181,7 +181,7 @@ export async function runRescan(
       if (typeof inventories === "string") throw new Error(inventories);
       compared = await steps.prepare(pr);
       const gated = await steps.compare(compared.base, compared.head, inventories);
-      const signatureProblems = gated.completed ? await steps.signatures() : [];
+      const signatureProblems = gated.completed && gated.verdict === "pass" ? await steps.signatures() : [];
       outcome = { ...gated, failures: [...gated.failures, ...signatureProblems] };
       state = outcome.completed && outcome.verdict === "pass" && signatureProblems.length === 0 ? "success" : "failure";
       description = `Daily rescan: ${verdictSummary({ ...outcome, verdict: state === "success" ? "pass" : "fail" })}`;
