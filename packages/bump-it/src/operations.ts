@@ -13,7 +13,7 @@ import { branchFor, ownPullRequests, topicOf } from "../../remediation/src/own-p
 import { clearLeftoverBranch, type PublicationContext, type PullRequestContent } from "../../remediation/src/publication.ts";
 
 import type { WrapperArtifact } from "./wrapper-generation.ts";
-import type { WrapperPlanner } from "./gradle-wrapper.ts";
+import type { WrapperCandidates, WrapperPlanner } from "./gradle-wrapper.ts";
 import { constrainedUnit } from "./constraints.ts";
 import type { BumpItDeps } from "./deps.ts";
 import { formatManifest } from "./manifest-format.ts";
@@ -48,12 +48,12 @@ interface SkillAnswer {
   readonly publication?: PullRequestContent;
 }
 
-export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner, wrapperNotes: ReadonlyArray<string> = []): Promise<Computed> {
+export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner, wrapper: WrapperCandidates = {}): Promise<Computed> {
   const coupled = await coupledUnit(unit, peers === undefined ? new Map() : await lockfilesOf(base), peers);
   const bounded = await constrainedUnit(coupled.unit, base);
   const ready = constrainedPeers(coupled.unit, bounded.unit, coupled.sets);
   const generated = await prepareWrapper(execution, ready.unit, base.id);
-  const notes = [...wrapperNotes, ...coupled.notes, ...bounded.notes, ...ready.notes, ...generated.notes];
+  const notes = [...wrapper.notes ?? [], ...coupled.notes, ...bounded.notes, ...ready.notes, ...generated.notes];
   const blocked = unit.kind === "major" && generated.unit.moves.length === 0 && notes.length > 0 ? notes.join("; ") : undefined;
   const npm = blocked === undefined
     ? await execution.deps.npm(execution.context, generated.unit, base, execution.env, gradle)
@@ -62,7 +62,7 @@ export async function compute(execution: Execution, unit: Unit, base: Tree, grad
   const planned = await planFor(generated.unit, { ...npm, notes: [...notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
   const wrapperFiles = generated.files;
   const plan = wrapperFiles.length === 0 ? planned : { ...planned, wrapperFiles: wrapperFiles.map(({ bytes: _bytes, ...file }) => file) };
-  return { plan, files: npm.files, wrapperFiles, wrapperOmitted: wrapperNotes.length > 0 || generated.notes.length > 0, base, gradle, ...(blocked === undefined ? {} : { blocked }) };
+  return { plan, files: npm.files, wrapperFiles, wrapperOmitted: wrapper.unavailable === true || generated.notes.length > 0, base, gradle, ...(blocked === undefined ? {} : { blocked }) };
 }
 
 async function prepareWrapper(execution: Execution, unit: Unit, baseSha: string): Promise<{ unit: Unit; files: ReadonlyArray<WrapperArtifact>; notes: string[] }> {

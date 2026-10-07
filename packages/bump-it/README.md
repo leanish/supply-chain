@@ -23,7 +23,9 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   `gradle-gradle-major` PR, subject to the same new-major cap and deferred priority. Code picks stable, non-broken
   services.gradle.org releases at least `releaseAgeDays` old by `buildTime`. Published gradle/gradle repository
   advisories are read once per run/tick: inherited advisories do not veto a candidate, but any newly affecting
-  advisory does. A rejected newer release does not veto an older eligible one. Missing metadata or unreadable
+  advisory does. Release timestamps include their signed UTC offset; an invalid timestamp skips only that release,
+  with a reason in run results and plan notes. A rejected newer release does not veto an older eligible one.
+  Missing metadata or unreadable
   advisory ranges leave the wrapper out with a reported reason; other moves continue.
 - Before npm resolves a routine or major, code checks incoming and outgoing peer constraints against existing directs.
   Rule-picked bump targets stay fixed; required companions are added explicitly at the lowest safe version in their

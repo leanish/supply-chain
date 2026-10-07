@@ -52,6 +52,33 @@ describe("Gradle wrapper candidates", () => {
     ]);
     expect((await planner.candidates(tree())).routine?.to).toBe("8.1");
   });
+  it("accepts the historical positive offset that stopped the real run", async () => {
+    const { planner } = fixture([release("8.1", { buildTime: "20120612025621+0200" }), release("9.0")]);
+    expect(await planner.candidates(tree())).toMatchObject({ routine: { to: "8.1" }, major: { to: "9.0" } });
+  });
+  it.each([
+    ["20260930020000+0200", "20260930020001+0200"],
+    ["20260929193000-0430", "20260929193001-0430"],
+    ["20260930054500+0545", "20260930054501+0545"],
+    ["20260930000000-0000", "20260930000001-0000"],
+  ])("uses the UTC age boundary for %s", async (boundary, young) => {
+    const { planner } = fixture([
+      release("8.1", { buildTime: boundary }), release("8.2", { buildTime: young }),
+    ]);
+    expect((await planner.candidates(tree())).routine?.to).toBe("8.1");
+  });
+  it.each([
+    "20260230000000+0200", "20260930240000+0000", "20260930000000+2400",
+    "20260930000000-0060", "20260930000000Z", undefined,
+  ])("skips an invalid timestamp %s without losing other eligible releases and keeps the note on recomputation", async (buildTime) => {
+    const { planner, calls } = fixture([release("8.1"), release("8.2", { buildTime }), release("9.0")]);
+    const found = await planner.candidates(tree());
+    expect(found).toMatchObject({ routine: { to: "8.1" }, major: { to: "9.0" }, notes: [
+      `Gradle release 8.2 skipped: invalid Gradle buildTime: ${String(buildTime)}`,
+    ] });
+    expect((await planner.candidates(tree("8.1"))).notes).toEqual(found.notes);
+    expect(calls.filter((url) => url.endsWith("/versions/all"))).toHaveLength(1);
+  });
   it("does not veto inherited advisories and falls back from releases that add a new one", async () => {
     const { planner } = fixture([release("8.1"), release("8.2"), release("9.0"), release("10.0")], [
       advisory("GHSA-inherited", ">=8.0, <10.0"), advisory("GHSA-new", ">=8.2, <9.0 || >=10.0"),
@@ -108,7 +135,7 @@ describe("Gradle wrapper candidates", () => {
     const missing = fixture(undefined, [{ ...advisory("GHSA-empty", "< 8.1"), vulnerabilities: [] }]);
     expect(await missing.planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("no Gradle vulnerability ranges")] });
     const unavailable = gradleWrapperPlanner({ ...env, fetch: async () => { throw new Error("services unavailable"); } }, 7);
-    expect(await unavailable.candidates(tree())).toEqual({ notes: ["Gradle wrapper left out: services unavailable"] });
+    expect(await unavailable.candidates(tree())).toEqual({ unavailable: true, notes: ["Gradle wrapper left out: services unavailable"] });
     const move = (await planner.candidates(tree())).routine!;
     await expect(unavailable.verify([move], tree(), tree("8.1"), JAR)).rejects.toThrow("services unavailable");
     await expect(missing.planner.verify([move], tree(), tree("8.1"), JAR)).rejects.toThrow("no Gradle vulnerability ranges");
@@ -117,6 +144,11 @@ describe("Gradle wrapper candidates", () => {
 });
 
 describe("Gradle wrapper verification", () => {
+  it("rejects a planned target whose timestamp cannot be parsed even when other releases can be selected", async () => {
+    const { planner } = fixture([release("8.1"), release("8.2", { buildTime: "20260230000000-0300" })]);
+    const move = (await planner.candidates(tree())).routine!;
+    expect(await planner.verify([{ ...move, to: "8.2" }], tree(), tree("8.2"), JAR)).toContainEqual(expect.stringContaining("aged release"));
+  });
   it("checks official URL, distribution checksum and jar bytes separately, never trusting only the PR block", async () => {
     const { planner } = fixture();
     const move = (await planner.candidates(tree())).routine!;

@@ -25,6 +25,7 @@ export interface WrapperCandidates {
   readonly routine?: DirectMove;
   readonly major?: DirectMove;
   readonly notes?: ReadonlyArray<string>;
+  readonly unavailable?: boolean;
 }
 
 export interface WrapperPlanner {
@@ -38,6 +39,11 @@ interface Release {
   readonly metadata: Record<string, unknown>;
 }
 
+interface ReleaseCatalog {
+  readonly releases: Release[];
+  readonly notes: string[];
+}
+
 interface CurrentWrapper {
   readonly version: string;
   readonly type: "bin" | "all";
@@ -45,15 +51,15 @@ interface CurrentWrapper {
 
 /** The catalog and advisories are fetched lazily once, even when a tick recomputes several PRs. */
 export function gradleWrapperPlanner(env: GateEnvironment, releaseAgeDays: number): WrapperPlanner {
-  let snapshot: Promise<{ releases: Release[]; advisories: ReadonlyArray<RepositoryAdvisory> }> | undefined;
+  let snapshot: Promise<ReleaseCatalog & { advisories: ReadonlyArray<RepositoryAdvisory> }> | undefined;
   const now = env.now();
   const targets = new Map<string, Promise<WrapperTarget>>();
   const readSnapshot = () => snapshot ??= Promise.all([
     releasesOf(env),
     fetchRepositoryAdvisories("gradle/gradle", { fetch: env.fetch, token: env.githubToken }),
-  ]).then(([releases, advisories]) => {
+  ]).then(([catalog, advisories]) => {
     if (advisories === undefined) throw new Error("gradle/gradle's published advisories could not be read");
-    return { releases, advisories };
+    return { ...catalog, advisories };
   });
   const target = (release: Release, type: CurrentWrapper["type"]) => {
     const key = `${release.version}-${type}`;
@@ -73,7 +79,7 @@ export function gradleWrapperPlanner(env: GateEnvironment, releaseAgeDays: numbe
         if (current === undefined) {
           return {};
         }
-        const { releases, advisories } = await readSnapshot();
+        const { releases, advisories, notes } = await readSnapshot();
         const inherited = affecting(advisories, current.version);
         const eligible = releases.filter((release) => SCHEME.compare(release.version, current.version) > 0 && aged(release) &&
           affecting(advisories, release.version).every((id) => inherited.includes(id)));
@@ -85,12 +91,13 @@ export function gradleWrapperPlanner(env: GateEnvironment, releaseAgeDays: numbe
           wrapper: await target(release, current.type),
         });
         return {
+          ...(notes.length === 0 ? {} : { notes }),
           ...(routine === undefined ? {} : { routine: await move(routine, false) }),
           ...(major === undefined ? {} : { major: await move(major, true) }),
         };
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        return { notes: [`Gradle wrapper left out: ${reason}`] };
+        return { unavailable: true, notes: [`Gradle wrapper left out: ${reason}`] };
       }
     },
     async verify(moves, base, head, jarSha256) {
@@ -148,27 +155,41 @@ async function currentWrapper(tree: Tree): Promise<CurrentWrapper | undefined> {
   return { version: matched[1]!, type: matched[2] as CurrentWrapper["type"] };
 }
 
-async function releasesOf(env: GateEnvironment): Promise<Release[]> {
+async function releasesOf(env: GateEnvironment): Promise<ReleaseCatalog> {
   const response = await env.fetch(`${SERVICES}/versions/all`);
   if (!response.ok) throw new Error(`Gradle releases failed with HTTP ${response.status}`);
   const entries = await response.json();
   if (!Array.isArray(entries)) throw new Error("Gradle releases are not a list");
   const releases: Release[] = [];
+  const notes: string[] = [];
   for (const entry of entries) {
     if (!isObject(entry) || typeof entry["version"] !== "string") throw new Error("Gradle release has no version");
     if (!/^\d+(?:\.\d+){1,2}$/.test(entry["version"]) || entry["snapshot"] !== false || entry["broken"] !== false ||
       entry["nightly"] === true || entry["releaseNightly"] === true || entry["rcFor"] || entry["milestoneFor"]) continue;
-    releases.push({ version: entry["version"], built: buildTime(entry["buildTime"]), metadata: entry });
+    try {
+      releases.push({ version: entry["version"], built: buildTime(entry["buildTime"]), metadata: entry });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      notes.push(`Gradle release ${entry["version"]} skipped: ${reason}`);
+    }
   }
-  return releases.sort((a, b) => SCHEME.compare(b.version, a.version));
+  return { releases: releases.sort((a, b) => SCHEME.compare(b.version, a.version)), notes };
 }
 
 function buildTime(raw: unknown): Date {
-  if (typeof raw !== "string" || !/^\d{14}\+0000$/.test(raw)) throw new Error(`invalid Gradle buildTime: ${String(raw)}`);
+  if (typeof raw !== "string" || !/^\d{14}[+-]\d{4}$/.test(raw)) {
+    throw new Error(`invalid Gradle buildTime: ${String(raw)}`);
+  }
+  // Validate the local calendar fields before applying the offset; Date normalizes some invalid dates.
   const iso = `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}T${raw.slice(8, 10)}:${raw.slice(10, 12)}:${raw.slice(12, 14)}Z`;
-  const built = new Date(iso);
-  if (Number.isNaN(built.getTime()) || built.toISOString().replace(/[-:TZ]/g, "").slice(0, 14) !== raw.slice(0, 14)) throw new Error(`invalid Gradle buildTime: ${raw}`);
-  return built;
+  const local = new Date(iso);
+  const hours = Number(raw.slice(15, 17));
+  const minutes = Number(raw.slice(17, 19));
+  if (Number.isNaN(local.getTime()) || local.toISOString().slice(0, 19) !== iso.slice(0, 19) || hours > 23 || minutes > 59) {
+    throw new Error(`invalid Gradle buildTime: ${raw}`);
+  }
+  const offset = (hours * 60 + minutes) * (raw[14] === "+" ? 1 : -1);
+  return new Date(local.getTime() - offset * 60_000);
 }
 
 function majorOf(version: string): number {

@@ -86,7 +86,7 @@ async function run(context: ToolRunContext, deps: BumpItDeps): Promise<Readonly<
         deferred.push(unit.package!);
         continue;
       }
-      const computed = await compute(execution, unit, base, gradle, found.npmPeers, wrapper.notes);
+      const computed = await compute(execution, unit, base, gradle, found.npmPeers, wrapper);
       const result = await runUnit(execution, computed, unit, own, owned);
       if (unit.kind === "major" && result.outcome === "published") {
         openedMajors++;
@@ -205,11 +205,11 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
         throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
       }
       const wrapper = await execution.wrapper.candidates(base);
-      if (previous.package === "Gradle Wrapper|gradle/gradle" && (wrapper.notes?.length ?? 0) > 0) {
+      if (previous.package === "Gradle Wrapper|gradle/gradle" && wrapper.unavailable === true) {
         throw new Error(`recomputation is blocked; keeping the PR: ${wrapper.notes!.join("; ")}`);
       }
       const unit = unitFor(previous, found.bumps, wrapper);
-      const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle, found.npmPeers, wrapper.notes);
+      const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle, found.npmPeers, wrapper);
       if (computed?.blocked !== undefined) {
         throw new Error(`recomputation is blocked; keeping the PR: ${computed.blocked}`);
       }

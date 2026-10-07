@@ -160,7 +160,7 @@ describe("bump-it run", () => {
   it("reports wrapper omissions in the run and the published plan while npm still proceeds", async () => {
     const h = harness({ bumps: [candidate({ major: undefined })] });
     const notes = ["Gradle wrapper left out: catalog unavailable"];
-    const result = await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ notes }), verify: async () => [] }) }).run(h.context);
+    const result = await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ unavailable: true, notes }), verify: async () => [] }) }).run(h.context);
     expect(result).toMatchObject({ notes, units: [{ outcome: "published", notes }] });
     expect(h.verified[0]?.notes).toEqual(notes);
     expect([...h.github.prs.values()][0]?.body).toContain(notes[0]);
@@ -332,6 +332,20 @@ describe("bump-it run", () => {
 });
 
 describe("bump-it review", () => {
+  it("recomputes wrapper majors with skipped-release notes, and retires a routine after a completed empty selection", async () => {
+    const wrapper = wrapperCandidates();
+    const notes = ["Gradle release 1.0 skipped: invalid Gradle buildTime: malformed"];
+    const major = harness({ bumps: [], prs: [await prFor(majorUnits([], wrapper)[0]!)], baseSha: NEW_BASE });
+    const deps = { ...major.deps, wrapper: () => ({ candidates: async () => ({ ...wrapper, notes }), verify: async () => [] }) };
+    expect(await bumpIt(deps).review(major.context)).toMatchObject({ reviewed: [{ outcome: "rebased" }] });
+    expect(major.verified[0]?.notes).toEqual(notes);
+    expect(major.github.prs.get(7)?.body).toContain(notes[0]);
+    expect(major.agentCalls).toEqual([]);
+
+    const routine = harness({ bumps: [], prs: [await prFor(routineUnit([], wrapper))], baseSha: NEW_BASE });
+    expect(await bumpIt({ ...routine.deps, wrapper: () => ({ candidates: async () => ({ notes }), verify: async () => [] }) }).review(routine.context))
+      .toMatchObject({ reviewed: [{ outcome: "retired" }] });
+  });
   it("recomputes wrapper plans on a new base, retaining same-target major adaptations and re-applying changed targets", async () => {
     const wrapper = wrapperCandidates();
     for (const target of ["9.0", "10.0"]) {
@@ -374,7 +388,7 @@ describe("bump-it review", () => {
   it("retains a wrapper major when its catalog cannot be recomputed, and protects recorded bytes before adaptation", async () => {
     const pr = await prFor(majorUnits([], wrapperCandidates())[0]!);
     const moved = harness({ bumps: [], prs: [pr], baseSha: NEW_BASE });
-    const result = await bumpIt({ ...moved.deps, wrapper: () => ({ candidates: async () => ({ notes: ["Gradle wrapper left out: unavailable"] }), verify: async () => [] }) }).review(moved.context);
+    const result = await bumpIt({ ...moved.deps, wrapper: () => ({ candidates: async () => ({ unavailable: true, notes: ["Gradle wrapper left out: unavailable"] }), verify: async () => [] }) }).review(moved.context);
     expect(result).toMatchObject({ reviewed: [{ outcome: "error", detail: expect.stringContaining("keeping the PR") }] });
     expect(moved.github.prs.get(pr.number)?.state).toBe("open");
     expect(moved.github.calls.some((call) => call.startsWith("deleteBranch"))).toBe(false);
@@ -390,7 +404,7 @@ describe("bump-it review", () => {
     const pr = await prFor(routineUnit([], wrapperCandidates()));
     const h = harness({ bumps: [], prs: [pr], baseSha: NEW_BASE });
     const notes = ["Gradle wrapper left out: catalog unavailable"];
-    expect(await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ notes }), verify: async () => [] }) }).review(h.context))
+    expect(await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ unavailable: true, notes }), verify: async () => [] }) }).review(h.context))
       .toMatchObject({ reviewed: [{ outcome: "error", detail: expect.stringContaining("keeping the PR") }] });
     expect(h.github.prs.get(pr.number)?.state).toBe("open");
     expect(h.github.calls.some((call) => call.startsWith("deleteBranch"))).toBe(false);
