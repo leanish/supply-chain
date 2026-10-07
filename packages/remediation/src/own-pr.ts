@@ -1,5 +1,6 @@
 // Adapted from leanish/leanish-development agents/bump-it/src/own-pr.ts at e4f8a1e: one set of rules per tool
-// (secure-it, bump-it) instead of bump-it's constants, and the PR's state (what the tool last published) in its body.
+// (secure-it, bump-it) instead of bump-it's constants, and the PR's state (what the tool last published) in its body;
+// publishes leanish:<tool> labels while recognising legacy leanish:agent=<tool> labels and keeping the body marker.
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 
 export type ToolName = "secure-it" | "bump-it";
@@ -7,7 +8,7 @@ export type ToolName = "secure-it" | "bump-it";
 /** How a tool recognises its own PRs: branch, label and body marker. */
 export interface OwnPullRequests {
   readonly tool: ToolName;
-  /** `leanish:agent=<tool>`; it says which rule applies, CI still checks the proof for skipping the wait. */
+  /** `leanish:<tool>`; it says which rule applies, CI still checks the proof for skipping the wait. */
   readonly label: string;
   /** The footer every PR body of the tool ends with. */
   readonly marker: string;
@@ -29,7 +30,7 @@ export interface PullRequestState {
 }
 
 export function ownPullRequests(tool: ToolName): OwnPullRequests {
-  return { tool, label: `leanish:agent=${tool}`, marker: MARKER(tool) };
+  return { tool, label: `leanish:${tool}`, marker: MARKER(tool) };
 }
 
 /** The branch a run opens a PR from: `<tool>/<UTC date>-<topic>`, the topic made branch-safe. */
@@ -55,8 +56,8 @@ function isOwnBranch(rules: OwnPullRequests, branch: string): boolean {
 /**
  * A PR the tool may update, mark ready or close: an open PR from one of its
  * dated branches of `repo` itself (not a fork) into `base`, carrying the
- * marker or the label — either one, so a PR whose labelling failed is still
- * recognised.
+ * marker, the label or the legacy `leanish:agent=<tool>` label, so a PR whose
+ * labelling failed or that predates the label change is still recognised.
  */
 export function isOwnPullRequest(rules: OwnPullRequests, pr: GitHubPullRequest, repo: string, base: string): boolean {
   return (
@@ -64,7 +65,7 @@ export function isOwnPullRequest(rules: OwnPullRequests, pr: GitHubPullRequest, 
     isOwnBranch(rules, pr.headRef) &&
     pr.headRepo?.toLowerCase() === repo.toLowerCase() &&
     pr.baseRef === base &&
-    (pr.body.includes(rules.marker) || pr.labels.includes(rules.label))
+    (pr.body.includes(rules.marker) || pr.labels.includes(rules.label) || pr.labels.includes(`leanish:agent=${rules.tool}`))
   );
 }
 

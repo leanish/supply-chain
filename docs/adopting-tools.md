@@ -6,6 +6,10 @@ its own config, default Keychain services and two schedules: `run` plans changes
 **no tool dry-run flag**. Start with the candidate preview below before enabling
 publication or a schedule.
 
+Tool PRs use `leanish:secure-it` or `leanish:bump-it`. Open PRs carrying the old
+`leanish:agent=<tool>` label are still recognised; updates add the new label and
+keep the old one. The body marker is unchanged.
+
 Adopt [the CI gate](../packages/ci/README.md#adopting-the-gate) first: default-branch
 daily scans, PR comparisons and open-PR rescans are what these tools act on and
 read. They do not replace R7's CI coverage. Read [the security model](security-model.md)
