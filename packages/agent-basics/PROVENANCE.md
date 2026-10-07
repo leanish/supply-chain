@@ -86,7 +86,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/guard.test.ts` | `agents/bump-it/test/local-guard.test.ts` | copied | the guards' directory, and their messages say "agent guard" |
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/isolation.test.ts` | — | new | — |
-| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/` |
+| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/model-prices.test.ts` | `core/runtime/test/unit/model-prices.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/output-parse.test.ts` | `core/runtime/test/unit/output-parse.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/quota.test.ts` | `core/runtime/test/unit/quota.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |

@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/local-git-workspace.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/`.
+// Local changes: `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; imports this package's modules from `../src/` instead of `../../src/`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
