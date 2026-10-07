@@ -33,6 +33,26 @@ describe("bump verification", () => {
     vi.mocked(runCompare).mockResolvedValue({ failures: ["new advisory"], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined });
     expect(await verifyPlan(input)).toEqual(["compare: new advisory"]);
   });
+  it("preserves tool-computed transitives absent from the explicit moves", async () => {
+    const { input, baseFiles, headFiles } = await fixture();
+    const withChild = (text: string, version: string) => {
+      const parsed = JSON.parse(text);
+      parsed.packages["node_modules/lib"].dependencies = { child: "^1" };
+      parsed.packages["node_modules/child"] = { version };
+      return JSON.stringify(parsed);
+    };
+    const files = new Map(input.npmFiles);
+    const expected = withChild(headFiles["package-lock.json"]!, "1.1.0");
+    files.set("package-lock.json", expected);
+    const plan = await planFor(routineUnit([candidate()]), { files, changes: [], notes: [] }, async () => undefined);
+    const computed: VerifyInputs = { ...input, plan, npmFiles: files,
+      base: tree("base", { ...baseFiles, "package-lock.json": withChild(baseFiles["package-lock.json"]!, "1.0.0") }),
+      head: tree("head", { ...headFiles, "package-lock.json": expected }) };
+    expect(plan.moves.map((move) => move.name)).toEqual(["lib"]);
+    expect(await verifyPlan(computed)).toEqual([]);
+    expect(await verifyPlan({ ...computed, head: tree("head", { ...headFiles, "package-lock.json": withChild(expected, "1.0.0") }) })).toContain("package-lock.json differs from the exact planned lockfile");
+  });
+
   it("fences policy first, including a major, without calling compare", async () => {
     const { input, headFiles } = await fixture(true);
     expect(await verifyPlan({ ...input, head: tree("head", { ...headFiles, ".github/supply-chain.json": "{}" }), changedFiles: [...input.changedFiles, ".github/supply-chain.json"] })).toMatchObject([expect.stringContaining("gate's own policy")]);

@@ -27,6 +27,12 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    - One with a different plan, while its head is still the tool's: that PR is reconciled. The default branch is merged into it, every file it changed goes back to the base's content, and the new plan is applied on top, so nothing the old plan did lingers. It's pushed as a normal commit.
    - One someone else pushed to: the fix goes in a PR of its own.
 6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
+   npm may resolve transitive changes a planned move requires, under the supplied release-age window and exclusions.
+   The agent does not hand-edit those versions, add unplanned overrides, or refresh unrelated packages. Direct
+   dependencies outside the plan stay unchanged. These induced versions are npm's choice, not additional rule-picked
+   targets: `compare` judges each changed version's advisories, age and identity. They may differ from another open
+   PR's target; that PR doesn't constrain resolution. A failed comparison stops publication rather than silently
+   choosing a coupled target. The PR description lists required transitive changes too.
 7. **Verifies before publishing** (`verify.ts`):
    - the gate's own policy (its config, its exceptions, workflows and actions outside planned pins) is untouched, major or not;
    - `compare` against the base passes;

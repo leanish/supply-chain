@@ -76,8 +76,11 @@ or touch git metadata. Leave no temporary files: everything in the working tree 
   version catalog and build conventions. Never add or change transitive constraints or raise a floor.
 - `action-pin`: replace the planned action's uses in the named files with its same owner/repo/path at `commitSha # to`.
   Preserve the action's path. When a file has several versions, move only the uses at `from` to that move's target.
-- Never change any other dependency's version. Never change .github/dependency-floors.json, supply-chain.json,
-  supply-chain-exceptions.json, or workflows/actions beyond the supplied pins.
+- Never edit a dependency version outside the supplied moves. The tool-written npm graph can already include
+  refreshed or induced transitive versions absent from `moves`; preserve them exactly as written, even if another
+  open PR picked different versions. Do not revert them for being outside the move list or resolve them yourself.
+- Never change .github/dependency-floors.json, supply-chain.json, supply-chain-exceptions.json, or workflows/actions
+  beyond the supplied pins.
 - Code, tests, docs and manifest scripts/config may change only for `kind: major`, to adapt to that major.
 
 ## Verify

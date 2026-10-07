@@ -25,7 +25,7 @@ function tree(id: string, files: Record<string, string>): Tree {
 }
 
 /** Fake osv-scanner from `affected`, fake npm registry where every version of lib and other is old and published by one maintainer. */
-function environment(affected: Record<string, string[]>): GateEnvironment {
+function environment(affected: Record<string, string[]>, extraRoutes: Record<string, { body: unknown }> = {}): GateEnvironment {
   const run: RunProcess = async (command, args, options) => {
     if (command !== "osv-scanner") return runProcess(command, args, options);
     if (args[0] === "--version") return { code: 0, stdout: "osv-scanner version: 2.6.0\n", stderr: "" };
@@ -47,7 +47,7 @@ function environment(affected: Record<string, string[]>): GateEnvironment {
     };
     for (const v of versions) routes[`https://registry.npmjs.org/${name}/${v}`] = { body: {} };
   }
-  return { run, fetch: fakeFetch(routes), now: () => NOW, osvScanner: "osv-scanner", githubToken: undefined };
+  return { run, fetch: fakeFetch({ ...routes, ...extraRoutes }), now: () => NOW, osvScanner: "osv-scanner", githubToken: undefined };
 }
 
 const PLAN: ChangePlan = {
@@ -69,6 +69,48 @@ async function verify(headLock: string, options: { affected?: Record<string, str
     env: environment(options.affected ?? AFFECTED),
     gradle: {},
     changedFiles: options.changed ?? ["package.json", "package-lock.json"],
+  });
+}
+
+interface InducedOptions {
+  readonly direct?: boolean;
+  readonly published?: string;
+  readonly publisher?: string;
+  readonly newAdvisory?: boolean;
+}
+
+/** A parent requires a higher transitive version; all registry and advisory evidence is synthetic. */
+function postcssLock(postcss: string, nanoid: string, direct: boolean): string {
+  const root = { lib: "^1.0.0", ...(direct ? { nanoid: "^3.3.12" } : {}) };
+  const parsed = JSON.parse(lock(root, { lib: "1.0.0", postcss, nanoid }));
+  parsed.packages["node_modules/lib"].dependencies = { postcss: "^8.5.0" };
+  parsed.packages["node_modules/postcss"].dependencies = { nanoid: postcss === "8.5.22" ? "^3.3.6" : "^3.3.16" };
+  return JSON.stringify(parsed);
+}
+
+function npmRoutes(name: string, times: Record<string, string>, publishers: Record<string, string> = {}): Record<string, { body: unknown }> {
+  const manifests = Object.fromEntries(Object.keys(times).map((version) => [version, { _npmUser: { name: publishers[version] ?? "maintainer" }, dist: {} }]));
+  return {
+    [`https://registry.npmjs.org/${name}`]: { body: { time: times, versions: manifests } },
+    ...Object.fromEntries(Object.entries(manifests).map(([version, manifest]) => [`https://registry.npmjs.org/${name}/${version}`, { body: manifest }])),
+  };
+}
+
+async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
+  const plan: ChangePlan = {
+    topic: "postcss", malware: false, packages: ["npm|postcss"], severity: "HIGH",
+    moves: [{ ...PLAN.moves[0]!, name: "postcss", from: "8.5.22", to: "8.5.23", mechanism: "npm-lock", locations: ["node_modules/postcss"], advisories: ["GHSA-postcss"] }],
+  };
+  const routes = {
+    ...npmRoutes("postcss", { "8.5.22": OLD, "8.5.23": "2026-09-01T00:00:00Z" }),
+    ...npmRoutes("nanoid", { "3.3.12": OLD, "3.3.16": "2026-09-01T00:00:00Z", "3.3.18": "2026-09-01T00:00:00Z", "3.3.19": options.published ?? "2026-09-02T00:00:00Z" }, { "3.3.19": options.publisher ?? "maintainer" }),
+  };
+  const affected = { "postcss@8.5.22": ["GHSA-postcss"], ...(options.newAdvisory ? { "nanoid@3.3.19": ["GHSA-induced"] } : {}) };
+  return verifyPlan({
+    plan,
+    base: tree("b".repeat(40), { "package-lock.json": postcssLock("8.5.22", "3.3.12", options.direct ?? false) }),
+    head: tree("worktree", { "package-lock.json": postcssLock("8.5.23", "3.3.19", options.direct ?? false) }),
+    env: environment(affected, routes), gradle: {}, changedFiles: ["package-lock.json"],
   });
 }
 
@@ -94,6 +136,21 @@ describe("verifyPlan", () => {
   it("fails what compare fails: a new finding the edit brings", async () => {
     const problems = await verify(lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }), { affected: { ...AFFECTED, "lib@1.0.1": ["GHSA-new"] } });
     expect(problems).toEqual(["compare: new: lib@1.0.1: GHSA-new has no exception"]);
+  });
+
+  it("accepts an induced transitive chosen by npm, even above the lowest eligible or another PR's target", async () => {
+    // Only postcss is planned. nanoid 3.3.19 satisfies ^3.3.16; neither 3.3.16 nor another PR's 3.3.18 is required.
+    expect(await verifyInduced()).toEqual([]);
+  });
+
+  it("rejects an induced move when that copy is also an unplanned direct dependency", async () => {
+    expect(await verifyInduced({ direct: true })).toContain("nanoid changed from 3.3.12 to 3.3.19 at package-lock.json#.:nanoid, outside the plan");
+  });
+
+  it("checks induced transitives for new advisories, age and publisher identity", async () => {
+    expect(await verifyInduced({ newAdvisory: true })).toContain("compare: new: nanoid@3.3.19: GHSA-induced has no exception");
+    expect(await verifyInduced({ published: "2026-10-06T00:00:00Z" })).toEqual([expect.stringContaining("compare: nanoid@3.3.19 was published")]);
+    expect(await verifyInduced({ publisher: "intruder" })).toEqual([expect.stringContaining("publisher intruder hadn't published any version up to the one it replaces")]);
   });
 
   it("rejects a change to the gate's own policy first, even for a major", async () => {

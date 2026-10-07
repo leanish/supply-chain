@@ -32,8 +32,9 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
 - Unjudgeable copies stay at their base version, with an unresolved note. Complex scoped override rules are treated
   conservatively: their copies stay at base rather than claiming an R3 selection. If a new copy has no provable eligible
   target, or npm cannot retain a required target, that unit fails. Exact repository pins are reported separately as pins.
-- The agent never changes npm dependency fields or lockfiles. It may adapt code and manifest scripts/config only for a
-  major, using `majorEffort` (configure Sol with high effort). The [skill](skills/bump-it/SKILL.md) defines the boundary.
+- The agent never changes npm dependency fields or lockfiles. The tool-written graph already includes refreshed or
+  induced transitives, even when those versions are absent from the explicit move list; the agent preserves them.
+  It may adapt code and manifest scripts/config only for a major, using `majorEffort` (configure Sol with high effort). The [skill](skills/bump-it/SKILL.md) defines the boundary.
 - Verification fences off policy changes first, requires exact planned lockfiles and dependency fields, exact planned
   Gradle declarations, unchanged unplanned declarations and floors, and correct action pins. Only after every local
   check passes does it run `compare`, which must also pass. A report of local problems means `compare` has not run.

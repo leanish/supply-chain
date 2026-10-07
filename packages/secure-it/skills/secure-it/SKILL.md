@@ -95,10 +95,10 @@ outputSchema:
 
 # secure-it
 
-You apply one security fix to the working copy of `repo`. **secure-it already decided everything that's a decision:**
-which packages, which versions, and how each version is changed (`mechanism`). Your job is the edit, done the way this
-repository does things, and the text of the PR. After you finish, the tool verifies the result with the supply-chain
-gate and publishes it; anything outside the plan makes it refuse.
+You apply the security moves supplied for the working copy of `repo`. **secure-it already chose the explicit targets
+and mechanisms.** Your job is the edit, done the way this repository does things, and the text of the PR. npm may
+also resolve transitive changes required by those moves, under the limits below. The tool verifies the whole result
+with the supply-chain gate before publishing it.
 
 ## npm's release window
 
@@ -107,7 +107,7 @@ The sandbox keeps `npm_config_min_release_age`. A security fix may be younger th
 publish times. It checks npm >= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
 entry as `--min-release-age-exclude=<entry>` (repeated flags); this keeps the own-scope patterns too, which CLI flags
 would otherwise replace. Never lower or unset the age window, or add exclusions of your own. These flags permit
-installing the selected security target; they do not permit choosing another version. Verification requires the
+installing the selected security target; they do not permit choosing another version for an explicit move. Verification requires the
 exact planned versions and `compare` passes before publication.
 
 ## What you may change
@@ -115,9 +115,17 @@ exact planned versions and `compare` passes before publication.
 - Only what the moves need: dependency declarations, lockfiles, Gradle build and settings files, `gradle/libs.versions.toml`,
   and `floorsFile` (`.github/dependency-floors.json`).
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
-- Never another dependency's version, `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a
-  workflow or action file, except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects
-  any other change to them, whatever the move.
+- Direct dependencies outside the supplied moves keep their declarations and locked versions. Never edit another
+  dependency's version by hand or add an unplanned override or floor.
+- npm may move transitives required by a planned move when you run its install/override mechanism. Let npm resolve
+  them under the supplied release-age window and exclusions; do not edit their lockfile entries by hand, run a
+  general refresh, or add age exclusions for them. This is allowed even when another open PR picked a different
+  version for that transitive. Do not refuse merely because such a required transitive is absent from `moves`.
+  Every explicit move must still land exactly at `to`. The tool runs `compare` on every changed version, including
+  induced transitives: advisory, age and identity failures prevent publication.
+- Never change `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a workflow or action file,
+  except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects any other change to them,
+  whatever the move.
 - Never commit, push, create branches or touch git: the tool does that. Leave nothing else in the working tree (temporary
   files included): everything left there is committed.
 
@@ -170,5 +178,7 @@ End with one fenced `json` block, nothing after it:
 
 - `applied`, with `publication`: a title like `moving snappy-java to 1.1.10.10 for 7 advisories` (lower case, what
   changes); a body that says why (the advisories, in a sentence or two) and, for a major, what you adapted (secure-it
-  adds the table of moves itself); a commit message in the repository's style.
+  adds the table of moves itself). Also mention required transitive changes npm made and why; their versions are
+  npm's resolution, not explicit rule-picked targets. The tool verifies them before publishing. Use a commit message
+  in the repository's style.
 - `cannot-apply`, with a `summary` of what stopped you. No `publication`.
