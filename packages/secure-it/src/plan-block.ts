@@ -38,6 +38,15 @@ export function planSection(plan: ChangePlan): string {
   ].join("\n");
 }
 
+/** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none). */
+export function withPlanSection(body: string, plan: ChangePlan): string {
+  const start = body.indexOf("### What secure-it moved");
+  const block = BLOCK.exec(body);
+  if (start === -1 || block === null) return `${body.trimEnd()}\n\n${planSection(plan)}`;
+  const end = block.index + block[0].length;
+  return `${body.slice(0, start)}${planSection(plan)}${body.slice(end)}`;
+}
+
 /** The plan a PR's body carries, if it has one that parses. */
 export function planOf(body: string): ChangePlan | undefined {
   const found = BLOCK.exec(body);

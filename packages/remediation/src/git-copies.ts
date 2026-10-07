@@ -3,14 +3,17 @@
  * metadata in a separate directory the workspace created, so the repository
  * can't bring config, hooks or filters into these commands):
  *
- *   - `exportCommit`: a commit's files in a fresh directory, for the sandboxed
- *     Gradle inventory of a commit the working copy doesn't have checked out;
+ *   - `exportCommit`: a commit's files in a fresh directory, byte for byte as
+ *     committed (no `export-ignore`, `export-subst`, line-ending or filter
+ *     attributes applied), for the sandboxed Gradle inventory of a commit the
+ *     working copy doesn't have checked out;
  *   - `changedSince`: what the working tree changed relative to a commit;
  *   - `sameTreeAs`: whether the working tree equals a commit.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, normalize } from "node:path";
 
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { runProcess, type RunProcess } from "../../ci/src/process.ts";
@@ -25,24 +28,78 @@ async function git(workingCopy: WorkingCopy, args: ReadonlyArray<string>, run: R
   return run("git", gitArgs(workingCopy, args), { cwd: workingCopy.path, env });
 }
 
-/** `sha`'s files in a new directory (no git metadata); the caller removes it with the returned `remove`. */
+/** `sha`'s files in a new directory (no git metadata), exactly as committed; the caller removes it with `remove`. */
 export async function exportCommit(workingCopy: WorkingCopy, sha: string, run: RunProcess = runProcess): Promise<{ readonly dir: string; readonly remove: () => Promise<void> }> {
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`exportCommit needs a full commit sha; got '${sha}'`);
   const parent = await mkdtemp(join(tmpdir(), "commit-"));
   const remove = () => rm(parent, { recursive: true, force: true });
   try {
-    const archive = join(parent, "commit.tar");
     const dir = join(parent, "tree");
-    const archived = await git(workingCopy, ["archive", "--format=tar", "-o", archive, sha], run);
-    if (archived.code !== 0) throw new Error(`git archive ${sha} failed: ${archived.stderr.trim()}`);
-    await run("mkdir", [dir]);
-    const extracted = await run("tar", ["-xf", archive, "-C", dir]);
-    if (extracted.code !== 0) throw new Error(`extracting ${sha} failed: ${extracted.stderr.trim()}`);
+    await mkdir(dir);
+    const listed = await git(workingCopy, ["ls-tree", "-r", "-z", "--full-tree", sha], run);
+    if (listed.code !== 0) throw new Error(`git ls-tree ${sha} failed: ${listed.stderr.trim()}`);
+    const entries = listed.stdout
+      .split("\0")
+      .filter((line) => line !== "")
+      .map((line) => {
+        const tab = line.indexOf("\t");
+        const [mode, type, object] = line.slice(0, tab).split(" ") as [string, string, string];
+        return { mode, type, object, path: line.slice(tab + 1) };
+      });
+    const blobs = entries.filter((entry) => entry.type === "blob");
+    const contents = await catFileBatch(workingCopy, blobs.map((blob) => blob.object));
+    for (const blob of blobs) {
+      const target = join(dir, normalize(blob.path));
+      if (!target.startsWith(`${dir}/`)) throw new Error(`${sha} has a path outside its tree: ${blob.path}`);
+      await mkdir(dirname(target), { recursive: true });
+      const content = contents.get(blob.object)!;
+      if (blob.mode === "120000") {
+        await symlink(content.toString("utf8"), target);
+      } else {
+        await writeFile(target, content);
+        if (blob.mode === "100755") await chmod(target, 0o755);
+      }
+    }
+    // Submodules (mode 160000) have no files in this repository; they stay empty directories.
+    for (const entry of entries.filter((e) => e.type === "commit")) await mkdir(join(dir, normalize(entry.path)), { recursive: true });
     return { dir, remove };
   } catch (err) {
     await remove();
     throw err;
   }
+}
+
+/** Every object's raw content, read with one `git cat-file --batch`. */
+function catFileBatch(workingCopy: WorkingCopy, objects: ReadonlyArray<string>): Promise<Map<string, Buffer>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", gitArgs(workingCopy, ["cat-file", "--batch"]), {
+      cwd: workingCopy.path,
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`git cat-file --batch failed: ${stderr.trim()}`));
+      const out = Buffer.concat(chunks);
+      const found = new Map<string, Buffer>();
+      let at = 0;
+      for (const object of new Set(objects)) {
+        const newline = out.indexOf(0x0a, at);
+        const header = out.subarray(at, newline).toString("utf8");
+        const [name, type, size] = header.split(" ");
+        if (name !== object || type !== "blob" || size === undefined) return reject(new Error(`git cat-file --batch answered '${header}' for ${object}`));
+        const start = newline + 1;
+        found.set(object, out.subarray(start, start + Number(size)));
+        at = start + Number(size) + 1;
+      }
+      resolve(found);
+    });
+    child.stdin.end([...new Set(objects)].map((object) => `${object}\n`).join(""));
+  });
 }
 
 /** Every path the working tree changed, added or removed relative to `sha`, untracked files included (ignored ones aren't). */

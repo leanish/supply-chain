@@ -11,7 +11,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
 
 1. **Checks the daily scan still runs.** It warns when the default branch's last successful scheduled `supply-chain.yml` run is older than `staleScanHours` (default 36).
 2. **Finds what fails.** It runs `candidates --rule security` on the default branch's head. The Gradle inventory runs the build, so it runs under the agent's sandbox (see below).
-3. **Picks one package.** Every malicious package goes together, because a PR can't pass while any malware remains. Otherwise it takes the package with the most severe failing advisories, every failing version of it at once. Fixes that can't move (no fixing version, an identity break) are listed in the report.
+3. **Picks one package.** Every malicious package goes together, because a PR can't pass while any malware remains; if one can't move, none is attempted. Otherwise it takes the most severe package whose every failing version can move, every failing version at once. More severe packages that can't move whole (no fixing version, an identity break) are listed in the report. Advisories no version fixes stay, inherited.
 4. **Plans the change** (`plan.ts`), for each version and location:
 
    | Ecosystem | Situation | Mechanism |
@@ -28,10 +28,11 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    - One someone else pushed to: the fix goes in a PR of its own.
 6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
 7. **Verifies before publishing** (`verify.ts`):
+   - the gate's own policy (its config, its exceptions, workflows and actions outside planned pins) is untouched, major or not;
    - `compare` against the base passes;
-   - every move landed at exactly `to` at every planned location;
+   - every move landed at exactly `to` at every planned location (Gradle: declared at exactly `to`);
    - none of the targeted advisories affects what's left;
-   - no other direct dependency changed;
+   - no other direct dependency or action use changed;
    - only dependency files changed, unless a move is a major.
 
    Any failure: nothing is published.
@@ -42,9 +43,10 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
 The tick from [`packages/remediation`](../remediation), with secure-it's steps:
 
 - **The base moved:**
-  - Conflicted dependency files take the base's side, and the agent re-applies the moves; it also resolves any code conflicts.
+  - The fix is recomputed on the new base first. If the base already has it, the PR is closed.
+  - Otherwise the regenerated plan replaces the PR's. Conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
   - If the result equals the base, the PR is closed: the default branch has the fix.
-  - Otherwise the merge is verified like a run and pushed.
+  - Otherwise the merge is verified like a run and pushed, with the new plan in the PR.
 - **CI failed:** the agent adapts, at most twice, and the result is verified before it's pushed.
 
 ## Isolation
@@ -64,5 +66,5 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - one that writes (Contents, Pull requests and Workflows: write; Actions, Commit statuses and Metadata: read);
   - a read-only one for the agent.
 - **Tools:** Node 24, git, `gh`, and Codex, logged in.
-- **OSV-Scanner:** the version pinned in [`packages/ci/tools.json`](../ci/tools.json), installed into the cache and verified by sha256 on first use.
+- **OSV-Scanner:** the version pinned in [`packages/ci/tools.json`](../ci/tools.json), installed into the tool's state directory (out of reach of sandboxed commands) and verified by sha256 before every run.
 - **Schedule:** launchd or cron calls `run.sh`.

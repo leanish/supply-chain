@@ -55,7 +55,7 @@ const PLAN: ChangePlan = {
   malware: false,
   packages: ["npm|lib"],
   severity: "HIGH",
-  moves: [{ ecosystem: "npm", name: "lib", from: "1.0.0", to: "1.0.1", mechanism: "npm-direct", locations: ["node_modules/lib"], advisories: ["GHSA-a"], major: false, commitSha: undefined }],
+  moves: [{ ecosystem: "npm", name: "lib", from: "1.0.0", to: "1.0.1", mechanism: "npm-direct", locations: ["node_modules/lib"], advisories: ["GHSA-a"], major: false, commitSha: undefined, declaredAs: undefined }],
 };
 
 const BASE = tree("b".repeat(40), { "package-lock.json": lock({ lib: "^1.0.0", other: "^1.0.0" }, { lib: "1.0.0", other: "1.0.0" }) });
@@ -94,5 +94,84 @@ describe("verifyPlan", () => {
   it("fails what compare fails: a new finding the edit brings", async () => {
     const problems = await verify(lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }), { affected: { ...AFFECTED, "lib@1.0.1": ["GHSA-new"] } });
     expect(problems).toEqual(["compare: new: lib@1.0.1: GHSA-new has no exception"]);
+  });
+
+  it("rejects a change to the gate's own policy first, even for a major", async () => {
+    const majorPlan: ChangePlan = { ...PLAN, moves: PLAN.moves.map((move) => ({ ...move, major: true })) };
+    const problems = await verifyPlan({
+      plan: majorPlan,
+      base: BASE,
+      head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
+      env: environment(AFFECTED),
+      gradle: {},
+      changedFiles: ["package-lock.json", ".github/supply-chain-exceptions.json", ".github/workflows/ci.yml"],
+    });
+    expect(problems).toEqual(["the edit changed .github/supply-chain-exceptions.json, .github/workflows/ci.yml: the gate's own policy, which no plan may change"]);
+  });
+
+  it("requires a Gradle move to be declared at exactly `to`, a higher resolution allowed only next to that declaration", async () => {
+    const config = (declared: string, resolved: string) => ({
+      tree: "worktree",
+      builds: [
+        {
+          build: ".",
+          configurations: [
+            {
+              id: ":runtimeClasspath",
+              kind: "project",
+              resolved: [{ group: "g", name: "lib", version: resolved }],
+              unresolved: [],
+              declared: [{ group: "g", name: "lib", version: declared, reason: undefined }],
+              error: undefined,
+            },
+          ],
+        },
+      ],
+    });
+    const plan: ChangePlan = {
+      topic: "g:lib",
+      malware: false,
+      packages: ["Maven|g:lib"],
+      severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0", to: "1.1", mechanism: "gradle-declared", locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+    };
+    const settings = tree("b".repeat(40), { "settings.gradle": "" });
+    const verifyWith = (declared: string, resolved: string) =>
+      verifyPlan({
+        plan,
+        base: settings,
+        head: tree("worktree", { "settings.gradle": "" }),
+        env: environment({}),
+        gradle: { base: config("1.0", "1.0") as never, head: config(declared, resolved) as never },
+        changedFiles: ["build.gradle.kts"],
+      });
+    const overshoot = await verifyWith("1.2", "1.2");
+    expect(overshoot).toContain(":runtimeClasspath declares g:lib 1.2, not 1.1");
+    const resolvedHigher = await verifyWith("1.1", "1.2");
+    // Only the landing checks here (compare can't date g:lib in this fake registry).
+    expect(resolvedHigher.filter((problem) => !problem.startsWith("compare:"))).toEqual([]);
+  });
+
+  it("rejects an action use that changed outside the plan", async () => {
+    const workflow = (ref: string) => `on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/cache@${ref} # v4.2.4\n`;
+    const actionPlan: ChangePlan = {
+      topic: "actions/checkout",
+      malware: false,
+      packages: ["GitHub Actions|actions/checkout"],
+      severity: "HIGH",
+      moves: [],
+    };
+    const problems = await verifyPlan({
+      plan: actionPlan,
+      base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("a".repeat(40)) }),
+      head: tree("worktree", { ".github/workflows/ci.yml": workflow("c".repeat(40)) }),
+      env: environment({}),
+      gradle: {},
+      changedFiles: [],
+    });
+    expect(problems.filter((problem) => problem.includes("outside the plan"))).toEqual([
+      `the action use .github/workflows/ci.yml: actions/cache@${"a".repeat(40)} # v4.2.4 changed outside the plan`,
+      `the action use .github/workflows/ci.yml: actions/cache@${"c".repeat(40)} # v4.2.4 changed outside the plan`,
+    ]);
   });
 });

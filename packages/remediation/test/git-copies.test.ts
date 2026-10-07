@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,13 @@ beforeAll(async () => {
   spawnSync("git", ["init", "-q", "-b", "main", "--separate-git-dir", workingCopy.gitDir!, workingCopy.path]);
   await writeFile(join(workingCopy.path, "package.json"), '{"name":"a"}\n');
   await writeFile(join(workingCopy.path, ".gitignore"), "build/\n");
+  // Attributes `git archive` would apply: a dropped file and a substituted one.
+  await writeFile(join(workingCopy.path, ".gitattributes"), "hidden.gradle export-ignore\nversion.txt export-subst\n");
+  await writeFile(join(workingCopy.path, "hidden.gradle"), "dependencies {}\n");
+  await writeFile(join(workingCopy.path, "version.txt"), "$Format:%H$\n");
+  await writeFile(join(workingCopy.path, "gradlew"), "#!/bin/sh\n");
+  await chmod(join(workingCopy.path, "gradlew"), 0o755);
+  await symlink("package.json", join(workingCopy.path, "link.json"));
   git(["add", "-A"]);
   git(["commit", "-q", "-m", "one"]);
   first = git(["rev-parse", "HEAD"]);
@@ -38,6 +45,11 @@ describe("git copies", () => {
     await writeFile(join(workingCopy.path, "package.json"), '{"name":"b"}\n');
     const copy = await exportCommit(workingCopy, first);
     expect(await readFile(join(copy.dir, "package.json"), "utf8")).toBe('{"name":"a"}\n');
+    // Exactly as committed: no export-ignore, no export-subst, modes and links kept.
+    expect(await readFile(join(copy.dir, "hidden.gradle"), "utf8")).toBe("dependencies {}\n");
+    expect(await readFile(join(copy.dir, "version.txt"), "utf8")).toBe("$Format:%H$\n");
+    expect((await lstat(join(copy.dir, "gradlew"))).mode & 0o111).not.toBe(0);
+    expect(await readlink(join(copy.dir, "link.json"))).toBe("package.json");
     await copy.remove();
     await expect(readFile(join(copy.dir, "package.json"))).rejects.toThrow();
     await expect(exportCommit(workingCopy, "HEAD")).rejects.toThrow("full commit sha");

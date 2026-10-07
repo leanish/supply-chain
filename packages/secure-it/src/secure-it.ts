@@ -5,6 +5,7 @@
  * the agent edits (design items 12, 19–24).
  */
 import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,14 +20,14 @@ import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { changedSince, sameTreeAs } from "../../remediation/src/git-copies.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
-import { ensureOsvScanner } from "../../remediation/src/osv-scanner.ts";
+import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "./inventory.ts";
-import { planDigest, planOf, planSection } from "./plan-block.ts";
-import { type ChangePlan, planFor, selectWork } from "./plan.ts";
+import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
+import { type ChangePlan, packageKey, planFor, selectWork } from "./plan.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { verifyPlan, type VerifyInputs } from "./verify.ts";
 
@@ -58,13 +59,12 @@ export interface SecureItDeps {
 
 export function defaultDeps(): SecureItDeps {
   return {
-    gate: async (context) => ({
-      run: runProcess,
-      fetch: namingFailures((url, init) => fetch(url, init)),
-      now: () => new Date(),
-      osvScanner: await ensureOsvScanner(context.config.dirs.cache),
-      githubToken: context.readToken,
-    }),
+    gate: async (context) => {
+      // Outside everything sandboxed commands can write, and checked right before each run.
+      const writable = [context.config.dirs.cache, context.workingCopy.path, tmpdir(), "/tmp", ...(context.isolation.buildCacheRoot === undefined ? [] : [context.isolation.buildCacheRoot])];
+      const osv = await ensureOsvScanner(context.config.dirs.state, writable);
+      return { run: verifyingRun(runProcess, osv), fetch: namingFailures((url, init) => fetch(url, init)), now: () => new Date(), osvScanner: osv.path, githubToken: context.readToken };
+    },
     gradle: (context) => sandboxedGradleInventories(context.isolation, context.workingCopy),
     trees: { commit: (workingCopy, sha) => gitTree(workingCopy.path, sha, runProcess), working: (workingCopy) => workingTree(workingCopy.path) },
     candidates: securityCandidates,
@@ -114,6 +114,7 @@ function skillInput(context: ToolRunContext, plan: ChangePlan, mode: "apply" | "
       advisories: [...move.advisories],
       major: move.major,
       ...(move.commitSha === undefined ? {} : { commitSha: move.commitSha }),
+      ...(move.declaredAs === undefined ? {} : { declaredAs: move.declaredAs }),
     })),
     floorsFile: FLOORS_FILE,
     ...(extra.failingChecks === undefined ? {} : { failingChecks: extra.failingChecks }),
@@ -134,10 +135,8 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(base, env, { head: baseGradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const waiting = found.fixes
-    .filter((fix) => fix.to === undefined || fix.to.blockers.length > 0)
-    .map((fix) => `${fix.name}@${fix.from}: ${fix.problem ?? fix.to?.blockers.join("; ") ?? ""}`);
-  const work = selectWork(found.fixes);
+  const { work, blocked } = selectWork(found.fixes);
+  const waiting = blocked.flatMap((group) => group.reasons);
   if (work.length === 0) return { ...report, outcome: "nothing-to-fix", waiting };
 
   const github = new ActionsGitHub(env.fetch, env.githubToken);
@@ -148,19 +147,21 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const topic = topicOf(RULES, topicBranch);
   const sameTopic = own.filter((pr) => topicOf(RULES, pr.headRef) === topic);
   const digest = planDigest(plan);
-  const already = sameTopic.find((pr) => {
+  // Only a PR whose head is still the tool's counts: someone else may have pushed the fix away, plan block and all.
+  const owned: GitHubPullRequest[] = [];
+  for (const pr of sameTopic) {
+    const recorded = stateOf(pr.body);
+    const journaled = await publication.journal.last(context.repo.repo, pr.number);
+    if (recorded?.head === pr.headSha || journaled?.head === pr.headSha) owned.push(pr);
+  }
+  const already = owned.find((pr) => {
     const existing = planOf(pr.body);
     return existing !== undefined && planDigest(existing) === digest;
   });
   if (already !== undefined) return { ...report, outcome: "already-open", pullRequest: already.url, waiting };
 
-  // An open PR for the package is updated with the new plan, unless someone else pushed to it.
-  let reusable: GitHubPullRequest | undefined;
-  for (const pr of sameTopic) {
-    const recorded = stateOf(pr.body);
-    const journaled = await publication.journal.last(context.repo.repo, pr.number);
-    if (recorded?.head === pr.headSha || journaled?.head === pr.headSha) reusable = pr;
-  }
+  // An open PR for the package is updated with the new plan; one someone else pushed to is left alone.
+  const reusable: GitHubPullRequest | undefined = owned[0];
   let prepared: PreparedBranch;
   if (reusable !== undefined) {
     const checkedOut = await context.workspace.prepareBranch(context.workingCopy, { branch: reusable.headRef, start: "remote" });
@@ -211,6 +212,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   const env = await deps.gate(context);
   const inventories = deps.gradle(context);
   const publication = publicationOf(context, deps);
+  const actions = new ActionsGitHub(env.fetch, env.githubToken);
   const planFrom = (pr: GitHubPullRequest): ChangePlan => {
     const plan = planOf(pr.body);
     if (plan === undefined) throw new Error(`${pr.url} has no plan secure-it can read`);
@@ -222,17 +224,33 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   };
   const steps: ReviewSteps = {
     async rebase(pr, merge: BaseMerge) {
-      const plan = planFrom(pr);
+      const previous = planFrom(pr);
       const baseSha = merge.prepared.baseSha;
+      // Recomputed on the new base first: it may already have the fix, or need a different one.
+      const base = await deps.trees.commit(context.workingCopy, baseSha);
+      const baseGradle = await inventories.ofCommit(base);
+      const found = await deps.candidates(base, env, { head: baseGradle });
+      if (found.incomplete.length > 0) throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
+      const ours = new Set(previous.packages);
+      const still = found.fixes.filter((fix) => ours.has(packageKey(fix)));
+      if (still.length === 0) {
+        await closeAndDelete(publication, pr.number, pr.headSha, "The default branch has these fixes now, so this PR has nothing left to change.");
+        return "retired";
+      }
+      const { work, blocked } = selectWork(still);
+      if (work.length === 0) throw new Error(`on the new base the fix is blocked: ${blocked.flatMap((group) => group.reasons).join("; ")}`);
+      const plan = await planFor(work, { lockfiles: await lockfilesOf(base), gradle: baseGradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) });
+      const code: string[] = [];
       if (merge.kind === "conflicted") {
-        const base = await deps.trees.commit(context.workingCopy, baseSha);
-        const code: string[] = [];
         for (const path of merge.conflicted) {
           const theirs = isMechanical(path) ? await base.read(path) : undefined;
           if (theirs === undefined) code.push(path);
           else await deps.writeFile(context.workingCopy, path, theirs);
         }
-        // The dependency files now have the base's side; the agent re-applies the moves (and resolves any code).
+      }
+      // The dependency files have the base's side where they conflicted; the agent re-applies the (regenerated) plan
+      // when anything needs it, resolving code conflicts too.
+      if (merge.kind === "conflicted" || planDigest(plan) !== planDigest(previous)) {
         const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
           entrypoint: "secure-it",
           input: skillInput(context, plan, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
@@ -244,9 +262,9 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         await closeAndDelete(publication, pr.number, pr.headSha, "The default branch has these versions now, so this PR has nothing left to change.");
         return "retired";
       }
-      const problems = await verifyAgainst(plan, baseSha);
+      const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
       if (problems.length > 0) throw new Error(`after merging the default branch: ${problems.join("; ")}`);
-      await publishUpdate(publication, merge.prepared, pr.number, { title: pr.title, body: pr.body, commitMessage: `merging ${context.base}` });
+      await publishUpdate(publication, merge.prepared, pr.number, { title: pr.title, body: withPlanSection(pr.body, plan), commitMessage: `merging ${context.base}` });
       return "rebased";
     },
     async adapt(pr, prepared, _context, attempt) {
@@ -269,8 +287,14 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   return { outcome: "reviewed", reviewed };
 }
 
-/** Dependency files whose conflicts take the base's side, the moves then re-applied on top. */
+/** Dependency files (lockfiles, manifests, Gradle build, settings and catalog files, floors) whose conflicts take the base's side, the plan then re-applied on top. */
 function isMechanical(path: string): boolean {
   const name = path.split("/").at(-1) ?? path;
-  return ["package-lock.json", "npm-shrinkwrap.json", "package.json", "gradle.lockfile"].includes(name) || path === FLOORS_FILE || path.endsWith("gradle/libs.versions.toml");
+  return (
+    ["package-lock.json", "npm-shrinkwrap.json", "package.json", "gradle.lockfile", "buildscript-gradle.lockfile"].includes(name) ||
+    name.endsWith(".gradle") ||
+    name.endsWith(".gradle.kts") ||
+    path === FLOORS_FILE ||
+    path.endsWith("gradle/libs.versions.toml")
+  );
 }

@@ -46,6 +46,8 @@ inputSchema:
             type: boolean
           commitSha:
             type: string
+          declaredAs:
+            type: string
     floorsFile:
       type: string
     failingChecks:
@@ -99,15 +101,18 @@ gate and publishes it; anything outside the plan makes it refuse.
 - Only what the moves need: dependency declarations, lockfiles, Gradle build and settings files, `gradle/libs.versions.toml`,
   and `floorsFile` (`.github/dependency-floors.json`).
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
-- Never another dependency's version, an exception file, a workflow, CI or the gate's configuration.
+- Never another dependency's version, `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a
+  workflow or action file, except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects
+  any other change to them, whatever the move.
 - Never commit, push, create branches or touch git: the tool does that. Leave nothing else in the working tree (temporary
   files included): everything left there is committed.
 
 ## Each mechanism
 
-- `npm-direct`: the package is a direct dependency (`locations` names `lockfile#workspace`). Change its range in that
-  workspace's `package.json` to `^<to>` (keep the existing range style: `~` stays `~`, an exact version stays exact),
-  then `npm install <name>@<range> --package-lock-only --ignore-scripts` in that workspace.
+- `npm-direct`: the package is a direct dependency of the workspace whose `node_modules` holds the location. Change
+  its range in that workspace's `package.json` so its base is exactly `<to>` (keep the existing style: `^` stays `^`,
+  `~` stays `~`, an exact version stays exact; an `npm:` alias, named in `declaredAs`, keeps its key and target:
+  `npm:<name>@^<to>`), then run `npm install --package-lock-only --ignore-scripts` next to the lockfile.
 - `npm-lock`: a transitive dependency whose parents' ranges all allow `to`; lock exactly `to` (never `npm update`, which
   can go past it): add a temporary `overrides` entry pinning `<name>` to `<to>` in the lockfile's `package.json`, run
   `npm install --package-lock-only --ignore-scripts`, remove that entry, run it again, and check the lockfile still has

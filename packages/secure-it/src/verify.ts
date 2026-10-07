@@ -2,17 +2,22 @@
  * The checks secure-it runs on the agent's edit before it publishes anything
  * (design item 23). Any problem stops the publication:
  *
+ *   0. the gate's own policy is untouched, major or not: its config, its
+ *      exceptions, and every workflow and action file outside the planned
+ *      action pins (checked first, since `compare` reads policy from head);
  *   1. `compare` base → working tree passes (it judges every version that
  *      changed, transitives a parent update pulled in included);
  *   2. every planned move landed exactly: npm, the lockfile entry at each
- *      planned location is `to`; Gradle, each planned configuration resolves
- *      `to` (or above, when Gradle's own conflict resolution picks a version
- *      another path requires, which `compare` has judged); Actions, every use
- *      in each planned file is pinned to the tag's commit with `# <to>`;
+ *      planned location is `to`; Gradle, each planned configuration declares
+ *      exactly `to` and resolves it (or above: then the exact declaration shows
+ *      Gradle's conflict resolution picked a version another path requires,
+ *      which `compare` has judged); Actions, every use in each planned file is
+ *      pinned to the tag's commit with `# <to>`;
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
  *      pass `compare` as inherited, not here);
- *   4. no direct dependency outside the planned packages changed version;
+ *   4. no direct dependency outside the planned packages changed version, and
+ *      no action use outside the plan changed;
  *   5. only dependency files changed, unless a move is a major.
  */
 import { basename } from "node:path";
@@ -43,6 +48,10 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const { plan, base, head, env, gradle } = inputs;
   const problems: string[] = [];
 
+  const pinned = new Set(plan.moves.filter((move) => move.mechanism === "action-pin").flatMap((move) => move.locations));
+  const policy = inputs.changedFiles.filter((path) => isPolicyFile(path) && !pinned.has(path));
+  if (policy.length > 0) return [`the edit changed ${policy.join(", ")}: the gate's own policy, which no plan may change`];
+
   const compared = await runCompare(base, head, env, gradle);
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));
 
@@ -67,6 +76,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     const [ecosystem, name] = key.split("|");
     if (!planned.has(`${ecosystem}|${name}`) && !after.has(key)) problems.push(`${name} ${version} was removed at ${key.split("|").slice(2).join("|")}, outside the plan`);
   }
+  problems.push(...(await actionsOutsidePlan(plan, base, head)));
 
   if (!plan.moves.some((move) => move.major)) {
     const actions = plan.moves.some((move) => move.mechanism === "action-pin");
@@ -87,7 +97,9 @@ async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | un
         const entry = ((lock ?? {}) as { packages?: Record<string, { version?: string; name?: string }> }).packages?.[key];
         if (entry?.version !== move.to) problems.push(`${move.name} at ${location} is ${entry?.version ?? "gone"}, not ${move.to}`);
       } else if (move.ecosystem === "Maven") {
+        const declared = declaredAt(gradle, location, move.name);
         const resolved = resolvedAt(gradle, location, move.name);
+        if (!declared.includes(move.to)) problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : declared.join(", ")}, not ${move.to}`);
         if (resolved === undefined) problems.push(`${location} no longer resolves ${move.name}`);
         else if (versionScheme("Maven").compare(resolved, move.to) < 0) problems.push(`${location} resolves ${move.name} ${resolved}, below ${move.to}`);
       } else {
@@ -100,6 +112,35 @@ async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | un
     }
   }
   return problems;
+}
+
+/** The versions a configuration declares (or inherits) for `name`. */
+function declaredAt(gradle: GradleInventory | undefined, location: string, name: string): string[] {
+  for (const build of gradle?.builds ?? []) {
+    for (const configuration of build.configurations) {
+      if (gradleLocation(build.build, configuration.id) !== location) continue;
+      return configuration.declared.filter((declared) => `${declared.group}:${declared.name}` === name && declared.version !== undefined).map((declared) => declared.version!);
+    }
+  }
+  return [];
+}
+
+/** Action uses that changed outside the plan: a use of an unplanned action, or of a planned one in an unplanned file. */
+async function actionsOutsidePlan(plan: ChangePlan, base: Tree, head: Tree): Promise<string[]> {
+  const planned = new Map<string, Set<string>>();
+  for (const move of plan.moves.filter((m) => m.mechanism === "action-pin")) {
+    planned.set(move.name.toLowerCase(), new Set([...(planned.get(move.name.toLowerCase()) ?? []), ...move.locations]));
+  }
+  const outside = (use: { name: string; file: string }) => !planned.get(use.name)?.has(use.file);
+  const occurrences = async (tree: Tree) =>
+    (await readActionsInventory(tree)).uses.filter(outside).map((use) => `${use.file}: ${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}${use.comment === undefined ? "" : ` # ${use.comment}`}`);
+  const before = await occurrences(base);
+  const after = await occurrences(head);
+  const count = (list: string[]) => list.reduce((map, entry) => map.set(entry, (map.get(entry) ?? 0) + 1), new Map<string, number>());
+  const was = count(before);
+  const now = count(after);
+  const changed = [...new Set([...was.keys(), ...now.keys()])].filter((entry) => was.get(entry) !== now.get(entry)).sort();
+  return changed.map((entry) => `the action use ${entry} changed outside the plan`);
 }
 
 function resolvedAt(gradle: GradleInventory | undefined, location: string, name: string): string | undefined {
@@ -129,6 +170,19 @@ async function directVersions(tree: Tree, gradle: GradleInventory | undefined): 
     }
   }
   return versions;
+}
+
+/** The gate's policy: its config and exceptions, and every workflow and action file (only planned pins may change one). */
+function isPolicyFile(path: string): boolean {
+  const name = basename(path);
+  return (
+    path === ".github/supply-chain.json" ||
+    path === ".github/supply-chain-exceptions.json" ||
+    path.startsWith(".github/workflows/") ||
+    path.startsWith(".github/actions/") ||
+    name === "action.yml" ||
+    name === "action.yaml"
+  );
 }
 
 const DEPENDENCY_FILES = new Set(["package.json", "package-lock.json", "npm-shrinkwrap.json", "gradle.lockfile", "buildscript-gradle.lockfile"]);

@@ -136,6 +136,12 @@ describe("secure-it run", () => {
     expect(planOf(changed.github.prs.get(7)!.body)?.moves[0]?.to).toBe("8.3.3");
   });
 
+  it("doesn't take a PR someone else pushed to as covering the same plan", async () => {
+    const h = harness({ prs: [await vitePr({ headSha: "9".repeat(40) })] });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.github.prs.get(42)?.headRef).toBe("secure-it/2026-10-07-vite");
+  });
+
   it("opens a separate PR for a changed plan when someone else pushed to the package's PR", async () => {
     const older = vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } });
     const h = harness({ prs: [await vitePr({ headSha: "9".repeat(40), headRef: "secure-it/2026-10-07-vite" }, older)] });
@@ -171,7 +177,13 @@ describe("secure-it run", () => {
 describe("secure-it review", () => {
   const NEW_BASE = "f".repeat(40);
 
-  it("retires a PR whose fix the moved base already has, and publishes the verified merge otherwise", async () => {
+  it("recomputes on the moved base: retires a PR whose fix the base already has, before any agent", async () => {
+    const fixedOnBase = harness({ prs: [await vitePr()], baseSha: NEW_BASE, fixes: [] });
+    fixedOnBase.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
+    expect(await secureIt(fixedOnBase.deps).review(fixedOnBase.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "retired" }] });
+    expect(fixedOnBase.github.prs.get(7)?.state).toBe("closed");
+    expect(fixedOnBase.agentCalls).toEqual([]);
+
     const retired = harness({ prs: [await vitePr()], baseSha: NEW_BASE, same: true });
     retired.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
     expect(await secureIt(retired.deps).review(retired.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "retired" }] });
@@ -182,6 +194,16 @@ describe("secure-it review", () => {
     expect(await secureIt(merged.deps).review(merged.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
     expect(stateOf(merged.github.prs.get(7)!.body)).toEqual({ head: PUSHED_SHA, base: NEW_BASE, adaptations: 0 });
     expect(merged.agentCalls).toEqual([]);
+  });
+
+  it("has the agent re-apply a plan the moved base changed, and records the new plan in the PR", async () => {
+    const h = harness({ prs: [await vitePr()], baseSha: NEW_BASE, fixes: [vite({ to: { version: "8.3.4", line: "8", aged: true, major: false, blockers: [] } })] });
+    h.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
+    expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
+    expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
+    const body = h.github.prs.get(7)!.body;
+    expect(planOf(body)?.moves[0]?.to).toBe("8.3.4");
+    expect(body.match(/What secure-it moved/g)).toHaveLength(1);
   });
 
   it("takes the base's side of a conflicted lockfile and has the agent re-apply, or resolve code conflicts", async () => {
