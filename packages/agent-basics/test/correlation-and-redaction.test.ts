@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/correlation-and-redaction.test.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`.
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it } from "vitest";

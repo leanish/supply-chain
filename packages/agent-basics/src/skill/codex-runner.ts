@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/skill/codex-runner.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: the access comment says write agents can't write git metadata (they never could here).
 import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -42,9 +43,10 @@ import { resolveWorkingCopyMount } from "./wc-mount.ts";
  *
  * Access (`invocation.access`, from the descriptor) picks the permission
  * profile (see `codex-permissions.ts`): `read-only` can read, not write, and
- * has no network; `write` can also write its working copies (including each
- * one's `.git`, so it can commit), the temp dirs and `writableRoots`, and
- * reach the network — it needs at least one working copy, each a plain clone.
+ * has no network; `write` can also write its working copies' files (their git
+ * metadata stays read-only, so it can't commit or push), the temp dirs and
+ * `writableRoots`, and reach the network — it needs at least one working copy,
+ * each with its git metadata in a separate directory outside the working tree.
  * `readDenied` / `readAllowed` keep sandboxed commands away from paths (a
  * local run denies the developer's home — working copies and writable roots
  * must then live outside it); the staged `CODEX_HOME`'s `auth.json` is always

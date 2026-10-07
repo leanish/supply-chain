@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/wc-mount.test.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`.
 import { describe, expect, it } from "vitest";
 
 import { resolveWorkingCopyMount } from "../src/skill/wc-mount.ts";

@@ -1,3 +1,4 @@
+// New in this repository.
 import { describe, expect, it } from "vitest";
 
 import { codexIsolation, type IsolationSettings } from "../src/isolation.ts";

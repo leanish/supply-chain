@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/local-git-workspace.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`.
+// Local changes: `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,6 +70,20 @@ describe.skipIf(!hasGit)("LocalGitWorkspace (real git)", () => {
       const dir = tmpDirs.pop();
       if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("refuses an id that isn't owner/slug before touching the workspace root or its parent", async () => {
+    const root = makeRoot();
+    const sibling = join(root, "..", `keep-${Date.now()}`);
+    mkdirSync(sibling);
+    tmpDirs.push(sibling);
+    writeFileSync(join(root, "keep.txt"), "kept");
+    const ws = new LocalGitWorkspace({ workspaceRoot: root });
+    for (const id of ["", ".", "..", "acme", "acme/", "/widget", "acme/..", "../widget", "acme/.", "a/b/c", "-acme/widget", "acme/widget."]) {
+      await expect(ws.sync([{ id, source: { url: "/nonexistent", branch: "main" } }])).rejects.toThrow(`repository id '${id}' isn't owner/slug`);
+    }
+    expect(readFileSync(join(root, "keep.txt"), "utf8")).toBe("kept");
+    expect(existsSync(sibling)).toBe(true);
   });
 
   it("clones a repo and never persists the supplied token in .git/config", async () => {

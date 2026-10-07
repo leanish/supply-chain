@@ -1,11 +1,11 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`.
+// Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import type { RepoSource as Project } from "../types/repo-source.ts";
+import { assertRepoSourceId, type RepoSource as Project } from "../types/repo-source.ts";
 
 import type {
   DeleteRemoteBranchArgs,
@@ -228,6 +228,8 @@ export class LocalGitWorkspace implements Workspace {
   async #syncOne(
     project: Project,
   ): Promise<{ workingCopy: WorkingCopy; report: SyncReportEntry }> {
+    // catalog-it validated ids when parsing; a `RepoSource` comes from the tool's config, so it's checked here.
+    assertRepoSourceId(project.id);
     const id = sanitizeProjectId(project.id);
     const repo: Repo = { workTree: join(this.#root, id), gitDir: join(this.#root, GIT_DIRS, id), url: project.source.url };
     const branch = project.source.branch;
