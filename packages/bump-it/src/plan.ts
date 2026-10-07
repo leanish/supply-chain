@@ -1,9 +1,10 @@
-/** A bounded PR payload: exact npm file hashes, never their contents. */
+/** A bounded PR payload: exact npm and generated wrapper hashes, never their contents. */
 import { createHash } from "node:crypto";
 
 import { planBlock, planPayload, withPlanSection as replaceSection } from "../../remediation/src/plan-blocks.ts";
 
-import { WRAPPER_PROPERTIES } from "./gradle-wrapper.ts";
+import type { WrapperFile } from "./wrapper-generation.ts";
+import { WRAPPER_FILES, WRAPPER_PROPERTIES } from "./gradle-wrapper.ts";
 import type { CopyChange, NpmResult } from "./npm-compute.ts";
 import type { DirectMove, Unit } from "./units.ts";
 
@@ -16,6 +17,7 @@ export interface BumpPlan {
   readonly topic: string;
   readonly package: string | undefined;
   readonly moves: ReadonlyArray<PlannedMove>;
+  readonly wrapperFiles?: ReadonlyArray<WrapperFile>;
   readonly npmFiles: ReadonlyArray<{ readonly path: string; readonly sha256: string; readonly dependencySha256?: string }>;
   readonly changes: ReadonlyArray<CopyChange>;
   readonly changeCount: number;
@@ -83,7 +85,7 @@ export async function planFor(unit: Unit, npm: NpmResult, tagCommit: (name: stri
 
 export function planDigest(plan: BumpPlan): string {
   const moves = plan.moves.map((move) => ({ ...move, locations: [...move.locations].sort(), declarations: sorted(move.declarations) }));
-  return sha256(JSON.stringify(stable({ kind: plan.kind, topic: plan.topic, package: plan.package, moves: sorted(moves), npmFiles: sorted(plan.npmFiles) })));
+  return sha256(JSON.stringify(stable({ kind: plan.kind, topic: plan.topic, package: plan.package, moves: sorted(moves), npmFiles: sorted(plan.npmFiles), wrapperFiles: sorted(plan.wrapperFiles ?? []) })));
 }
 
 /** The payload is untrusted data from a PR body; reject malformed or oversized plans. */
@@ -101,6 +103,9 @@ export function planOf(body: string): BumpPlan | undefined {
   if (new Set(value.npmFiles.map((file) => file.path)).size !== value.npmFiles.length) {
     return undefined;
   }
+  if (value.wrapperFiles !== undefined && !validWrapperFiles(value.wrapperFiles)) {
+    return undefined;
+  }
   if (!Array.isArray(value.changes) || !value.changes.every(validCopyChange)) {
     return undefined;
   }
@@ -111,6 +116,23 @@ export function planOf(body: string): BumpPlan | undefined {
     return undefined;
   }
   return value as unknown as BumpPlan;
+}
+
+function validWrapperFiles(files: unknown): boolean {
+  if (!Array.isArray(files) || files.length !== WRAPPER_FILES.length) {
+    return false;
+  }
+  if (!files.every(validWrapperFile)) {
+    return false;
+  }
+  return new Set(files.map((file) => file.path)).size === WRAPPER_FILES.length;
+}
+
+function validWrapperFile(file: unknown): file is WrapperFile {
+  if (!object(file) || typeof file.path !== "string" || !WRAPPER_FILES.includes(file.path)) {
+    return false;
+  }
+  return validHash(file.sha256) && typeof file.executable === "boolean";
 }
 
 function validUnit(value: Record<string, unknown>): boolean {

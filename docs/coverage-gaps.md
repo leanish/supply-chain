@@ -30,4 +30,6 @@ bump-it selects and verifies the root Gradle wrapper separately from the gate's 
 stable, non-broken releases from services.gradle.org and published repository advisories from gradle/gradle; this
 is not a scan of the distribution archive. Nested wrappers, mirrors, custom distributions and prerelease base
 wrappers are not upgraded. The official wrapper jar is checksummed; generated shell/batch scripts are not
-independently compared with official scripts. A missing or unreadable advisory range fails wrapper selection.
+independently compared with official scripts, but all four generated files are protected byte for byte and by executable
+mode against agent edits. A missing or unreadable advisory range leaves the wrapper out with a reported reason;
+other moves continue. Verification of a planned wrapper fails closed.

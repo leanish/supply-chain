@@ -24,6 +24,7 @@ export interface WrapperTarget {
 export interface WrapperCandidates {
   readonly routine?: DirectMove;
   readonly major?: DirectMove;
+  readonly notes?: ReadonlyArray<string>;
 }
 
 export interface WrapperPlanner {
@@ -67,25 +68,30 @@ export function gradleWrapperPlanner(env: GateEnvironment, releaseAgeDays: numbe
 
   return {
     async candidates(tree) {
-      const current = await currentWrapper(tree);
-      if (current === undefined) {
-        return {};
+      try {
+        const current = await currentWrapper(tree);
+        if (current === undefined) {
+          return {};
+        }
+        const { releases, advisories } = await readSnapshot();
+        const inherited = affecting(advisories, current.version);
+        const eligible = releases.filter((release) => SCHEME.compare(release.version, current.version) > 0 && aged(release) &&
+          affecting(advisories, release.version).every((id) => inherited.includes(id)));
+        const routine = eligible.find((release) => majorOf(release.version) === majorOf(current.version));
+        const major = eligible.find((release) => majorOf(release.version) > majorOf(current.version));
+        const move = async (release: Release, major: boolean): Promise<DirectMove> => ({
+          ecosystem: "Gradle Wrapper", name: "gradle/gradle", from: current.version, to: release.version,
+          mechanism: "gradle-wrapper", major, locations: [WRAPPER_PROPERTIES], declarations: [],
+          wrapper: await target(release, current.type),
+        });
+        return {
+          ...(routine === undefined ? {} : { routine: await move(routine, false) }),
+          ...(major === undefined ? {} : { major: await move(major, true) }),
+        };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { notes: [`Gradle wrapper left out: ${reason}`] };
       }
-      const { releases, advisories } = await readSnapshot();
-      const inherited = affecting(advisories, current.version);
-      const eligible = releases.filter((release) => SCHEME.compare(release.version, current.version) > 0 && aged(release) &&
-        affecting(advisories, release.version).every((id) => inherited.includes(id)));
-      const routine = eligible.find((release) => majorOf(release.version) === majorOf(current.version));
-      const major = eligible.find((release) => majorOf(release.version) > majorOf(current.version));
-      const move = async (release: Release, major: boolean): Promise<DirectMove> => ({
-        ecosystem: "Gradle Wrapper", name: "gradle/gradle", from: current.version, to: release.version,
-        mechanism: "gradle-wrapper", major, locations: [WRAPPER_PROPERTIES], declarations: [],
-        wrapper: await target(release, current.type),
-      });
-      return {
-        ...(routine === undefined ? {} : { routine: await move(routine, false) }),
-        ...(major === undefined ? {} : { major: await move(major, true) }),
-      };
     },
     async verify(moves, base, head, jarSha256) {
       const selected = moves.filter((move) => move.mechanism === "gradle-wrapper");

@@ -23,8 +23,8 @@ describe("tool boundaries", () => {
       mechanism: { enum: expect.arrayContaining(["gradle-wrapper"]) },
       wrapper: { additionalProperties: false, required: ["distributionUrl", "distributionSha256", "jarSha256"] },
     } } } } });
-    expect(skill.body).toContain("twice, sequentially");
-    expect(skill.body).toContain("--no-daemon --gradle-version <to>");
+    expect(skill.body).toContain("Never touch wrapper files");
+    expect(skill.body).toContain("Do not run the wrapper task");
     expect(skill.outputSchema).toMatchObject({ additionalProperties: false });
     expect(skill.compatibleCodingAgents).toEqual(["codex"]);
   });

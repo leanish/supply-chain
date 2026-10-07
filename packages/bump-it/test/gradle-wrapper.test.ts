@@ -91,16 +91,29 @@ describe("Gradle wrapper candidates", () => {
     expect(await planner.candidates(tree())).toMatchObject({ major: { to: "9.0" } });
     expect((await planner.candidates(tree())).routine).toBeUndefined();
   });
-  it("fails closed on unreadable advisory ranges, missing advisories, malformed releases and checksums", async () => {
-    await expect(fixture(undefined, [advisory("GHSA-bad", "nonsense")]).planner.candidates(tree())).rejects.toThrow("unreadable");
-    await expect(fixture([release("8.1", { buildTime: "20260230000000+0000" })]).planner.candidates(tree())).rejects.toThrow("buildTime");
-    await expect(fixture([release("8.1", { checksum: "wrong" })]).planner.candidates(tree())).rejects.toThrow("checksum");
-    await expect(fixture([release("8.1", { downloadUrl: "https://evil.invalid" })]).planner.candidates(tree())).rejects.toThrow("downloadUrl");
+  it("reports omitted moves on unreadable advisory ranges, missing advisories, malformed releases and checksums", async () => {
+    expect(await fixture(undefined, [advisory("GHSA-bad", "nonsense")]).planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("unreadable")] });
+    expect(await fixture([release("8.1", { buildTime: "20260230000000+0000" })]).planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("buildTime")] });
+    expect(await fixture([release("8.1", { checksum: "wrong" })]).planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("checksum")] });
+    expect(await fixture([release("8.1", { downloadUrl: "https://evil.invalid" })]).planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("downloadUrl")] });
     const { env } = fixture();
     const unavailable: Fetch = async (url, init) => url.includes("security-advisories")
       ? { ok: false, status: 404, headers: { get: () => null }, json: async () => [], text: async () => "" } : env.fetch(url, init);
-    await expect(gradleWrapperPlanner({ ...env, fetch: unavailable }, 7).candidates(tree())).rejects.toThrow("could not be read");
+    expect(await gradleWrapperPlanner({ ...env, fetch: unavailable }, 7).candidates(tree())).toMatchObject({ notes: [expect.stringContaining("could not be read")] });
   });
+  it("reports unsupported bases, empty vulnerabilities and service failures, but verification fails closed", async () => {
+    const { env, planner } = fixture();
+    const unsupported = { ...tree(), read: async () => "distributionUrl=https://mirror.invalid/gradle-8.0-bin.zip" };
+    expect(await planner.candidates(unsupported)).toMatchObject({ notes: [expect.stringContaining("official stable")] });
+    const missing = fixture(undefined, [{ ...advisory("GHSA-empty", "< 8.1"), vulnerabilities: [] }]);
+    expect(await missing.planner.candidates(tree())).toMatchObject({ notes: [expect.stringContaining("no Gradle vulnerability ranges")] });
+    const unavailable = gradleWrapperPlanner({ ...env, fetch: async () => { throw new Error("services unavailable"); } }, 7);
+    expect(await unavailable.candidates(tree())).toEqual({ notes: ["Gradle wrapper left out: services unavailable"] });
+    const move = (await planner.candidates(tree())).routine!;
+    await expect(unavailable.verify([move], tree(), tree("8.1"), JAR)).rejects.toThrow("services unavailable");
+    await expect(missing.planner.verify([move], tree(), tree("8.1"), JAR)).rejects.toThrow("no Gradle vulnerability ranges");
+  });
+
 });
 
 describe("Gradle wrapper verification", () => {

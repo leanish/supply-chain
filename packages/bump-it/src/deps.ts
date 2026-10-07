@@ -17,6 +17,8 @@ import { FileJournal, type PublicationJournal } from "../../remediation/src/jour
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { revertToBase } from "../../remediation/src/reconcile.ts";
 
+import { generateWrapper, readWrapperFiles, writeWrapperFiles, type WrapperArtifact } from "./wrapper-generation.ts";
+import type { DirectMove } from "./units.ts";
 import { gradleWrapperPlanner, type WrapperPlanner, WRAPPER_JAR, WRAPPER_FILES } from "./gradle-wrapper.ts";
 import { assertLocalFile, removeLocalFile, writeLocalFile } from "./files.ts";
 import type { NpmResult } from "./npm-compute.ts";
@@ -26,6 +28,9 @@ import type { Unit } from "./units.ts";
 import { verifyPlan, type VerifyInputs } from "./verify.ts";
 
 export interface BumpItDeps {
+  readonly generateWrapper: (context: ToolRunContext, baseSha: string, move: DirectMove) => Promise<ReadonlyArray<WrapperArtifact>>;
+  readonly readWrapperFiles: (workingCopy: WorkingCopy) => Promise<ReadonlyArray<WrapperArtifact>>;
+  readonly writeWrapperFiles: (workingCopy: WorkingCopy, files: ReadonlyArray<WrapperArtifact>) => Promise<void>;
   readonly wrapper: (env: GateEnvironment, releaseAgeDays: number) => WrapperPlanner;
   readonly restoreWrapperFile: (workingCopy: WorkingCopy, baseSha: string, path: string) => Promise<void>;
   readonly wrapperJarSha256: (workingCopy: WorkingCopy) => Promise<string | undefined>;
@@ -46,6 +51,9 @@ export interface BumpItDeps {
 export function defaultDeps(): BumpItDeps {
   return {
     wrapper: gradleWrapperPlanner,
+    generateWrapper,
+    readWrapperFiles,
+    writeWrapperFiles,
     async restoreWrapperFile(workingCopy, baseSha, path) {
       if (!WRAPPER_FILES.includes(path) || !/^[a-f0-9]{40}$/i.test(baseSha)) throw new Error("invalid wrapper restore");
       const restored = await runProcess("git", ["restore", `--source=${baseSha}`, "--worktree", "--", path], { cwd: workingCopy.path });

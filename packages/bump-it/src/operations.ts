@@ -12,6 +12,7 @@ import { type GradleInventories, lockfilesOf } from "../../remediation/src/inven
 import { branchFor, ownPullRequests, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, type PublicationContext, type PullRequestContent } from "../../remediation/src/publication.ts";
 
+import type { WrapperArtifact } from "./wrapper-generation.ts";
 import type { WrapperPlanner } from "./gradle-wrapper.ts";
 import { constrainedUnit } from "./constraints.ts";
 import type { BumpItDeps } from "./deps.ts";
@@ -36,6 +37,8 @@ export interface Computed {
   readonly files: ReadonlyMap<string, string>;
   readonly base: Tree;
   readonly gradle: GradleInputs["head"];
+  readonly wrapperFiles?: ReadonlyArray<WrapperArtifact>;
+  readonly wrapperOmitted?: boolean;
   readonly blocked?: string;
 }
 
@@ -45,18 +48,39 @@ interface SkillAnswer {
   readonly publication?: PullRequestContent;
 }
 
-export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner): Promise<Computed> {
+export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner, wrapperNotes: ReadonlyArray<string> = []): Promise<Computed> {
   const coupled = await coupledUnit(unit, peers === undefined ? new Map() : await lockfilesOf(base), peers);
   const bounded = await constrainedUnit(coupled.unit, base);
   const ready = constrainedPeers(coupled.unit, bounded.unit, coupled.sets);
-  const notes = [...coupled.notes, ...bounded.notes, ...ready.notes];
-  const blocked = unit.kind === "major" && ready.unit.moves.length === 0 && notes.length > 0 ? notes.join("; ") : undefined;
+  const generated = await prepareWrapper(execution, ready.unit, base.id);
+  const notes = [...wrapperNotes, ...coupled.notes, ...bounded.notes, ...ready.notes, ...generated.notes];
+  const blocked = unit.kind === "major" && generated.unit.moves.length === 0 && notes.length > 0 ? notes.join("; ") : undefined;
   const npm = blocked === undefined
-    ? await execution.deps.npm(execution.context, ready.unit, base, execution.env, gradle)
+    ? await execution.deps.npm(execution.context, generated.unit, base, execution.env, gradle)
     : { files: new Map<string, string>(), changes: [], notes: [] };
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
-  const plan = await planFor(ready.unit, { ...npm, notes: [...notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
-  return { plan, files: npm.files, base, gradle, ...(blocked === undefined ? {} : { blocked }) };
+  const planned = await planFor(generated.unit, { ...npm, notes: [...notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
+  const wrapperFiles = generated.files;
+  const plan = wrapperFiles.length === 0 ? planned : { ...planned, wrapperFiles: wrapperFiles.map(({ bytes: _bytes, ...file }) => file) };
+  return { plan, files: npm.files, wrapperFiles, wrapperOmitted: wrapperNotes.length > 0 || generated.notes.length > 0, base, gradle, ...(blocked === undefined ? {} : { blocked }) };
+}
+
+async function prepareWrapper(execution: Execution, unit: Unit, baseSha: string): Promise<{ unit: Unit; files: ReadonlyArray<WrapperArtifact>; notes: string[] }> {
+  const move = unit.moves.find((move) => move.mechanism === "gradle-wrapper");
+  if (move === undefined) {
+    return { unit, files: [], notes: [] };
+  }
+  try {
+    const files = await execution.deps.generateWrapper(execution.context, baseSha, move);
+    return { unit, files, notes: [] };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      unit: { ...unit, moves: unit.moves.filter((candidate) => candidate !== move) },
+      files: [],
+      notes: [`Gradle wrapper left out: ${reason}`],
+    };
+  }
 }
 
 export async function writeNpm(execution: Execution, files: ReadonlyMap<string, string>, preserveManifestFields = false): Promise<void> {
@@ -82,10 +106,16 @@ export async function writeNpm(execution: Execution, files: ReadonlyMap<string, 
   }
 }
 
+export async function writeWrapper(execution: Execution, computed: Computed): Promise<void> {
+  if (computed.wrapperFiles !== undefined && computed.wrapperFiles.length > 0) {
+    await execution.deps.writeWrapperFiles(execution.context.workingCopy, computed.wrapperFiles);
+  }
+}
+
 export async function verify(execution: Execution, computed: Computed): Promise<void> {
   const { context, deps, env, inventories } = execution;
   const head = deps.trees.working(context.workingCopy);
-  // Inventory executes repository code in its sandbox: hash the jar only after that build has finished.
+  // Inventory executes repository code: capture all wrapper hashes after that build has finished.
   const gradle = { base: computed.gradle, head: await inventories.ofWorkingTree(head) };
   const changedFiles = await deps.changedSince(context.workingCopy, computed.base.id);
   const problems = await deps.verify({
@@ -95,6 +125,7 @@ export async function verify(execution: Execution, computed: Computed): Promise<
     head,
     env,
     wrapper: execution.wrapper,
+    wrapperFiles: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.readWrapperFiles(context.workingCopy) : undefined,
     wrapperJarSha256: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.wrapperJarSha256(context.workingCopy) : undefined,
     gradle,
     changedFiles,
@@ -106,14 +137,15 @@ export async function verify(execution: Execution, computed: Computed): Promise<
 
 export async function edit(execution: Execution, computed: Computed, mode: "apply" | "adapt" | "resolve", extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {}): Promise<PullRequestContent> {
   await writeNpm(execution, computed.files);
+  await writeWrapper(execution, computed);
   const { plan } = computed;
-  if (plan.kind === "routine" && plan.moves.every((move) => move.mechanism === "npm-range")) {
+  if (plan.kind === "routine" && plan.moves.every((move) => (move.mechanism === "npm-range" || move.mechanism === "gradle-wrapper"))) {
     return mechanicalContent(plan);
   }
   const { context } = execution;
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
     entrypoint: "bump-it",
-    input: skillInput(context, plan, mode, [...computed.files.keys()], extra),
+    input: skillInput(context, plan, mode, [...computed.files.keys(), ...(computed.wrapperFiles ?? []).map((file) => file.path)], extra),
     effort: plan.kind === "major" ? context.config.agent.majorEffort : context.config.agent.effort,
   });
   if (answer.outcome !== "applied" || answer.publication === undefined) {
