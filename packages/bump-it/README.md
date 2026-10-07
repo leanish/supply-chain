@@ -20,7 +20,11 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
 - npm resolution runs in an exported scratch copy, under `codex sandbox`, with `--package-lock-only --ignore-scripts`,
-  the release-age window and own-scope exclusions on every install/update. The routine resolves after direct updates,
+  the release-age window and own-scope exclusions on every install/update. Packages with a young locked base version
+  in any lockfile this unit computes also get a named npm age exclusion, so npm can keep the version already locked;
+  unreadable publish times are treated as young. Each exclusion is reported. Publish-time lookups are cached and shared
+  with target selection: bump-it's targets still require the age, and `compare` judges what a major induces.
+  The routine resolves after direct updates,
   then code weighs all transitive candidates within the dependents' ranges and existing override constraints on one
   advisory snapshot. Temporary exact specs/overrides lock targets, restoring the planned manifests before a second
   install. The final graph must keep every target (at most four pin passes). Majors install their own move without a
@@ -59,8 +63,9 @@ R7's daily main scan and open-PR rescan remain CI's responsibility; this tick re
 
 Use `~/.config/leanish/bump-it/agent.yaml`, with explicit repository opt-in and the shared
 [configuration](../remediation). Requires Node 24, git, gh and authenticated Codex. **npm 11.17.0 or later is required
-when the repository has own npm scopes**, for `min-release-age-exclude`. With older npm, the run reports the affected
-unit as failed with the required and detected versions, before computation or publication. Without exclusions,
+whenever the final age-exclusion list is non-empty**: own npm scopes or young/unreadable locked base versions need
+`min-release-age-exclude`. With older npm, the run reports the affected unit as failed with the reason, excluded names,
+and required and detected versions, before editing npm files or publishing. Without exclusions,
 use npm with min-release-age support. No npm installation or registry requests are needed for the unit tests.
 
 Two separate Keychain tokens: the tool alone receives the write token; the agent receives only the read token. npm,

@@ -1,8 +1,4 @@
 /** Registry decisions in the tool; npm resolution in an exported, sandboxed scratch tree. */
-import { dirname } from "node:path";
-
-import semver from "semver";
-
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
 import { IdentityCheck } from "../../ci/src/candidates.ts";
 import { type GateEnvironment, type GradleInputs, readSettings, snapshotOptions, treeSources, versionCatalogs } from "../../ci/src/gate.ts";
@@ -19,6 +15,8 @@ import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 import { computeNpm, type NpmCommand, type NpmResult } from "./npm-compute.ts";
 import type { TargetSources } from "./npm-targets.ts";
 import type { Unit } from "./units.ts";
+
+export { requireNpmExcludes } from "./npm-window.ts";
 
 export async function targetSources(base: Tree, env: GateEnvironment, gradle: GradleInputs["head"]): Promise<TargetSources> {
   const { config, exceptions } = await readSettings(base);
@@ -39,17 +37,6 @@ export async function targetSources(base: Tree, env: GateEnvironment, gradle: Gr
   };
 }
 
-export async function requireNpmExcludes(npm: NpmCommand, dir: string, exclude: ReadonlyArray<string>): Promise<void> {
-  if (exclude.length === 0) {
-    return;
-  }
-  const result = await npm(dir, ["--version"]);
-  const version = semver.valid(result.stdout.trim());
-  if (result.code !== 0 || version === null || !semver.gte(version, "11.17.0")) {
-    throw new Error(`ownPackages requires npm >= 11.17.0 (min-release-age-exclude); got ${result.stdout.trim() || result.stderr.trim() || "no version"}`);
-  }
-}
-
 export async function computeOnBase(context: ToolRunContext, unit: Unit, base: Tree, env: GateEnvironment, gradle: GradleInputs["head"]): Promise<NpmResult> {
   const locks = await lockfilesOf(base);
   if (locks.size === 0 || unit.kind === "major" && !unit.moves.some((move) => move.ecosystem === "npm")) {
@@ -58,10 +45,6 @@ export async function computeOnBase(context: ToolRunContext, unit: Unit, base: T
   const scratch = await exportCommit(context.workingCopy, base.id);
   try {
     const npm: NpmCommand = (cwd, args) => runSandboxed(context.isolation, { workingCopy: { ...context.workingCopy, path: cwd }, command: ["npm", ...args] });
-    // Check the same npm executable and per-project environment that computes the lockfile.
-    for (const lock of locks.keys()) {
-      await requireNpmExcludes(npm, `${scratch.dir}/${dirname(lock)}`, context.releaseAgeExclude);
-    }
     const sources = await targetSources(base, env, gradle);
     const moves = unit.moves.flatMap((move) => move.declarations.map((declaration) => ({ ...declaration, name: move.name, to: move.to })));
     return await computeNpm({

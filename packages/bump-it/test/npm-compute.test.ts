@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { versionKey } from "../../ci/src/package-version.ts";
 import { Snapshot } from "../../ci/src/snapshot.ts";
 import { computeNpm, MAX_PASSES, type NpmCommand, type NpmInputs } from "../src/npm-compute.ts";
@@ -16,7 +16,15 @@ async function fixture(script?: (dir: string, args: ReadonlyArray<string>, n: nu
   await writeFile(join(dir, "package.json"), json(manifest));
   await writeFile(join(dir, "package-lock.json"), json(lock()));
   const calls: string[][] = [];
-  const npm: NpmCommand = async (cwd, args) => { expect(cwd).toBe(dir); calls.push([...args]); await script?.(dir, args, calls.length); return { code: 0, stdout: "", stderr: "" }; };
+  const npm: NpmCommand = async (cwd, args) => {
+    expect(cwd).toBe(dir);
+    if (args[0] === "--version") {
+      return { code: 0, stdout: "11.20.0", stderr: "" };
+    }
+    calls.push([...args]);
+    await script?.(dir, args, calls.length);
+    return { code: 0, stdout: "", stderr: "" };
+  };
   const inputs: NpmInputs = { dir, baseLocks: new Map([["package-lock.json", lock()]]), moves: [{ name: "parent", to: "1.1.0", lockfile: "package-lock.json", workspace: ".", declaredAs: "parent", spec: "^1.0.0" }], npm, kind: "routine", window: { days: 7, exclude: ["@own/*", "@other/*"] }, sources: { versions: async () => ["1.0.0", "1.1.0"], published: async () => new Date("2026-09-01"), snapshot: async (base, candidates) => new Snapshot(new Map([...base, ...candidates].map((pkg) => [versionKey(pkg), []])), [], new Date()), identity: async () => [], isOwn: () => false, releaseAgeDays: 7, now: new Date("2026-10-07") } };
   return { dir, inputs, calls };
 }
@@ -87,6 +95,9 @@ describe("exact npm computation", () => {
     await writeFile(join(root, "ws/package.json"), json(wsManifest));
     await writeFile(join(root, "package-lock.json"), json(base));
     const npm: NpmCommand = async (cwd, args) => {
+      if (args[0] === "--version") {
+        return { code: 0, stdout: "11.20.0", stderr: "" };
+      }
       expect(cwd).toBe(root); expect(args[0]).toBe("install");
       expect(JSON.parse(await readFile(join(root, "ws/package.json"), "utf8")).dependencies.compat).toBe("npm:lib@^2.0.0");
       await writeFile(join(root, "package-lock.json"), json({ packages: { ...base.packages, ws: { dependencies: { compat: "npm:lib@^2.0.0" } }, "node_modules/compat": { name: "lib", version: "2.0.0" } } }));
@@ -126,5 +137,126 @@ describe("exact npm computation", () => {
     await expect(requireNpmExcludes(fake, ".", ["@own/*"])).rejects.toThrow("11.17.0");
     await requireNpmExcludes(async () => { throw new Error("must not run"); }, ".", []);
     await requireNpmExcludes(async () => ({ code: 0, stdout: "11.20.0", stderr: "" }), ".", ["@own/*"]);
+  });
+  it("excludes a young locked transitive before the first install, but still selects an aged target", async () => {
+    const h = await fixture();
+    const published = vi.fn(async (name: string, version: string) => {
+      return new Date(name === "child" && version !== "1.2.0" ? "2026-10-06" : "2026-09-01");
+    });
+    const npm: NpmCommand = async (dir, args) => {
+      if (args[0] === "--version") {
+        return { code: 0, stdout: "11.20.0", stderr: "" };
+      }
+      h.calls.push([...args]);
+      if (!args.includes("--min-release-age-exclude=child")) {
+        return { code: 1, stdout: "", stderr: "notarget No matching version found for child@1.0.0 with a date before the window" };
+      }
+      const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      const pinned = root.overrides?.["child@1.3.0"] === "1.2.0" || h.calls.length === 4;
+      await writeFile(join(dir, "package-lock.json"), json(lock("1.0.0", pinned ? "1.2.0" : "1.3.0")));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const result = await computeNpm({
+      ...h.inputs,
+      moves: [],
+      npm,
+      sources: { ...h.inputs.sources, published, versions: async () => ["1.0.0", "1.2.0", "1.3.0"] },
+    });
+    expect(h.calls.map((args) => args[0])).toEqual(["install", "update", "install", "install"]);
+    for (const args of h.calls) {
+      expect(args.filter((arg) => arg.startsWith("--min-release-age-exclude=")))
+        .toEqual(["--min-release-age-exclude=@other/*", "--min-release-age-exclude=@own/*", "--min-release-age-exclude=child"]);
+      expect(args).toContain("--min-release-age=7");
+    }
+    expect(result.notes).toEqual(["child: its locked 1.0.0 is younger than the window, so npm's own window skips it; bump-it's targets still require the age"]);
+    expect(result.changes).toMatchObject([{ name: "child", from: "1.0.0", to: "1.2.0" }]);
+    const lookups = published.mock.calls.map(([name, version]) => `${name}@${version}`);
+    expect(lookups.filter((key) => key === "child@1.0.0")).toHaveLength(1);
+    expect(new Set(lookups).size).toBe(lookups.length);
+  });
+  it.each(["missing", "throwing", "invalid"])("excludes an unreadable locked publish time (%s), notes it and keeps the base target", async (failure) => {
+    const h = await fixture();
+    const published = vi.fn(async (name: string) => {
+      if (name !== "child") {
+        return new Date("2026-09-01");
+      }
+      if (failure === "throwing") {
+        throw new Error("offline");
+      }
+      return failure === "invalid" ? new Date("invalid") : undefined;
+    });
+    const result = await computeNpm({ ...h.inputs, moves: [], sources: { ...h.inputs.sources, published } });
+    expect(h.calls.every((args) => args.includes("--min-release-age-exclude=child"))).toBe(true);
+    expect(result.notes).toContain("child: publish time for its locked 1.0.0 could not be read, so npm's own window skips it; bump-it's targets still require the age");
+    expect(result.changes).toEqual([]);
+    expect(published.mock.calls.filter(([name]) => name === "child")).toHaveLength(2);
+  });
+  it("keeps a young locked base when no newer aged target exists", async () => {
+    const h = await fixture();
+    const result = await computeNpm({
+      ...h.inputs,
+      moves: [],
+      sources: { ...h.inputs.sources, published: async () => new Date("2026-10-06") },
+    });
+    expect(result.changes).toEqual([]);
+    expect(result.notes).toHaveLength(3);
+    expect(h.calls.every((args) => args.includes("--min-release-age-exclude=child"))).toBe(true);
+  });
+  it("requires a new enough npm for a young base alone, before editing any files", async () => {
+    const h = await fixture();
+    const npm = vi.fn<NpmCommand>(async (_dir, args) => {
+      expect(args).toEqual(["--version"]);
+      return { code: 0, stdout: "11.14.1", stderr: "" };
+    });
+    await expect(computeNpm({
+      ...h.inputs,
+      npm,
+      window: { days: 7, exclude: [] },
+      sources: { ...h.inputs.sources, published: async () => new Date("2026-10-06") },
+    })).rejects.toThrow("young or unreadable locked versions require npm >= 11.17.0");
+    expect(npm).toHaveBeenCalledOnce();
+    expect(await readFile(join(h.dir, "package.json"), "utf8")).toBe(json(manifest));
+  });
+  it.each(["routine", "major"] as const)("uses only the %s computation's lockfiles for base-age exclusions", async (kind) => {
+    const h = await fixture();
+    await mkdir(join(h.dir, "nested"));
+    const nestedManifest = { dependencies: { child: "^1" } };
+    const nestedLock = { packages: { "": nestedManifest, "node_modules/child": { version: "1.1.0" } } };
+    await writeFile(join(h.dir, "nested/package.json"), json(nestedManifest));
+    await writeFile(join(h.dir, "nested/package-lock.json"), json(nestedLock));
+    const published = vi.fn(async (_name: string, version: string) => new Date(version === "1.1.0" ? "2026-10-06" : "2026-09-01"));
+    const invocations: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+    const npm: NpmCommand = async (cwd, args) => {
+      invocations.push({ cwd, args });
+      if (args[0] === "--version") {
+        return { code: 0, stdout: "11.20.0", stderr: "" };
+      }
+      if (kind === "major") {
+        await writeFile(join(cwd, "package-lock.json"), json(lock("2.0.0")));
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const result = await computeNpm({
+      ...h.inputs,
+      kind,
+      moves: kind === "major" ? h.inputs.moves.map((move) => ({ ...move, to: "2.0.0" })) : [],
+      window: { days: 7, exclude: [] },
+      baseLocks: new Map([...h.inputs.baseLocks, ["nested/package-lock.json", nestedLock]]),
+      npm,
+      sources: { ...h.inputs.sources, published, versions: async () => ["1.0.0", "1.1.0"] },
+    });
+    const installs = invocations.filter(({ args }) => args[0] !== "--version");
+    if (kind === "routine") {
+      expect(new Set(installs.map(({ cwd }) => cwd))).toEqual(new Set([h.dir, join(h.dir, "nested")]));
+      expect(installs.every(({ args }) => args.includes("--min-release-age-exclude=child"))).toBe(true);
+      expect(result.notes).toEqual(["child: its locked 1.1.0 is younger than the window, so npm's own window skips it; bump-it's targets still require the age"]);
+      expect(published.mock.calls.filter(([name, version]) => name === "child" && version === "1.1.0")).toHaveLength(1);
+    } else {
+      expect(invocations).toHaveLength(1);
+      expect(installs[0]?.cwd).toBe(h.dir);
+      expect(installs[0]?.args.some((arg) => arg.startsWith("--min-release-age-exclude="))).toBe(false);
+      expect(result.notes).toEqual([]);
+      expect(published.mock.calls.some(([, version]) => version === "1.1.0")).toBe(false);
+    }
   });
 });

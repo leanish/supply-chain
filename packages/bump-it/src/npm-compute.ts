@@ -1,4 +1,8 @@
-/** Compute exact npm files in a sandboxed scratch copy, pin targets, then restore planned manifests. */
+/**
+ * Compute exact npm files in a sandboxed scratch copy, pin targets, then restore planned manifests.
+ * npm's age exclusions include young or unreadable locked base versions, reported in notes;
+ * code-decided targets still enforce age. Any exclusions require npm >= 11.17.0.
+ */
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -10,6 +14,7 @@ import { NpmGraph, rewriteSpec } from "./npm-graph.ts";
 import { repositoryOverrides } from "./npm-overrides.ts";
 import { pinnedManifests } from "./npm-pins.ts";
 import { type Decision, decideTargets, type TargetSources } from "./npm-targets.ts";
+import { npmWindowFor, requireNpmExcludes } from "./npm-window.ts";
 
 /** Runs npm with `args` in `cwd` (an absolute directory in the scratch copy). */
 export type NpmCommand = (cwd: string, args: ReadonlyArray<string>) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -57,13 +62,20 @@ type Manifest = Record<string, unknown>;
 export async function computeNpm(inputs: NpmInputs): Promise<NpmResult> {
   const files = new Map<string, string>();
   const changes: CopyChange[] = [];
-  const notes = new Set<string>();
   const baseVersions = versionsByName(inputs.baseLocks);
   const lockfiles = [...inputs.baseLocks.keys()]
     .filter((lockfile) => inputs.kind === "routine" || inputs.moves.some((move) => move.lockfile === lockfile))
     .sort();
+  const computedLocks = new Map(lockfiles.map((path) => [path, inputs.baseLocks.get(path)]));
+  const preparedWindow = await npmWindowFor(versionsByName(computedLocks), inputs.window, inputs.sources);
+  const notes = new Set(preparedWindow.notes);
+  const readyInputs = { ...inputs, window: preparedWindow.window, sources: preparedWindow.sources };
   for (const lockfile of lockfiles) {
-    const result = await computeLockfile(lockfile, inputs, baseVersions);
+    // Use the same executable and project directory as every install/update, before changing any files.
+    await requireNpmExcludes(inputs.npm, join(inputs.dir, dirname(lockfile)), preparedWindow.window.exclude, preparedWindow.reason);
+  }
+  for (const lockfile of lockfiles) {
+    const result = await computeLockfile(lockfile, readyInputs, baseVersions);
     for (const [path, content] of result.files) {
       files.set(path, content);
     }
