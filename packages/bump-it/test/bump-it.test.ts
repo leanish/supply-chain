@@ -239,9 +239,9 @@ describe("bump-it review", () => {
     const routineFail = harness({ prs: [await prFor(routine())] }); routineFail.github.checks = RED;
     expect(await bumpIt(routineFail.deps).review(routineFail.context)).toMatchObject({ reviewed: [{ outcome: "adaptation-unchanged" }] });
     expect(routineFail.agentCalls).toEqual([]);
-    const h = harness({ prs: [await prFor(major())] }); h.github.checks = RED;
+    const h = harness({ prs: [await prFor(major())] }); h.github.checks = { ...RED, statuses: [{ context: "legacy", state: "failure" }] };
     expect(await bumpIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ outcome: "adapted" }] });
-    expect(h.agentCalls).toMatchObject([{ effort: "high", input: { mode: "adapt", failingChecks: ["check"] } }]);
+    expect(h.agentCalls).toMatchObject([{ effort: "high", input: { mode: "adapt", failingChecks: ["check", "legacy"] } }]);
     expect(stateOf(h.github.prs.get(7)!.body)?.adaptations).toBe(1);
   });
   it.each([

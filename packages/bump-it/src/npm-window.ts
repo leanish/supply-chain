@@ -1,9 +1,6 @@
 /** Keep npm's age filter from rejecting locked young versions; target selection still checks age. */
-import semver from "semver";
-
 import { mapLimited } from "../../ci/src/http.ts";
 
-import type { NpmCommand } from "./npm-compute.ts";
 import type { TargetSources } from "./npm-targets.ts";
 
 interface NpmWindow {
@@ -77,14 +74,4 @@ async function baseExclusionNote(name: string, version: string, days: number, so
   return `${name}: its locked ${version} is younger than the window, so npm's own window skips it; bump-it's targets still require the age`;
 }
 
-export async function requireNpmExcludes(npm: NpmCommand, dir: string, exclude: ReadonlyArray<string>, reason = "release-age exclusions"): Promise<void> {
-  if (exclude.length === 0) {
-    return;
-  }
-  const result = await npm(dir, ["--version"]);
-  const version = semver.valid(result.stdout.trim());
-  if (result.code !== 0 || version === null || !semver.gte(version, "11.17.0")) {
-    const detected = result.stdout.trim() || result.stderr.trim() || "no version";
-    throw new Error(`${reason} require npm >= 11.17.0 (min-release-age-exclude: ${exclude.join(", ")}); got ${detected}`);
-  }
-}
+export { requireNpmExcludes } from "../../remediation/src/npm-version.ts";

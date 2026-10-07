@@ -96,6 +96,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
     gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => undefined }),
     trees: { commit: async (_wc, sha) => tree(sha), working: () => tree("worktree") },
+    npm: async () => ({ code: 0, stdout: "11.20.0\n", stderr: "" }),
     candidates: async () => ({ fixes: options.fixes ?? [vite()], incomplete: [], gaps: [], osvScannerVersion: "2.6.0" }),
     verify: async () => options.problems ?? [],
     staleScan: async () => ({ stale: false, lastSuccess: "2026-10-07T05:17:00Z", detail: "fresh" }),
@@ -186,6 +187,82 @@ describe("secure-it run", () => {
     expect(incomplete.agentCalls).toEqual([]);
   });
 
+  it("skips an identical recognised plan and publishes only the next ranked package", async () => {
+    const next = vite({ name: "left-pad", from: "1.0.0", locations: ["node_modules/left-pad"], severity: "LOW", to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } });
+    const h = harness({ prs: [await vitePr()], fixes: [next, vite()] });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "published", skipped: [{ packages: ["npm|vite"], pullRequest: "https://github.com/leanish/widget/pull/7" }] });
+    expect(h.agentCalls).toHaveLength(1);
+    expect(h.agentCalls[0]?.input).toMatchObject({ moves: [{ name: "left-pad" }] });
+    expect(h.workspace.publications).toHaveLength(1);
+    expect(h.github.prs.get(7)?.headSha).toBe(HEAD_SHA);
+  });
+
+  it("walks every already-open group, reports blockers once, and does not edit anything", async () => {
+    const next = vite({ name: "left-pad", from: "1.0.0", locations: ["node_modules/left-pad"], severity: "LOW", to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } });
+    const blocked = vite({ name: "blocked", severity: "CRITICAL", to: undefined, problem: "identity break" });
+    const h = harness({ prs: [await vitePr(), await vitePr({ number: 8, url: "https://github.com/leanish/widget/pull/8", headRef: "secure-it/2026-10-05-left-pad" }, next)], fixes: [blocked, next, vite()] });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "already-open", waiting: ["blocked@8.3.1: identity break"], skipped: [{ packages: ["npm|vite"] }, { packages: ["npm|left-pad"] }] });
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toEqual([]);
+  });
+
+  it("recognises an identical owned suffixed PR when skipping to the next package", async () => {
+    const next = vite({ name: "left-pad", from: "1.0.0", locations: ["node_modules/left-pad"], severity: "LOW", to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } });
+    const h = harness({ prs: [await vitePr({ headRef: "secure-it/2026-10-05-vite-2" })], fixes: [vite(), next] });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "published", skipped: [{ packages: ["npm|vite"] }] });
+    expect(h.agentCalls[0]?.input).toMatchObject({ moves: [{ name: "left-pad" }] });
+  });
+
+  it("keeps malware together and does not bypass its already-open group", async () => {
+    const malware = vite({ malicious: true });
+    const other = vite({ name: "left-pad", from: "1.0.0", locations: ["node_modules/left-pad"], to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } });
+    const h = harness({ prs: [await vitePr({ headRef: "secure-it/2026-10-05-malware" }, malware)], fixes: [other, malware] });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "already-open", skipped: [{ packages: ["npm|vite"] }] });
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toEqual([]);
+  });
+
+  it("checks exclusion support before the agent, and leaves publication untouched on old npm", async () => {
+    const h = harness();
+    const calls: ReadonlyArray<string>[] = [];
+    const deps = { ...h.deps, npm: async (_context: ToolRunContext, args: ReadonlyArray<string>) => {
+      calls.push(args);
+      return { code: 0, stdout: "11.14.1", stderr: "" };
+    } };
+    await expect(secureIt(deps).run(h.context)).rejects.toThrow("require npm >= 11.17.0 (min-release-age-exclude: vite)");
+    expect(calls).toEqual([["--version"]]);
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toEqual([]);
+  });
+
+  it("passes a young target exclusion while preserving own scopes and the sandbox's age", async () => {
+    const h = harness();
+    const gate = await h.deps.gate(h.context);
+    const deps = { ...h.deps, gate: async () => ({ ...gate, fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ time: { "8.3.3": "2026-10-06T00:00:00Z" }, versions: {} }), text: async () => "" }) }) };
+    const install = (exclusions: ReadonlyArray<string>) => {
+      if (!exclusions.includes("vite")) throw new Error("notarget: vite target is too young");
+      if (exclusions.includes("other")) throw new Error("unplanned package was excluded");
+    };
+    expect(() => install([])).toThrow("notarget");
+    const context = { ...h.context, releaseAgeExclude: ["@leanish/*"], agent: (async (call: { entrypoint: string; input: Record<string, unknown>; effort?: string }) => {
+      install(call.input["npmAgeExclusions"] as ReadonlyArray<string>);
+      return h.context.agent(call);
+    }) as ToolRunContext["agent"] };
+    expect(await secureIt(deps).run(context)).toMatchObject({ outcome: "published" });
+    expect(h.agentCalls[0]?.input).toMatchObject({ npmAgeExclusions: ["@leanish/*", "vite"] });
+    expect(context.releaseAgeDays).toBe(7);
+    expect(context.releaseAgeExclude).toEqual(["@leanish/*"]);
+  });
+
+  it("needs no newer npm when every target is aged and there are no own scopes", async () => {
+    const h = harness();
+    const gate = await h.deps.gate(h.context);
+    const deps = { ...h.deps, gate: async () => ({ ...gate, fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ time: { "8.3.3": "2026-09-01T00:00:00Z" }, versions: {} }), text: async () => "" }) }),
+      npm: async () => { throw new Error("npm version must not be checked"); } };
+    expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual([]);
+  });
+
   it("uses the major effort when a move is a major", async () => {
     const h = harness({ fixes: [vite({ to: { version: "9.0.1", line: "9", aged: true, major: true, blockers: [] } })] });
     await secureIt(h.deps).run(h.context);
@@ -225,6 +302,7 @@ describe("secure-it review", () => {
     expect(h.reverted).toEqual([NEW_BASE]);
     expect(h.written).toEqual([]);
     expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
+    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["vite"]);
     const pr = h.github.prs.get(7)!;
     expect(pr.title).toBe("moving vite to 8.3.3");
     expect(planOf(pr.body)?.moves[0]?.to).toBe("8.3.4");
@@ -238,14 +316,15 @@ describe("secure-it review", () => {
     expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
     expect(h.written).toEqual([`package-lock.json=${LOCK}`]);
     expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
+    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["vite"]);
   });
 
   it("has the agent adapt a failing PR, verifies the result, and records the attempt", async () => {
     const h = harness({ prs: [await vitePr()] });
     h.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
-    h.github.checks = RED;
+    h.github.checks = { ...RED, statuses: [{ context: "legacy", state: "error" }] };
     expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "adapted" }] });
-    expect(h.agentCalls[0]).toMatchObject({ input: { mode: "adapt", failingChecks: ["check"] } });
+    expect(h.agentCalls[0]).toMatchObject({ input: { mode: "adapt", failingChecks: ["check", "legacy"], npmAgeExclusions: ["vite"] } });
     expect(stateOf(h.github.prs.get(7)!.body)?.adaptations).toBe(1);
 
     const failing = harness({ prs: [await vitePr()], problems: ["compare: new: vite@8.3.3: GHSA-new has no exception"] });

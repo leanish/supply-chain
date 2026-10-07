@@ -54,9 +54,9 @@ describe("reviewOpenPullRequests", () => {
     expect(calls).toEqual([]);
 
     expect((await reviewOpenPullRequests(context(github), steps()))[0]?.outcome).toBe("already-ready");
-    github.checks = { source: "check-runs", checkRuns: [{ name: "check", status: "in_progress", conclusion: null }], statuses: [] };
+    github.checks = { source: "actions-jobs", checkRuns: [{ name: "check", status: "in_progress", conclusion: null }], statuses: [] };
     expect((await reviewOpenPullRequests(context(github), steps()))[0]?.outcome).toBe("pending");
-    github.checks = { source: "check-runs", checkRuns: [], statuses: [] };
+    github.checks = { source: "actions-jobs", checkRuns: [], statuses: [] };
     expect((await reviewOpenPullRequests(context(github), steps()))[0]?.outcome).toBe("no-checks");
   });
 

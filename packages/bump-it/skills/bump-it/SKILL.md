@@ -91,8 +91,9 @@ Gradle's wrapper-upgrade task; wrapper upgrades are a separate slice.
 
 In `resolve`, resolve the named code conflicts, preserving the base's changes and this major's adaptation; leave no
 conflict markers. The tool has taken the base's side of mechanical dependency files and re-written its npm plan.
-Then apply the non-npm moves. In `adapt`, investigate `failingChecks` using read-only gh commands and fix only what
-this major broke. If it cannot be fixed within these limits, answer cannot-apply. Routine failures are not adapted.
+Then apply the non-npm moves. In `adapt`, investigate `failingChecks` (Actions job names and commit status contexts)
+with `gh run list --commit <head SHA>`, `gh run view --log-failed` or commit status reads. These use Actions and
+Commit statuses permissions, never the Checks API. Fix only what this major broke. If it cannot be fixed within these limits, answer cannot-apply. Routine failures are not adapted.
 
 ## Answer
 

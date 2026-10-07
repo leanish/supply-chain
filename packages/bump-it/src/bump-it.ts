@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { BumpCandidate } from "../../ci/src/candidates.ts";
+import { failingCheckNames } from "../../remediation/src/ci-state.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { isMechanical } from "../../remediation/src/edit-checks.ts";
 import { branchFor, topicOf, stateOf } from "../../remediation/src/own-pr.ts";
@@ -238,9 +239,7 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
       const files = await plannedFiles(plan, deps.trees.working(context.workingCopy));
       const computed = { plan, files, base, gradle: await execution.inventories.ofCommit(base) };
       const checks = await context.github.headChecks({ repo: context.repo.repo, sha: pr.headSha });
-      const failingChecks = checks.checkRuns
-        .filter((check) => check.status === "completed" && check.conclusion !== null && !["success", "neutral", "skipped"].includes(check.conclusion))
-        .map((check) => check.name);
+      const failingChecks = failingCheckNames(checks);
       const content = await edit(execution, computed, "adapt", { failingChecks });
       await verify(execution, computed);
       const { pushed } = await publishUpdate(execution.publication, prepared, pr.number, { title: pr.title, body: withPlanSection(pr.body, plan), commitMessage: content.commitMessage }, attempt);

@@ -1,5 +1,5 @@
 // Adapted from leanish/leanish-development agents/bump-it/test/fake-github.ts at e4f8a1e: secure-it's rules and PR state
-// instead of bump-it's constants; the Dependabot PR factory is left out.
+// instead of bump-it's constants; the Dependabot PR factory is left out; CI fixtures use actions-jobs source.
 import { GitHubApiError } from "../../agent-basics/src/github/github-client.ts";
 import type { GitHubClient, GitHubHeadChecks, GitHubNewPullRequest, GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 
@@ -35,13 +35,13 @@ export function ownPr(overrides: Partial<GitHubPullRequest> = {}): GitHubPullReq
 }
 
 export const GREEN: GitHubHeadChecks = {
-  source: "check-runs",
+  source: "actions-jobs",
   checkRuns: [{ name: "check", status: "completed", conclusion: "success" }],
   statuses: [],
 };
 
 export const RED: GitHubHeadChecks = {
-  source: "check-runs",
+  source: "actions-jobs",
   checkRuns: [{ name: "check", status: "completed", conclusion: "failure" }],
   statuses: [],
 };

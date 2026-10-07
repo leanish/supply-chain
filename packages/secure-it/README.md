@@ -23,7 +23,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | Gradle | a transitive one | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
    | Actions | any | pin to the tag's commit |
 5. **Looks at its open PRs first.**
-   - An open secure-it PR with the same plan: nothing to do, its review owns it.
+   - An open secure-it PR with the same plan and a recognised head: it is reported as skipped, its review owns it, and the run takes the next ranked actionable package. At most one PR is created or updated. If every actionable group already has its PR, the run reports `already-open`. An already-open malware group is left to review; other fixes cannot pass while that malware remains on the base.
    - One with a different plan, while its head is still the tool's: that PR is reconciled. The default branch is merged into it, every file it changed goes back to the base's content, and the new plan is applied on top, so nothing the old plan did lingers. It's pushed as a normal commit.
    - One someone else pushed to: the fix goes in a PR of its own.
 6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
@@ -47,7 +47,7 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - A different plan on the new base: the PR is reconciled as in a run (reverted to the base, conflicts included, then the new plan applied), with the agent's new title and description.
   - The same plan: conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
   - Either way the result is verified like a run and pushed, with the plan in the PR. Fixes remained on the new base, so an edit that leaves the base as it was fails verification; it doesn't retire the PR.
-- **CI failed:** the agent adapts, at most twice, and the result is verified before it's pushed.
+- **CI failed:** the agent adapts, at most twice, and the result is verified before it's pushed. CI and failing names come from the head SHA's Actions runs/jobs plus commit statuses; no Checks permission is needed.
 
 ## Isolation
 
@@ -56,7 +56,8 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - the Keychain isn't reachable;
   - the sensitive home paths can't be read;
   - writes land only in the working copy, the temp dirs and the build cache.
-- npm runs only `--package-lock-only --ignore-scripts`.
+- npm dependency edits use `--package-lock-only --ignore-scripts`. The agent keeps the configured release-age window. Planned packages whose target is young (or its publish time cannot be read) get explicit `--min-release-age-exclude` flags, alongside the own-scope patterns. Other packages keep the window; verification still requires the exact planned targets and `compare` passes. This applies to initial edits, rebases/conflict resolution and CI adaptation.
+- npm 11.17.0 or later is required when an npm plan needs these exclusions. The tool checks the sandbox's npm before starting the agent and reports the required exclusions and detected version on failure.
 - The agent gets the read-only token alone.
 
 ## Setup
@@ -65,6 +66,6 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
 - **Tokens:** two fine-grained tokens in the Keychain:
   - one that writes (Contents, Pull requests and Workflows: write; Actions, Commit statuses and Metadata: read);
   - a read-only one for the agent.
-- **Tools:** Node 24, git, `gh`, and Codex, logged in.
+- **Tools:** Node 24, git, `gh`, and Codex, logged in; npm >= 11.17.0 when a planned npm fix or an own scope needs a release-age exclusion.
 - **OSV-Scanner:** the version pinned in [`packages/ci/tools.json`](../ci/tools.json), installed into the tool's state directory (out of reach of sandboxed commands) and verified by sha256 before every run.
 - **Schedule:** launchd or cron calls `run.sh`.

@@ -6,7 +6,7 @@ compatibleCodingAgents:
 inputSchema:
   type: object
   additionalProperties: false
-  required: [repo, mode, moves, floorsFile, today]
+  required: [repo, mode, moves, floorsFile, today, npmAgeExclusions]
   properties:
     repo:
       type: string
@@ -48,6 +48,10 @@ inputSchema:
             type: string
           declaredAs:
             type: string
+    npmAgeExclusions:
+      type: array
+      items:
+        type: string
     floorsFile:
       type: string
     failingChecks:
@@ -95,6 +99,16 @@ You apply one security fix to the working copy of `repo`. **secure-it already de
 which packages, which versions, and how each version is changed (`mechanism`). Your job is the edit, done the way this
 repository does things, and the text of the PR. After you finish, the tool verifies the result with the supply-chain
 gate and publishes it; anything outside the plan makes it refuse.
+
+## npm's release window
+
+The sandbox keeps `npm_config_min_release_age`. A security fix may be younger than that window. The tool supplies
+`npmAgeExclusions`: the repository's own scope patterns plus only planned packages with young or unreadable target
+publish times. It checks npm >= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
+entry as `--min-release-age-exclude=<entry>` (repeated flags); this keeps the own-scope patterns too, which CLI flags
+would otherwise replace. Never lower or unset the age window, or add exclusions of your own. These flags permit
+installing the selected security target; they do not permit choosing another version. Verification requires the
+exact planned versions and `compare` passes before publication.
 
 ## What you may change
 
@@ -144,9 +158,11 @@ changes and what this PR's moves need (a major's adaptation), with no conflict m
 
 ## `mode: adapt`
 
-The change was published and CI failed (`failingChecks` names the checks). Find out why with `gh pr checks` or `gh run
-view --log-failed` (your token reads only). Fix what the move broke, within what you may change. If the failure isn't
-caused by the move, or fixing it needs more than that, answer `cannot-apply` and say why.
+The change was published and CI failed (`failingChecks` names the jobs and status contexts). Find out why with
+`gh run list --commit <head SHA>` and `gh run view --log-failed` (Actions read), or read the failing commit status
+contexts (Commit statuses read). The Checks API is not needed; your token reads only. Fix what the move broke,
+within what you may change. If the failure isn't caused by the move, or fixing it needs more than that, answer
+`cannot-apply` and say why.
 
 ## Your answer
 

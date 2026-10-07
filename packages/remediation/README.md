@@ -19,7 +19,7 @@ package is the code around them:
 - **The review tick** (`review.ts`) goes through every open PR of the tool, in this order:
   1. Someone else pushed: leave the PR alone.
   2. The base moved: the tool recomputes on the new base, before anything else, with the base merged in or the conflicting merge left in progress for it to resolve.
-  3. CI pending: nothing. Green: mark the PR ready. No model is used for 1 or 3.
+  3. CI comes from the head SHA's Actions workflow runs/jobs and commit statuses (Actions and Commit statuses: read; no Checks permission). Checks-only results from other apps are not read. CI pending: nothing. Green: mark the PR ready. No model is used for 1 or 3.
   4. CI failed: the agent adapts, at most twice, each attempt counted before it starts; after that, the PR is closed with a comment.
 
   A problem with one PR doesn't stop the others.

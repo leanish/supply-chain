@@ -25,7 +25,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `guard/git` | `agents/bump-it/local/guard/git` | copied | messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool" |
 | `guard/lib.sh` | `agents/bump-it/local/guard/lib.sh` | copied | messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool" |
 | `src/errors.ts` | `core/runtime/src/errors.ts` | copied | only the classes the copied modules use; parameter properties written as fields |
-| `src/github/github-client.ts` | `core/runtime/src/needs/github-client.ts` | copied | `GitHubApiError`'s parameter properties written as fields |
+| `src/github/github-client.ts` | `core/runtime/src/needs/github-client.ts` | copied | `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending and jobless runs |
 | `src/isolation.ts` | `core/runtime/src/runtime/run-local-cli.ts` (`localCodexOptions`, `SENSITIVE_HOME_PATHS`) | derived | inputs from the tool's config; the configured commit identity instead of the developer's global one; the repository's release age, its own npm scopes exempt (`min-release-age-exclude`) |
 | `src/logger/console-logger.ts` | `core/runtime/src/logger/console-logger.ts` | copied | — |
 | `src/logger/correlation.ts` | `core/runtime/src/logger/correlation.ts` | copied | — |
@@ -57,7 +57,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/skill/validator.ts` | `core/runtime/src/skill/validator.ts` | copied | — |
 | `src/skill/wc-mount.ts` | `core/runtime/src/skill/wc-mount.ts` | copied | — |
 | `src/types/access.ts` | — | new | — |
-| `src/types/clients.ts` | `core/runtime/src/types/clients.ts` | copied | only the GitHub client's types |
+| `src/types/clients.ts` | `core/runtime/src/types/clients.ts` | copied | only the GitHub client's types; headChecks uses Actions jobs and commit statuses, with an actions-jobs source |
 | `src/types/logger.ts` | `core/runtime/src/types/logger.ts` | copied | — |
 | `src/types/repo-source.ts` | — | new | — |
 | `src/types/working-copy.ts` | `core/runtime/src/types/working-copy.ts` | copied | the `remote-merging` start and its `conflicted` result; `PublishBranchArgs.beforePush` |
@@ -83,7 +83,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/fixtures/codex-rollout.ts` | `core/runtime/test/fixtures/codex-rollout.ts` | copied | — |
 | `test/fixtures/report-on-signal.ts` | — | new | — |
 | `test/git-clone-auth.test.ts` | `core/runtime/test/unit/git-clone-auth.test.ts` | copied | `gitCloneAuth` tests replace the `resolveGitCloneAuth` ones; imports this package's modules from `../src/` instead of `../../src/` |
-| `test/github-client.test.ts` | `core/runtime/test/unit/github-client.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel |
+| `test/github-client.test.ts` | `core/runtime/test/unit/github-client.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs, skipped jobs and continue-on-error failures |
 | `test/guard.test.ts` | `agents/bump-it/test/local-guard.test.ts` | copied | the guards' directory, and their messages say "agent guard" |
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/in-memory-workspace.test.ts` | `core/runtime/test/unit/in-memory-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/` |

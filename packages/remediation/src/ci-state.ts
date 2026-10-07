@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development agents/bump-it/src/ci-state.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `CiConclusion` defined here instead of bump-it's handler type.
+// Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations.
 import type { GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
 
 /** What a PR head's CI says. */
@@ -53,4 +53,13 @@ export function classifyCi(checks: GitHubHeadChecks): CiConclusion {
   const anySucceeded =
     checkRuns.some((run) => run.conclusion === "success") || statuses.some((status) => status.state === "success");
   return allPassing && anySucceeded ? "success" : "none";
+}
+
+/** Failure names from the same jobs and statuses used to classify CI. */
+export function failingCheckNames(checks: GitHubHeadChecks): string[] {
+  const jobs = checks.checkRuns
+    .filter((run) => run.status === "completed" && run.conclusion !== null && FAILED_CONCLUSIONS.has(run.conclusion))
+    .map((run) => run.name);
+  const statuses = checks.statuses.filter((status) => FAILED_STATUSES.has(status.state)).map((status) => status.context);
+  return [...new Set([...jobs, ...statuses])].sort();
 }

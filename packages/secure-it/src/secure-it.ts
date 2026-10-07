@@ -12,22 +12,26 @@ import { fileURLToPath } from "node:url";
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
-import { type SecurityCandidates, securityCandidates } from "../../ci/src/candidates.ts";
+import { type SecurityCandidates, type SecurityFix, securityCandidates } from "../../ci/src/candidates.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
 import { namingFailures } from "../../ci/src/http.ts";
 import { runProcess } from "../../ci/src/process.ts";
 import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
+import { failingCheckNames } from "../../remediation/src/ci-state.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
 import { changedSince } from "../../remediation/src/git-copies.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
+import { requireNpmExcludes } from "../../remediation/src/npm-version.ts";
+import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
 import { revertToBase } from "../../remediation/src/reconcile.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
+import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
 import { type ChangePlan, packageKey, planFor, selectWork } from "./plan.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
@@ -55,6 +59,8 @@ export interface SecureItDeps {
   readonly journal: (context: ToolRunContext) => PublicationJournal;
   /** Writes `content` at `path` (relative to the working copy): taking the base's side of a conflicted dependency file. */
   readonly writeFile: (workingCopy: WorkingCopy, path: string, content: string) => Promise<void>;
+  /** npm under the same sandbox and PATH as the agent, used to check exclusion support. */
+  readonly npm: (context: ToolRunContext, args: ReadonlyArray<string>) => Promise<{ code: number; stdout: string; stderr: string }>;
   /** Puts every path that differs from `baseSha` back to the base's content (reconcile by revert); returns them. */
   readonly revert: (workingCopy: WorkingCopy, baseSha: string) => Promise<string[]>;
 }
@@ -70,6 +76,7 @@ export function defaultDeps(): SecureItDeps {
     gradle: (context) => sandboxedGradleInventories(context.isolation, context.workingCopy),
     trees: { commit: (workingCopy, sha) => gitTree(workingCopy.path, sha, runProcess), working: (workingCopy) => workingTree(workingCopy.path) },
     candidates: securityCandidates,
+    npm: (context, args) => runSandboxed(context.isolation, { workingCopy: context.workingCopy, command: ["npm", ...args] }),
     verify: verifyPlan,
     staleScan: (context) => staleScanStatus(context.repo.repo, context.base, context.readToken, context.now, context.config.staleScanHours ?? 36),
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
@@ -101,7 +108,7 @@ function publicationOf(context: ToolRunContext, deps: SecureItDeps): Publication
   };
 }
 
-function skillInput(context: ToolRunContext, plan: ChangePlan, mode: "apply" | "adapt" | "resolve", extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {}) {
+function skillInput(context: ToolRunContext, plan: ChangePlan, npmAgeExclusions: ReadonlyArray<string>, mode: "apply" | "adapt" | "resolve", extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {}) {
   return {
     repo: context.repo.repo,
     mode,
@@ -119,9 +126,27 @@ function skillInput(context: ToolRunContext, plan: ChangePlan, mode: "apply" | "
       ...(move.declaredAs === undefined ? {} : { declaredAs: move.declaredAs }),
     })),
     floorsFile: FLOORS_FILE,
+    npmAgeExclusions: [...npmAgeExclusions],
     ...(extra.failingChecks === undefined ? {} : { failingChecks: extra.failingChecks }),
     ...(extra.conflicted === undefined ? {} : { conflicted: [...extra.conflicted] }),
   };
+}
+
+/** Every agent mode receives the same explicit npm window, after checking the sandbox's npm. */
+async function agentInput(
+  context: ToolRunContext,
+  deps: SecureItDeps,
+  env: GateEnvironment,
+  plan: ChangePlan,
+  mode: "apply" | "adapt" | "resolve",
+  extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {},
+) {
+  const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch);
+  for (const detail of window.notes) context.logger.warn("secure-it: npm release-age exclusion", { detail });
+  if (plan.moves.some((move) => move.ecosystem === "npm")) {
+    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "planned young or unreadable security targets or own-package exclusions");
+  }
+  return skillInput(context, plan, window.exclude, mode, extra);
 }
 
 const effortFor = (context: ToolRunContext, plan: ChangePlan) => (plan.moves.some((move) => move.major) ? context.config.agent.majorEffort : context.config.agent.effort);
@@ -137,33 +162,22 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(base, env, { head: baseGradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const { work, blocked } = selectWork(found.fixes);
-  const waiting = blocked.flatMap((group) => group.reasons);
-  if (work.length === 0) return { ...report, outcome: "nothing-to-fix", waiting };
-
-  const github = new ActionsGitHub(env.fetch, env.githubToken);
-  const plan = await planFor(work, { lockfiles: await lockfilesOf(base), gradle: baseGradle, tagCommit: (action, tag) => github.tagCommit(action, tag) });
+  const initial = selectWork(found.fixes);
+  if (initial.work.length === 0) return { ...report, outcome: "nothing-to-fix", waiting: initial.blocked.flatMap((group) => group.reasons), skipped: [] };
   const publication = publicationOf(context, deps);
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
-  const topicBranch = branchFor(RULES, context.now, plan.topic);
-  const topic = topicOf(RULES, topicBranch);
-  const sameTopic = own.filter((pr) => topicOf(RULES, pr.headRef) === topic);
-  const digest = planDigest(plan);
-  // Only a PR whose head is still the tool's counts: someone else may have pushed the fix away, plan block and all.
-  const owned: GitHubPullRequest[] = [];
-  for (const pr of sameTopic) {
-    const recorded = stateOf(pr.body);
-    const journaled = await publication.journal.last(context.repo.repo, pr.number);
-    if (recorded?.head === pr.headSha || journaled?.head === pr.headSha) owned.push(pr);
+  const selected = await nextPlan(context, found.fixes, base, baseGradle, env, publication, own);
+  const { plan, reusable, waiting, skipped } = selected;
+  const details = { ...report, waiting, skipped };
+  if (plan === undefined) {
+    return skipped.length === 0
+      ? { ...details, outcome: "nothing-to-fix" }
+      : { ...details, outcome: "already-open", pullRequest: skipped[0]?.pullRequest };
   }
-  const already = owned.find((pr) => {
-    const existing = planOf(pr.body);
-    return existing !== undefined && planDigest(existing) === digest;
-  });
-  if (already !== undefined) return { ...report, outcome: "already-open", pullRequest: already.url, waiting };
-
+  const digest = planDigest(plan);
+  const topicBranch = branchFor(RULES, context.now, plan.topic);
   // An open PR for the package is reconciled to the new plan; one someone else pushed to is left alone.
-  const reusable: GitHubPullRequest | undefined = owned[0];
+  const input = await agentInput(context, deps, env, plan, "apply");
   let prepared: PreparedBranch;
   if (reusable !== undefined) {
     prepared = await reconcileBranch(context, deps, reusable, baseSha);
@@ -177,20 +191,82 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
     prepared = fresh.prepared;
   }
 
-  const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input: skillInput(context, plan, "apply"), effort: effortFor(context, plan) });
-  if (answer.outcome !== "applied" || answer.publication === undefined) return { ...report, outcome: "cannot-apply", summary: answer.summary, plan: digest };
+  const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
+  if (answer.outcome !== "applied" || answer.publication === undefined) return { ...details, outcome: "cannot-apply", summary: answer.summary, plan: digest };
 
   const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
-  if (problems.length > 0) return { ...report, outcome: "verification-failed", problems };
+  if (problems.length > 0) return { ...details, outcome: "verification-failed", problems };
 
   const content = { title: answer.publication.title, body: `${answer.publication.body}\n\n${planSection(plan)}`, commitMessage: answer.publication.commitMessage };
   if (reusable !== undefined) {
     const { pr } = await publishUpdate(publication, prepared, reusable.number, content, 0);
-    return { ...report, outcome: "updated", pullRequest: pr.url, waiting };
+    return { ...details, outcome: "updated", pullRequest: pr.url };
   }
   const created = await publishNew(publication, prepared, content);
-  if (created === undefined) return { ...report, outcome: "nothing-changed", summary: answer.summary };
-  return { ...report, outcome: "published", pullRequest: created.url, waiting };
+  if (created === undefined) return { ...details, outcome: "nothing-changed", summary: answer.summary };
+  return { ...details, outcome: "published", pullRequest: created.url };
+}
+
+interface SelectedPlan {
+  readonly plan: ChangePlan | undefined;
+  readonly reusable: GitHubPullRequest | undefined;
+  readonly waiting: ReadonlyArray<string>;
+  readonly skipped: ReadonlyArray<{ readonly packages: ReadonlyArray<string>; readonly pullRequest: string }>;
+}
+
+/** Walk complete groups in rank order; an identical owned PR belongs to review, not this run. */
+async function nextPlan(
+  context: ToolRunContext,
+  fixes: ReadonlyArray<SecurityFix>,
+  base: Tree,
+  baseGradle: GradleInputs["head"],
+  env: GateEnvironment,
+  publication: PublicationContext,
+  own: ReadonlyArray<GitHubPullRequest>,
+): Promise<SelectedPlan> {
+  const actions = new ActionsGitHub(env.fetch, env.githubToken);
+  const lockfiles = await lockfilesOf(base);
+  const waiting: string[] = [];
+  const skipped: Array<{ packages: ReadonlyArray<string>; pullRequest: string }> = [];
+  let remaining = fixes;
+  while (remaining.length > 0) {
+    const { work, blocked } = selectWork(remaining);
+    waiting.push(...blocked.flatMap((group) => group.reasons));
+    if (work.length === 0) break;
+    const plan = await planFor(work, { lockfiles, gradle: baseGradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) });
+    const owned = await recognisedPlans(context, publication, own, plan);
+    const already = owned.find((pr) => {
+      const existing = planOf(pr.body);
+      return existing !== undefined && planDigest(existing) === planDigest(plan);
+    });
+    if (already === undefined) return { plan, reusable: owned[0], waiting, skipped };
+    skipped.push({ packages: plan.packages, pullRequest: already.url });
+    // Every malicious package must move together; no other group can pass while malware remains in base.
+    if (plan.malware) break;
+    const handled = new Set([...plan.packages, ...blocked.flatMap((group) => group.packages)]);
+    remaining = remaining.filter((fix) => !handled.has(packageKey(fix)));
+  }
+  return { plan: undefined, reusable: undefined, waiting, skipped };
+}
+
+async function recognisedPlans(
+  context: ToolRunContext,
+  publication: PublicationContext,
+  own: ReadonlyArray<GitHubPullRequest>,
+  plan: ChangePlan,
+): Promise<GitHubPullRequest[]> {
+  const topic = topicOf(RULES, branchFor(RULES, context.now, plan.topic));
+  const owned: GitHubPullRequest[] = [];
+  for (const pr of own) {
+    // A numeric suffix is the tool's PR opened next to one a human took over.
+    const prTopic = topicOf(RULES, pr.headRef);
+    const suffix = prTopic?.startsWith(`${topic}-`) ? prTopic.slice(`${topic}-`.length) : undefined;
+    if (prTopic !== topic && (suffix === undefined || !/^\d+$/.test(suffix) || planOf(pr.body)?.topic !== plan.topic)) continue;
+    const recorded = stateOf(pr.body);
+    const journaled = await publication.journal.last(context.repo.repo, pr.number);
+    if (recorded?.head === pr.headSha || journaled?.head === pr.headSha) owned.push(pr);
+  }
+  return owned;
 }
 
 /**
@@ -273,7 +349,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       if (changed || merge.kind === "conflicted") {
         const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
           entrypoint: "secure-it",
-          input: skillInput(context, plan, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
+          input: await agentInput(context, deps, env, plan, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
           effort: effortFor(context, plan),
         });
         if (answer.outcome !== "applied") throw new Error(`the agent couldn't re-apply the plan on the new base: ${answer.summary}`);
@@ -291,10 +367,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
     async adapt(pr, prepared, _context, attempt) {
       const plan = planFrom(pr);
       const checks = await context.github.headChecks({ repo: context.repo.repo, sha: pr.headSha });
-      const failingChecks = checks.checkRuns.filter((check) => check.status === "completed" && check.conclusion !== null && !["success", "neutral", "skipped"].includes(check.conclusion)).map((check) => check.name);
+      const failingChecks = failingCheckNames(checks);
       const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
         entrypoint: "secure-it",
-        input: skillInput(context, plan, "adapt", { failingChecks }),
+        input: await agentInput(context, deps, env, plan, "adapt", { failingChecks }),
         effort: effortFor(context, plan),
       });
       if (answer.outcome !== "applied" || answer.publication === undefined) return false;
