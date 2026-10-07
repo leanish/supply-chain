@@ -12,7 +12,7 @@ Work in progress: the pieces land through pull requests. Licensed under Apache-2
 - [Adopting the gate](packages/ci/README.md#adopting-the-gate), and everything it checks: [`packages/ci/README.md`](packages/ci/README.md)
 - [Security model](docs/security-model.md): what runs where, and which token it can reach
 - [Coverage gaps](docs/coverage-gaps.md)
-- [`packages/secure-it`](packages/secure-it): fixes what the gate's full scan fails on, one package per run, and opens a draft PR for it
+- [`packages/secure-it`](packages/secure-it): batches non-major fixes from the gate's full scan, each major apart, and opens verified draft PRs
 - [`packages/bump-it`](packages/bump-it): one routine PR for minor/patch updates and npm transitives, each major separately, verified before publication
 - [`packages/remediation`](packages/remediation): what secure-it and bump-it share: config, their PRs (publication with race checks, review ticks), the command around a run and `run.sh`
 - [`packages/agent-basics`](packages/agent-basics): running a coding agent for secure-it and bump-it, copied for now from leanish-development's runtime ([provenance](packages/agent-basics/PROVENANCE.md))

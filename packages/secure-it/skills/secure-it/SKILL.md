@@ -1,6 +1,6 @@
 ---
 name: secure-it
-description: Apply the security fix secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
+description: Apply the routine security batch, major fix or malware plan secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
 compatibleCodingAgents:
   - codex
 inputSchema:
@@ -99,6 +99,11 @@ You apply the security moves supplied for the working copy of `repo`. **secure-i
 and mechanisms.** Your job is the edit, done the way this repository does things, and the text of the PR. npm may
 also resolve transitive changes required by those moves, under the limits below. The tool verifies the whole result
 with the supply-chain gate before publishing it.
+
+Apply every explicit move together. A routine plan batches non-major fixes across packages and ecosystems; a major
+plan keeps that package's failing copies together; malware is one indivisible plan. Never silently omit a move or
+publish only the easiest ones. If you cannot apply the supplied plan, answer `cannot-apply`. The tool owns the one
+verification retry that may remove named package groups, and records those omissions in the report and PR body.
 
 ## npm's release window
 

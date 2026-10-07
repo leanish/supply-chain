@@ -32,11 +32,28 @@ export function planSection(plan: ChangePlan): string {
     "| Ecosystem | Package | Version | How | Fixes | Where |",
     "|---|---|---|---|---|---|",
     ...rows,
+    ...omittedSection(plan),
     "",
     "The versions are the ones the supply-chain gate's rule picks (`supply-chain candidates --rule security`); the gate verified the change before it was published.",
     "",
     planBlock(plan),
   ].join("\n");
+}
+
+/** Omissions are visible to reviewers as well as the command report and persisted plan. */
+function omittedSection(plan: ChangePlan): string[] {
+  if (plan.leftOut === undefined || plan.leftOut.length === 0) return [];
+  return [
+    "",
+    "#### Left out after verification failed",
+    "",
+    ...plan.leftOut.flatMap((entry) => [
+      ...entry.moves.map((move) => `- ${move.ecosystem} \`${move.name}\` ${move.from} → ${move.to}: omitted from this batch's explicit moves.`),
+      ...entry.problems.map((problem) => `  - ${problem.replace(/\s+/g, " ")}`),
+    ]),
+    "",
+    "The remaining batch was re-applied from the base and verified. npm may still induce transitive changes; omitted explicit moves are not claimed as completed.",
+  ];
 }
 
 /** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none). */
@@ -47,7 +64,15 @@ export function withPlanSection(body: string, plan: ChangePlan): string {
 /** The plan a PR's body carries, if it has one that parses. */
 export function planOf(body: string): ChangePlan | undefined {
   const plan = planPayload(body) as ChangePlan | undefined;
-  return plan !== undefined && typeof plan === "object" && plan !== null && Array.isArray(plan.moves) && plan.moves.every(isMove) ? plan : undefined;
+  return plan !== undefined && typeof plan === "object" && plan !== null && Array.isArray(plan.moves) && plan.moves.every(isMove) && validMetadata(plan) ? plan : undefined;
+}
+
+function validMetadata(plan: ChangePlan): boolean {
+  if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
+  if (plan.leftOut === undefined) return true;
+  return Array.isArray(plan.leftOut) && plan.leftOut.every((entry) =>
+    entry !== null && typeof entry === "object" && Array.isArray(entry.moves) && entry.moves.every(isMove) &&
+    Array.isArray(entry.problems) && entry.problems.every((problem: unknown) => typeof problem === "string"));
 }
 
 function isMove(move: unknown): move is PlannedMove {

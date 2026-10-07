@@ -1,9 +1,4 @@
-/**
- * secure-it: fixes what the supply-chain gate's full scan fails on, one
- * package per run (every malicious package together), with the version the
- * gate's rule picks, and opens a PR for it. The code decides and verifies;
- * the agent edits (design items 12, 19–24).
- */
+/** Routine security fixes together, each major apart, or all malware first; every publication verifies. */
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +28,8 @@ import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../
 
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
-import { type ChangePlan, packageKey, planFor, selectWork } from "./plan.ts";
+import { type ChangePlan, packageKey, planFor, selectWork, type SecurityUnit } from "./plan.ts";
+import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { verifyPlan, type VerifyInputs } from "./verify.ts";
 
@@ -151,102 +147,121 @@ async function agentInput(
 
 const effortFor = (context: ToolRunContext, plan: ChangePlan) => (plan.moves.some((move) => move.major) ? context.config.agent.majorEffort : context.config.agent.effort);
 
+interface Execution {
+  readonly context: ToolRunContext;
+  readonly deps: SecureItDeps;
+  readonly env: GateEnvironment;
+  readonly inventories: GradleInventories;
+  readonly publication: PublicationContext;
+}
+
+interface PlanBase {
+  readonly tree: Tree;
+  readonly gradle: GradleInputs["head"];
+}
+
+type Content = NonNullable<SkillAnswer["publication"]>;
+
 async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonly<Record<string, unknown>>> {
   const staleScan = await deps.staleScan(context);
   if (staleScan.stale) context.logger.warn("secure-it: the daily scan looks stale", { detail: staleScan.detail });
   const env = await deps.gate(context);
   const inventories = deps.gradle(context);
-  const baseSha = context.workingCopy.headSha;
-  const base = await deps.trees.commit(context.workingCopy, baseSha);
-  const baseGradle = await inventories.ofCommit(base);
-  const found = await deps.candidates(base, env, { head: baseGradle });
+  const tree = await deps.trees.commit(context.workingCopy, context.workingCopy.headSha);
+  const base = { tree, gradle: await inventories.ofCommit(tree) };
+  const found = await deps.candidates(tree, env, { head: base.gradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const initial = selectWork(found.fixes);
-  if (initial.work.length === 0) return { ...report, outcome: "nothing-to-fix", waiting: initial.blocked.flatMap((group) => group.reasons), skipped: [] };
-  const publication = publicationOf(context, deps);
+  const selection = selectWork(found.fixes);
+  const waiting = selection.blocked.flatMap((group) => group.reasons);
+  if (selection.units.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
+  const execution = { context, deps, env, inventories, publication: publicationOf(context, deps) };
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
-  const selected = await nextPlan(context, found.fixes, base, baseGradle, env, publication, own);
-  const { plan, reusable, waiting, skipped } = selected;
-  const details = { ...report, waiting, skipped };
-  if (plan === undefined) {
-    return skipped.length === 0
-      ? { ...details, outcome: "nothing-to-fix" }
-      : { ...details, outcome: "already-open", pullRequest: skipped[0]?.pullRequest };
+  const results: Readonly<Record<string, unknown>>[] = [];
+  for (const unit of selection.units) {
+    try {
+      results.push(await runUnit(execution, unit, base, own));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      context.logger.warn("secure-it: a unit failed", { topic: unit.topic, error: detail });
+      results.push({ topic: unit.topic, outcome: "failed", detail });
+    }
   }
-  const digest = planDigest(plan);
-  const topicBranch = branchFor(RULES, context.now, plan.topic);
-  // An open PR for the package is reconciled to the new plan; one someone else pushed to is left alone.
-  const input = await agentInput(context, deps, env, plan, "apply");
-  let prepared: PreparedBranch;
-  if (reusable !== undefined) {
-    prepared = await reconcileBranch(context, deps, reusable, baseSha);
-  } else {
-    const taken = new Set(own.map((pr) => pr.headRef));
-    let branch = topicBranch;
-    for (let n = 2; taken.has(branch); n++) branch = branchFor(RULES, context.now, `${plan.topic}-${n}`);
-    await clearLeftoverBranch(context.github, RULES, context.repo.repo, branch);
-    const fresh = await context.workspace.prepareBranch(context.workingCopy, { branch, start: "default" });
-    if (fresh.kind !== "prepared") throw new Error(`${branch} couldn't be prepared`);
-    prepared = fresh.prepared;
-  }
+  return { ...report, ...(results.length === 1 ? results[0]! : { outcome: "completed" }), waiting, blocked: selection.blocked, units: results };
+}
 
+async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
+  const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
+  return planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+}
+
+async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase, own: ReadonlyArray<GitHubPullRequest>): Promise<Readonly<Record<string, unknown>>> {
+  const { context, deps, publication } = execution;
+  const plan = await planUnit(execution, unit, base);
+  const owned = await recognisedPlans(context, publication, own, plan);
+  const already = owned.find((pr) => {
+    const previous = planOf(pr.body);
+    return previous !== undefined && planDigest(previous) === planDigest(plan);
+  });
+  const details = { topic: plan.topic, packages: plan.packages };
+  if (already !== undefined) return { ...details, outcome: "already-open", pullRequest: already.url };
+  // Version support is checked before any old PR's edits are reverted.
+  const input = await agentInput(context, deps, execution.env, plan, "apply");
+  const reusable = owned[0];
+  const prepared = await preparePlan(context, deps, plan, reusable, own, base.tree.id);
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
-  if (answer.outcome !== "applied" || answer.publication === undefined) return { ...details, outcome: "cannot-apply", summary: answer.summary, plan: digest };
-
-  const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
-  if (problems.length > 0) return { ...details, outcome: "verification-failed", problems };
-
-  const content = { title: answer.publication.title, body: `${answer.publication.body}\n\n${planSection(plan)}`, commitMessage: answer.publication.commitMessage };
+  if (answer.outcome !== "applied" || answer.publication === undefined) return { ...details, outcome: "cannot-apply", summary: answer.summary };
+  const verified = await verifyWithRetry(execution, base, plan, answer.publication);
+  const checked = { ...details, packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
+  if (verified.problems.length > 0) return { ...checked, outcome: "verification-failed", problems: verified.problems };
+  const content = { ...verified.content, body: withPlanSection(verified.content.body, verified.plan) };
   if (reusable !== undefined) {
     const { pr } = await publishUpdate(publication, prepared, reusable.number, content, 0);
-    return { ...details, outcome: "updated", pullRequest: pr.url };
+    return { ...checked, outcome: "updated", pullRequest: pr.url };
   }
   const created = await publishNew(publication, prepared, content);
-  if (created === undefined) return { ...details, outcome: "nothing-changed", summary: answer.summary };
-  return { ...details, outcome: "published", pullRequest: created.url };
+  return created === undefined
+    ? { ...checked, outcome: "nothing-changed", summary: answer.summary }
+    : { ...checked, outcome: "published", pullRequest: created.url };
 }
 
-interface SelectedPlan {
-  readonly plan: ChangePlan | undefined;
-  readonly reusable: GitHubPullRequest | undefined;
-  readonly waiting: ReadonlyArray<string>;
-  readonly skipped: ReadonlyArray<{ readonly packages: ReadonlyArray<string>; readonly pullRequest: string }>;
+async function preparePlan(context: ToolRunContext, deps: SecureItDeps, plan: ChangePlan, reusable: GitHubPullRequest | undefined, own: ReadonlyArray<GitHubPullRequest>, baseSha: string): Promise<PreparedBranch> {
+  if (reusable !== undefined) return reconcileBranch(context, deps, reusable, baseSha);
+  const taken = new Set(own.map((pr) => pr.headRef));
+  let branch = branchFor(RULES, context.now, plan.topic);
+  for (let n = 2; taken.has(branch); n++) branch = branchFor(RULES, context.now, `${plan.topic}-${n}`);
+  await clearLeftoverBranch(context.github, RULES, context.repo.repo, branch);
+  const fresh = await context.workspace.prepareBranch(context.workingCopy, { branch, start: "default" });
+  if (fresh.kind !== "prepared") throw new Error(`${branch} couldn't be prepared`);
+  if (fresh.prepared.baseSha !== baseSha) throw new Error("the default branch moved while secure-it ran; the next run starts over");
+  return fresh.prepared;
 }
 
-/** Walk complete groups in rank order; an identical owned PR belongs to review, not this run. */
-async function nextPlan(
-  context: ToolRunContext,
-  fixes: ReadonlyArray<SecurityFix>,
-  base: Tree,
-  baseGradle: GradleInputs["head"],
-  env: GateEnvironment,
-  publication: PublicationContext,
-  own: ReadonlyArray<GitHubPullRequest>,
-): Promise<SelectedPlan> {
-  const actions = new ActionsGitHub(env.fetch, env.githubToken);
-  const lockfiles = await lockfilesOf(base);
-  const waiting: string[] = [];
-  const skipped: Array<{ packages: ReadonlyArray<string>; pullRequest: string }> = [];
-  let remaining = fixes;
-  while (remaining.length > 0) {
-    const { work, blocked } = selectWork(remaining);
-    waiting.push(...blocked.flatMap((group) => group.reasons));
-    if (work.length === 0) break;
-    const plan = await planFor(work, { lockfiles, gradle: baseGradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) });
-    const owned = await recognisedPlans(context, publication, own, plan);
-    const already = owned.find((pr) => {
-      const existing = planOf(pr.body);
-      return existing !== undefined && planDigest(existing) === planDigest(plan);
-    });
-    if (already === undefined) return { plan, reusable: owned[0], waiting, skipped };
-    skipped.push({ packages: plan.packages, pullRequest: already.url });
-    // Every malicious package must move together; no other group can pass while malware remains in base.
-    if (plan.malware) break;
-    const handled = new Set([...plan.packages, ...blocked.flatMap((group) => group.packages)]);
-    remaining = remaining.filter((fix) => !handled.has(packageKey(fix)));
+interface VerifiedBatch {
+  readonly plan: ChangePlan;
+  readonly content: Content;
+  readonly problems: ReadonlyArray<string>;
+  readonly named: ReadonlyArray<ProblemMoves>;
+  readonly leftOut: NonNullable<ChangePlan["leftOut"]>;
+}
+
+/** Restart once from the same base without named package groups; never shrink malware or guess an unnamed cause. */
+async function verifyWithRetry(execution: Execution, base: PlanBase, plan: ChangePlan, content: Content): Promise<VerifiedBatch> {
+  const { context, deps, env, inventories } = execution;
+  const problems = await verifyEdit(context, deps, plan, env, inventories, base.tree, base.gradle);
+  if (problems.length === 0) return { plan, content, problems, named: [], leftOut: plan.leftOut ?? [] };
+  const retry = retryWithoutNamed(plan, problems);
+  if (retry.plan === undefined) return { plan, content, problems, named: retry.named, leftOut: retry.leftOut };
+  context.logger.warn("secure-it: retrying the routine without named package groups", { leftOut: retry.leftOut });
+  await deps.revert(context.workingCopy, base.tree.id);
+  const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
+    entrypoint: "secure-it", input: await agentInput(context, deps, env, retry.plan, "apply"), effort: effortFor(context, retry.plan),
+  });
+  if (answer.outcome !== "applied" || answer.publication === undefined) {
+    return { plan: retry.plan, content, problems: [`retry could not apply: ${answer.summary}`], named: retry.named, leftOut: retry.plan.leftOut ?? [] };
   }
-  return { plan: undefined, reusable: undefined, waiting, skipped };
+  const remaining = await verifyEdit(context, deps, retry.plan, env, inventories, base.tree, base.gradle);
+  return { plan: retry.plan, content: answer.publication, problems: remaining, named: [...retry.named, ...namedProblems(retry.plan, remaining)], leftOut: retry.plan.leftOut ?? [] };
 }
 
 async function recognisedPlans(
@@ -259,6 +274,8 @@ async function recognisedPlans(
   const owned: GitHubPullRequest[] = [];
   for (const pr of own) {
     // A numeric suffix is the tool's PR opened next to one a human took over.
+    const previous = planOf(pr.body);
+    if (previous?.kind !== plan.kind) continue;
     const prTopic = topicOf(RULES, pr.headRef);
     const suffix = prTopic?.startsWith(`${topic}-`) ? prTopic.slice(`${topic}-`.length) : undefined;
     if (prTopic !== topic && (suffix === undefined || !/^\d+$/.test(suffix) || planOf(pr.body)?.topic !== plan.topic)) continue;
@@ -303,15 +320,12 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   const env = await deps.gate(context);
   const inventories = deps.gradle(context);
   const publication = publicationOf(context, deps);
-  const actions = new ActionsGitHub(env.fetch, env.githubToken);
+  const execution = { context, deps, env, inventories, publication };
+  const notes: Array<Readonly<Record<string, unknown>>> = [];
   const planFrom = (pr: GitHubPullRequest): ChangePlan => {
     const plan = planOf(pr.body);
     if (plan === undefined) throw new Error(`${pr.url} has no plan secure-it can read`);
     return plan;
-  };
-  const verifyAgainst = async (plan: ChangePlan, baseSha: string) => {
-    const base = await deps.trees.commit(context.workingCopy, baseSha);
-    return verifyEdit(context, deps, plan, env, inventories, base, await inventories.ofCommit(base));
   };
   const steps: ReviewSteps = {
     async rebase(pr, merge: BaseMerge) {
@@ -322,15 +336,16 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const baseGradle = await inventories.ofCommit(base);
       const found = await deps.candidates(base, env, { head: baseGradle });
       if (found.incomplete.length > 0) throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
-      const ours = new Set(previous.packages);
-      const still = found.fixes.filter((fix) => ours.has(packageKey(fix)));
-      if (still.length === 0) {
-        await closeAndDelete(publication, pr.number, pr.headSha, "The default branch has these fixes now, so this PR has nothing left to change.");
+      const unit = reviewUnit(previous, found.fixes);
+      const blocked = selectWork(found.fixes).blocked;
+      if (blocked.length > 0) notes.push({ number: pr.number, blocked });
+      if (unit === undefined) {
+        await closeAndDelete(publication, pr.number, pr.headSha, "No actionable fixes remain for this security unit on the default branch. Blocked fixes are reported by secure-it.");
         return "retired";
       }
-      const { work, blocked } = selectWork(still);
-      if (work.length === 0) throw new Error(`on the new base the fix is blocked: ${blocked.flatMap((group) => group.reasons).join("; ")}`);
-      const plan = await planFor(work, { lockfiles: await lockfilesOf(base), gradle: baseGradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) });
+      const recomputed = await planUnit(execution, unit, { tree: base, gradle: baseGradle });
+      // Plans predating batches retain their package scope and branch topic until retired.
+      const plan = previous.kind === undefined ? { ...recomputed, kind: undefined, topic: previous.topic } : recomputed;
       const changed = planDigest(plan) !== planDigest(previous);
       const code: string[] = [];
       if (changed) {
@@ -359,9 +374,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         }
       }
       // Fixes remain (the recomputation said so): an edit that left the base as it was fails verification, it isn't retired.
-      const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
-      if (problems.length > 0) throw new Error(`after merging the default branch: ${problems.join("; ")}`);
-      await publishUpdate(publication, merge.prepared, pr.number, content);
+      const verified = await verifyWithRetry(execution, { tree: base, gradle: baseGradle }, plan, content);
+      if (verified.leftOut.length > 0) notes.push({ number: pr.number, leftOut: verified.leftOut, named: verified.named });
+      if (verified.problems.length > 0) throw new Error(`after merging the default branch: ${verified.problems.join("; ")}`);
+      await publishUpdate(publication, merge.prepared, pr.number, { ...verified.content, body: withPlanSection(verified.content.body, verified.plan) });
       return "rebased";
     },
     async adapt(pr, prepared, _context, attempt) {
@@ -374,12 +390,28 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         effort: effortFor(context, plan),
       });
       if (answer.outcome !== "applied" || answer.publication === undefined) return false;
-      const problems = await verifyAgainst(plan, prepared.baseSha);
-      if (problems.length > 0) throw new Error(`the adaptation doesn't verify: ${problems.join("; ")}`);
-      const { pushed } = await publishUpdate(publication, prepared, pr.number, { title: pr.title, body: pr.body, commitMessage: answer.publication.commitMessage }, attempt);
+      const base = await deps.trees.commit(context.workingCopy, prepared.baseSha);
+      const verified = await verifyWithRetry(execution, { tree: base, gradle: await inventories.ofCommit(base) }, plan, { title: pr.title, body: pr.body, commitMessage: answer.publication.commitMessage });
+      if (verified.leftOut.length > 0) notes.push({ number: pr.number, leftOut: verified.leftOut, named: verified.named });
+      if (verified.problems.length > 0) throw new Error(`the adaptation doesn't verify: ${verified.problems.join("; ")}`);
+      const { pushed } = await publishUpdate(publication, prepared, pr.number, { ...verified.content, body: withPlanSection(verified.content.body, verified.plan) }, attempt);
       return pushed;
     },
   };
   const reviewed = await reviewOpenPullRequests({ ...publication }, steps);
-  return { outcome: "reviewed", reviewed };
+  return { outcome: "reviewed", reviewed, notes };
+}
+
+/** New routine PRs recompute all non-majors; majors and legacy PRs retain their package scope. */
+function reviewUnit(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>): SecurityUnit | undefined {
+  if (previous.kind !== "malware" && !previous.malware && fixes.some((fix) => fix.malicious)) {
+    throw new Error("malware on the new base must be fixed together before this security unit can verify");
+  }
+  const ours = new Set(previous.packages);
+  const scoped = previous.kind === "routine" || previous.malware ? fixes : fixes.filter((fix) => ours.has(packageKey(fix)));
+  const selected = selectWork(scoped);
+  if (previous.malware || previous.kind === "malware") return selected.units.find((unit) => unit.kind === "malware");
+  if (previous.kind === "routine") return selected.units.find((unit) => unit.kind === "routine");
+  if (previous.kind === "major") return selected.units.find((unit) => unit.kind === "major");
+  return selected.units[0];
 }

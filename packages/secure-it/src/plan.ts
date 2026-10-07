@@ -1,11 +1,8 @@
 /**
- * What one secure-it run changes, decided without a model (design items
- * 21–22). From the gate's `candidates --rule security`:
+ * Security plans decided without a model: one batch of non-major packages,
+ * each package needing a major apart, or all malware together. Every package's
+ * failing copies stay together; a blocked copy leaves that package out.
  *
- *   - **what:** every malicious package together (a PR can't pass while any
- *     malware remains), else the most severe package (then by name) whose
- *     every failing version can move; a group with a version that can't (no
- *     fix, an identity break) is reported as blocked, never planned in part;
  *   - **how**, per version and location: npm — a direct dependency changes its
  *     range and lock (`npm-direct`); a transitive one whose parents' ranges all
  *     allow `to` is locked at exactly `to` (`npm-lock`); otherwise an override
@@ -45,14 +42,25 @@ export interface PlannedMove {
   readonly declaredAs: string | undefined;
 }
 
+export type PlanKind = "routine" | "major" | "malware";
+
+export interface OmittedMoves {
+  readonly moves: ReadonlyArray<PlannedMove>;
+  readonly problems: ReadonlyArray<string>;
+}
+
 export interface ChangePlan {
-  /** For the branch name: `malware`, or the package's name. */
+  /** Absent in plans published before batching; those PRs retain per-package reviews. */
+  readonly kind?: PlanKind;
+  /** For the branch name: `security`, `<package>-major`, or `malware`. */
   readonly topic: string;
   readonly malware: boolean;
   /** `ecosystem|name` of every package the plan moves. */
   readonly packages: ReadonlyArray<string>;
   readonly moves: ReadonlyArray<PlannedMove>;
   readonly severity: string | undefined;
+  /** Explicit moves left out after a failed batch, visible in the report and PR. */
+  readonly leftOut?: ReadonlyArray<OmittedMoves>;
 }
 
 /** What the plan reads about the tree: its npm lockfiles (path → parsed JSON) and its Gradle inventory. */
@@ -65,46 +73,57 @@ export interface PlanInputs {
 
 export const packageKey = (fix: Pick<SecurityFix, "ecosystem" | "name">) => `${fix.ecosystem}|${fix.name}`;
 
-export interface Selection {
-  /** The fixes this run takes on, a complete group; empty when none can go. */
+export interface SecurityUnit {
+  readonly kind: PlanKind;
+  readonly topic: string;
   readonly work: ReadonlyArray<SecurityFix>;
-  /** Groups that come first but can't go, each with why: for a human, or for a later run. */
+}
+
+export interface Selection {
+  readonly units: ReadonlyArray<SecurityUnit>;
   readonly blocked: ReadonlyArray<{ readonly packages: ReadonlyArray<string>; readonly reasons: ReadonlyArray<string> }>;
 }
 
 const isActionable = (fix: SecurityFix) => fix.to !== undefined && fix.to.blockers.length === 0;
 const reasonOf = (fix: SecurityFix) => `${fix.name}@${fix.from}: ${fix.problem ?? fix.to?.blockers.join("; ") ?? "no move"}`;
 
-/**
- * What this run takes on: the malicious packages, all of them or none (one left
- * behind fails the PR anyway); else the most severe package whose every failing
- * version can move, the more severe ones that can't reported as blocked.
- */
+/** Malware first and indivisible; otherwise a routine batch and one unit per major package. */
 export function selectWork(fixes: ReadonlyArray<SecurityFix>): Selection {
   const malicious = fixes.filter((fix) => fix.malicious);
   if (malicious.length > 0) {
     const stuck = malicious.filter((fix) => !isActionable(fix));
     return stuck.length === 0
-      ? { work: malicious, blocked: [] }
-      : { work: [], blocked: [{ packages: [...new Set(malicious.map(packageKey))].sort(), reasons: stuck.map(reasonOf) }] };
+      ? { units: [{ kind: "malware", topic: "malware", work: malicious }], blocked: [] }
+      : { units: [], blocked: [{ packages: [...new Set(malicious.map(packageKey))].sort(), reasons: stuck.map(reasonOf) }] };
   }
+  const groups = rankedGroups(fixes);
+  const blocked: Array<{ packages: string[]; reasons: string[] }> = [];
+  const routine: SecurityFix[] = [];
+  const majors: SecurityUnit[] = [];
+  for (const [key, group] of groups) {
+    const stuck = group.filter((fix) => !isActionable(fix));
+    if (stuck.length > 0) {
+      blocked.push({ packages: [key], reasons: stuck.map(reasonOf) });
+      continue;
+    }
+    if (group.some((fix) => fix.to!.major)) majors.push({ kind: "major", topic: `${group[0]!.name}-major`, work: group });
+    else routine.push(...group);
+  }
+  const units: SecurityUnit[] = routine.length === 0 ? [] : [{ kind: "routine", topic: "security", work: routine }];
+  return { units: [...units, ...majors], blocked };
+}
+
+function rankedGroups(fixes: ReadonlyArray<SecurityFix>): Array<[string, SecurityFix[]]> {
   const byPackage = new Map<string, SecurityFix[]>();
   for (const fix of fixes) byPackage.set(packageKey(fix), [...(byPackage.get(packageKey(fix)) ?? []), fix]);
-  const ranked = [...byPackage.entries()].sort(([a, left], [b, right]) => {
+  return [...byPackage.entries()].sort(([a, left], [b, right]) => {
     const severity = Math.max(...right.map((fix) => severityRank(fix.severity))) - Math.max(...left.map((fix) => severityRank(fix.severity)));
     return severity !== 0 ? severity : a < b ? -1 : a > b ? 1 : 0;
   });
-  const blocked: Array<{ packages: string[]; reasons: string[] }> = [];
-  for (const [key, group] of ranked) {
-    const stuck = group.filter((fix) => !isActionable(fix));
-    if (stuck.length === 0) return { work: group, blocked };
-    blocked.push({ packages: [key], reasons: stuck.map(reasonOf) });
-  }
-  return { work: [], blocked };
 }
 
 /** The plan for `work` (from `selectWork`); fails on a fix without a move. */
-export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInputs): Promise<ChangePlan> {
+export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInputs, unit?: Pick<SecurityUnit, "kind" | "topic">): Promise<ChangePlan> {
   if (work.length === 0) throw new Error("planFor needs at least one fix");
   const moves: PlannedMove[] = [];
   for (const fix of work) {
@@ -135,7 +154,9 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
   const packages = [...new Set(work.map(packageKey))].sort();
   const malware = work.some((fix) => fix.malicious);
   const severity = work.map((fix) => fix.severity).reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
-  return { topic: malware ? "malware" : work[0]!.name, malware, packages, moves, severity };
+  const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");
+  const topic = unit?.topic ?? (kind === "malware" ? "malware" : kind === "routine" ? "security" : `${work[0]!.name}-major`);
+  return { kind, topic, malware, packages, moves, severity };
 }
 
 /** The lockfile a gate npm location (`<lockfile dir>/node_modules/…`) belongs to, and the lockfile key inside it. */

@@ -23,33 +23,43 @@ const NO_TAGS = async () => undefined;
 const names = (fixes: ReadonlyArray<SecurityFix>) => fixes.map((f) => f.name);
 
 describe("selectWork", () => {
-  it("takes every malicious package together, else the most severe package, then by name", () => {
+  it("takes malware together, otherwise batches non-majors in severity/name order", () => {
     const evil = fix({ name: "evil", from: "1.0.0", malicious: true, severity: undefined });
     const worse = fix({ name: "worse", from: "1.0.0", malicious: true });
     const critical = fix({ name: "zlib", from: "1.0.0", severity: "CRITICAL" });
     const high = fix({ name: "alpha", from: "1.0.0", severity: "HIGH" });
-    expect(names(selectWork([high, critical, evil, worse]).work)).toEqual(["evil", "worse"]);
-    expect(names(selectWork([high, critical]).work)).toEqual(["zlib"]);
-    expect(names(selectWork([fix({ name: "b", from: "1.0.0" }), fix({ name: "a", from: "1.0.0" })]).work)).toEqual(["a"]);
+    expect(names(selectWork([high, critical, evil, worse]).units[0]!.work)).toEqual(["evil", "worse"]);
+    expect(names(selectWork([high, critical]).units[0]!.work)).toEqual(["zlib", "alpha"]);
+    expect(names(selectWork([fix({ name: "b", from: "1.0.0" }), fix({ name: "a", from: "1.0.0" })]).units[0]!.work)).toEqual(["a", "b"]);
   });
 
-  it("keeps every failing version of the chosen package, and reports more severe groups that can't move whole", () => {
+  it("keeps every failing copy together, and reports blocked groups without blocking the batch", () => {
     const old = fix({ name: "guava", from: "33.5.0-jre", ecosystem: "Maven" });
     const newer = fix({ name: "guava", from: "33.7.1-jre", ecosystem: "Maven" });
     const blocked = fix({ name: "aaa", from: "1.0.0", severity: "CRITICAL", to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: ["identity break"] } });
     const partly = fix({ name: "aab", from: "1.0.0", severity: "CRITICAL" });
     const stuck = fix({ name: "aab", from: "2.0.0", severity: "CRITICAL", to: undefined, problem: "no fix" });
     const selection = selectWork([old, blocked, partly, stuck, newer]);
-    expect(selection.work.map((f) => f.from)).toEqual(["33.5.0-jre", "33.7.1-jre"]);
+    expect(selection.units[0]!.work.map((f) => f.from)).toEqual(["33.5.0-jre", "33.7.1-jre"]);
     expect(selection.blocked).toEqual([
       { packages: ["npm|aaa"], reasons: ["aaa@1.0.0: identity break"] },
       { packages: ["npm|aab"], reasons: ["aab@2.0.0: no fix"] },
     ]);
   });
 
+  it("keeps majors apart and groups all copies of a major package", () => {
+    const minor = fix({ name: "a", from: "1.0.0" });
+    const major = fix({ name: "a", from: "2.0.0", to: { version: "3.0.0", line: "3", aged: true, major: true, blockers: [] } });
+    const routine = fix({ name: "b", from: "1.0.0", ecosystem: "Maven" });
+    const selected = selectWork([minor, major, routine]);
+    expect(selected.units.map((unit) => [unit.kind, unit.topic, unit.work.map((entry) => entry.from)])).toEqual([
+      ["routine", "security", ["1.0.0"]], ["major", "a-major", ["1.0.0", "2.0.0"]],
+    ]);
+  });
+
   it("takes no malware at all when one malicious version can't move", () => {
     const selection = selectWork([fix({ name: "evil", from: "1.0.1", malicious: true }), fix({ name: "worse", from: "1.0.0", malicious: true, to: undefined, problem: "no clean version" }), fix({ name: "x", from: "1.0.0" })]);
-    expect(selection).toEqual({ work: [], blocked: [{ packages: ["npm|evil", "npm|worse"], reasons: ["worse@1.0.0: no clean version"] }] });
+    expect(selection).toEqual({ units: [], blocked: [{ packages: ["npm|evil", "npm|worse"], reasons: ["worse@1.0.0: no clean version"] }] });
   });
 });
 
@@ -80,7 +90,7 @@ describe("planFor", () => {
       ["source-map-js", "npm-lock", "1.2.2", false],
       ["brace-expansion", "npm-override", "2.0.2", true],
     ]);
-    expect(plan.topic).toBe("vite");
+    expect(plan.topic).toBe("vite-major");
   });
 
   it("reads a nested lockfile's locations against that lockfile, and resolves copies the way Node does", async () => {

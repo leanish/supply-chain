@@ -73,6 +73,8 @@ async function verify(headLock: string, options: { affected?: Record<string, str
 }
 
 interface InducedOptions {
+  readonly coupled?: boolean;
+  readonly nanoid?: string;
   readonly direct?: boolean;
   readonly published?: string;
   readonly publisher?: string;
@@ -101,15 +103,18 @@ async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
     topic: "postcss", malware: false, packages: ["npm|postcss"], severity: "HIGH",
     moves: [{ ...PLAN.moves[0]!, name: "postcss", from: "8.5.22", to: "8.5.23", mechanism: "npm-lock", locations: ["node_modules/postcss"], advisories: ["GHSA-postcss"] }],
   };
+  const coupled = options.coupled ? {
+    ...plan, packages: ["npm|postcss", "npm|nanoid"], moves: [...plan.moves, { ...PLAN.moves[0]!, name: "nanoid", from: "3.3.12", to: "3.3.18", mechanism: "npm-lock" as const, locations: ["node_modules/nanoid"], advisories: ["GHSA-nanoid"] }],
+  } : plan;
   const routes = {
     ...npmRoutes("postcss", { "8.5.22": OLD, "8.5.23": "2026-09-01T00:00:00Z" }),
     ...npmRoutes("nanoid", { "3.3.12": OLD, "3.3.16": "2026-09-01T00:00:00Z", "3.3.18": "2026-09-01T00:00:00Z", "3.3.19": options.published ?? "2026-09-02T00:00:00Z" }, { "3.3.19": options.publisher ?? "maintainer" }),
   };
   const affected = { "postcss@8.5.22": ["GHSA-postcss"], ...(options.newAdvisory ? { "nanoid@3.3.19": ["GHSA-induced"] } : {}) };
   return verifyPlan({
-    plan,
+    plan: coupled,
     base: tree("b".repeat(40), { "package-lock.json": postcssLock("8.5.22", "3.3.12", options.direct ?? false) }),
-    head: tree("worktree", { "package-lock.json": postcssLock("8.5.23", "3.3.19", options.direct ?? false) }),
+    head: tree("worktree", { "package-lock.json": postcssLock("8.5.23", options.nanoid ?? "3.3.19", options.direct ?? false) }),
     env: environment(affected, routes), gradle: {}, changedFiles: ["package-lock.json"],
   });
 }
@@ -141,6 +146,11 @@ describe("verifyPlan", () => {
   it("accepts an induced transitive chosen by npm, even above the lowest eligible or another PR's target", async () => {
     // Only postcss is planned. nanoid 3.3.19 satisfies ^3.3.16; neither 3.3.16 nor another PR's 3.3.18 is required.
     expect(await verifyInduced()).toEqual([]);
+  });
+
+  it("requires both explicit targets exactly when the batch contains a coupled parent and transitive fix", async () => {
+    expect(await verifyInduced({ coupled: true, nanoid: "3.3.18" })).toEqual([]);
+    expect(await verifyInduced({ coupled: true })).toEqual(["nanoid at node_modules/nanoid is 3.3.19, not 3.3.18"]);
   });
 
   it("rejects an induced move when that copy is also an unplanned direct dependency", async () => {
