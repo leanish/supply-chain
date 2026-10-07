@@ -1,5 +1,5 @@
 /**
- * The tool's own record of what it pushed to each PR, written right after a
+ * The tool's own record of what it pushes to each PR, written before a
  * push and before the PR's body is updated to say so. If that update fails,
  * the PR's head is the tool's commit but its body still names the previous
  * one; the review tick then finds the exact head here, repairs the body, and
@@ -12,10 +12,16 @@ import { dirname, join } from "node:path";
 export interface PushedState {
   readonly head: string;
   readonly base: string;
+  /** Absent in old journals: those cannot safely recover a changed plan. */
+  readonly publication?: {
+    readonly title: string;
+    readonly body: string;
+    readonly adaptations: number;
+  };
 }
 
 export interface PublicationJournal {
-  /** Records that the tool pushed `state.head`, computed against `state.base`, to `repo`'s PR `number`. */
+  /** Records the intended publication before pushing; an exact remote head confirms that it landed. */
   pushed(repo: string, number: number, state: PushedState): Promise<void>;
   /** What the tool last recorded pushing to that PR. */
   last(repo: string, number: number): Promise<PushedState | undefined>;
@@ -32,7 +38,7 @@ export class FileJournal implements PublicationJournal {
   async pushed(repo: string, number: number, state: PushedState): Promise<void> {
     const file = this.#file(repo);
     const entries = await this.#read(file);
-    entries[String(number)] = { head: state.head, base: state.base };
+    entries[String(number)] = state;
     await mkdir(dirname(file), { recursive: true });
     // Written whole and renamed into place: a crash leaves the old record, never half of one.
     await writeFile(`${file}.tmp`, `${JSON.stringify(entries, null, 2)}\n`);

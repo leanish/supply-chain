@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/github-client.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs, skipped jobs and continue-on-error failures.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures.
 import { describe, expect, it } from "vitest";
 
 import { createGitHubClient, GitHubApiError } from "../src/github/github-client.ts";
@@ -169,6 +169,14 @@ describe("createGitHubClient", () => {
   it("counts a completed run with no jobs as itself", async () => {
     const { checks } = await actionsChecks([wfRun(5, "CI", "completed", "startup_failure")], [[]]);
     expect(checks.checkRuns).toEqual([{ name: "CI", status: "completed", conclusion: "startup_failure" }]);
+  });
+
+  it("drops a failed jobless run when a newer run in the same workflow/event has jobs", async () => {
+    const { checks } = await actionsChecks(
+      [wfRun(5, "CI", "completed", "startup_failure"), wfRun(6, "CI", "completed", "success")],
+      [[], [job(60, "build", "completed", "success")]],
+    );
+    expect(checks.checkRuns).toEqual([{ name: "build", status: "completed", conclusion: "success" }]);
   });
 
   it("keeps a run that isn't completed as pending even when its returned jobs are green", async () => {

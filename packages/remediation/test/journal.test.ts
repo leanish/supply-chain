@@ -35,4 +35,10 @@ describe("FileJournal", () => {
     await writeFile(join(dir, "journal", "leanish__broken.json"), "[]");
     await expect(new FileJournal(dir).last("leanish/broken", 1)).rejects.toThrow("isn't a journal");
   });
+
+  it("persists the complete publication for recovery after a body update fails", async () => {
+    const state = { head: "c".repeat(40), base: "e".repeat(40), publication: { title: "new plan", body: "plan and state markers", adaptations: 1 } };
+    await new FileJournal(dir).pushed("leanish/content", 7, state);
+    expect(await new FileJournal(dir).last("leanish/content", 7)).toEqual(state);
+  });
 });

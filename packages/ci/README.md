@@ -5,7 +5,7 @@ The CI gate. It reads what a repository installs (npm lockfiles, what Gradle bui
 - on a **pull request** (`compare`), fails only on what the PR makes worse: a finding head has and base doesn't, malware anywhere in head, or an added or changed version that fails the release-age, source or identity checks;
 - on the **default branch** (`scan`), fails on every finding without a valid exception, so a dependency flagged after it merged turns `main` red.
 
-It runs with Node 24 (type stripping), with one dependency (`yaml`, which keeps the comments where actions name their versions), and reads files from git objects or the working tree. The only thing that runs code from the checked repository is `gradle-inventory`, which runs its Gradle build to learn what it resolves; in CI that happens in a job of its own, and the comparison only reads the JSON it wrote.
+It runs with Node 24 (type stripping), with `yaml` (which keeps the comments where actions name their versions) and `semver` (npm peer compatibility), and reads files from git objects or the working tree. The only thing that runs code from the checked repository is `gradle-inventory`, which runs its Gradle build to learn what it resolves; in CI that happens in a job of its own, and the comparison only reads the JSON it wrote.
 
 ```bash
 node packages/ci/src/cli.ts compare --base HEAD^1 --head HEAD --report report.json

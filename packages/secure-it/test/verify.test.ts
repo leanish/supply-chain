@@ -120,6 +120,15 @@ async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
 }
 
 describe("verifyPlan", () => {
+  it("checks remaining targets against compare's one head snapshot", async () => {
+    const env = environment({ "lib@1.0.0": ["GHSA-a"], "lib@1.0.1": ["GHSA-a"] });
+    const run = env.run;
+    let snapshots = 0;
+    const problems = await verifyPlan({ plan: PLAN, base: BASE, head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
+      env: { ...env, run: async (command, args, options) => { if (args.includes("--lockfile")) snapshots++; return run(command, args, options); } }, gradle: {}, changedFiles: ["package-lock.json"] });
+    expect(problems).toContain("lib@1.0.1 still has GHSA-a, which the plan was to fix");
+    expect(snapshots).toBe(1);
+  });
   it("passes an edit that moved exactly the planned version and fixed its advisories", async () => {
     expect(await verify(lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }))).toEqual([]);
   });

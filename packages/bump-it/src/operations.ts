@@ -34,6 +34,7 @@ export interface Computed {
   readonly files: ReadonlyMap<string, string>;
   readonly base: Tree;
   readonly gradle: GradleInputs["head"];
+  readonly blocked?: string;
 }
 
 interface SkillAnswer {
@@ -47,10 +48,13 @@ export async function compute(execution: Execution, unit: Unit, base: Tree, grad
   const bounded = await constrainedUnit(coupled.unit, base);
   const ready = constrainedPeers(coupled.unit, bounded.unit, coupled.sets);
   const notes = [...coupled.notes, ...bounded.notes, ...ready.notes];
-  const npm = await execution.deps.npm(execution.context, ready.unit, base, execution.env, gradle);
+  const blocked = unit.kind === "major" && ready.unit.moves.length === 0 && notes.length > 0 ? notes.join("; ") : undefined;
+  const npm = blocked === undefined
+    ? await execution.deps.npm(execution.context, ready.unit, base, execution.env, gradle)
+    : { files: new Map<string, string>(), changes: [], notes: [] };
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
   const plan = await planFor(ready.unit, { ...npm, notes: [...notes, ...npm.notes] }, (name, tag) => actions.tagCommit(name, tag));
-  return { plan, files: npm.files, base, gradle };
+  return { plan, files: npm.files, base, gradle, ...(blocked === undefined ? {} : { blocked }) };
 }
 
 export async function writeNpm(execution: Execution, files: ReadonlyMap<string, string>, preserveManifestFields = false): Promise<void> {

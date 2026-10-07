@@ -51,6 +51,8 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   A human push is left alone; a separate PR is opened. Other tools' overlapping PRs never suppress work.
 - `maxNewMajorsPerRun` (default 3) caps only new major PRs. Updates are uncapped. Deferred packages are saved under
   `<state>/deferred/` and get priority next run. Reports include every failed/deferred unit and unresolved copy.
+- A major whose direct-peer set cannot coexist within the companions' compatible lines is reported as `blocked`
+  with its reason. bump-it does not coordinate multiple major migrations into one PR.
 
 Plans carry moves and npm file hashes, with a bounded copy-change summary, never file contents. Major manifests also
 carry a hash of their dependency fields, allowing later review to protect them while retaining script adaptations.

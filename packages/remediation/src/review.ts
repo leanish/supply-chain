@@ -25,7 +25,7 @@ import type { Workspace } from "../../agent-basics/src/working-copy/workspace.ts
 import { classifyCi } from "./ci-state.ts";
 import type { PublicationJournal } from "./journal.ts";
 import { type OwnPullRequests, type PullRequestState, stateOf } from "./own-pr.ts";
-import { closeAndDelete, markReady, ownOpenPullRequests, type PublicationContext, recordState } from "./publication.ts";
+import { closeAndDelete, markReady, ownOpenPullRequests, type PublicationContext, recordState, recoverPublication } from "./publication.ts";
 
 /** How many times the agent may adapt one PR after a failed CI before the tool gives it up. */
 export const MAX_ADAPTATIONS = 2;
@@ -103,17 +103,16 @@ export async function reviewOpenPullRequests(context: ReviewContext, steps: Revi
 async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubPullRequest): Promise<ReviewEntry> {
   const result = (outcome: ReviewOutcome, detail?: string): ReviewEntry => ({ number: pr.number, url: pr.url, outcome, detail });
   const publication: PublicationContext = { ...context };
+  pr = await recoverPublication(publication, pr);
   const recorded = stateOf(pr.body);
   if (recorded === undefined) return result("left-alone", "its body no longer has the tool's state; someone rewrote it");
-  let state: PullRequestState = recorded;
+  const state: PullRequestState = recorded;
   if (pr.headSha !== recorded.head) {
     const pushed = await context.journal.last(context.repo, pr.number);
     if (pushed?.head !== pr.headSha) {
       return result("left-alone", `someone else pushed (${pr.headSha.slice(0, 12)}, the tool published ${recorded.head.slice(0, 12)})`);
     }
-    // The tool's own push, whose body update failed: repair the body and go on.
-    state = { head: pushed.head, base: pushed.base, adaptations: recorded.adaptations };
-    await recordState(publication, pr.number, pr.headSha, state);
+    throw new Error(`${pr.url}: journal recovery did not restore the publication`);
   }
 
   const checkedOut = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote" });

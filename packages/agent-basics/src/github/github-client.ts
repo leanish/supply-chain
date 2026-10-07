@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/needs/github-client.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending and jobless runs.
+// Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them.
 import { RuntimeError } from "../errors.ts";
 import type {
   GitHubCheckRun,
@@ -96,11 +96,18 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
    * new jobs) per workflow, event and job name. Jobs, not just runs: a `continue-on-error` job can
    * fail inside a successful run. A run counts as itself only while it isn't completed (it may
    * still be scheduling jobs, so it stays pending) or when it has no jobs (e.g. it failed to
-   * start) — never on top of its jobs, so a run whose jobs were all skipped isn't a success.
+   * start) and is the newest run in its workflow/event group — never on top of its jobs, so a run
+   * whose jobs were all skipped isn't a success.
    */
   async function latestWorkflowJobs(repo: string, sha: string): Promise<GitHubCheckRun[]> {
     const operation = "headChecks";
     const runs = await paged(operation, `/repos/${repo}/actions/runs?head_sha=${sha}`, "workflow_runs", (value) => toWorkflowRun(operation, value));
+    const latestRunByGroup = new Map<string, WorkflowRun>();
+    for (const run of runs) {
+      const group = `${run.workflowId}:${run.event}`;
+      const current = latestRunByGroup.get(group);
+      if (current === undefined || run.id > current.id) latestRunByGroup.set(group, run);
+    }
     const newest = new Map<string, IdentifiedRun>();
     const keep = (key: string, entry: IdentifiedRun): void => {
       const current = newest.get(key);
@@ -110,7 +117,7 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
       const group = `${run.workflowId}:${run.event}`;
       const jobs = await paged(operation, `/repos/${repo}/actions/runs/${run.id}/jobs?filter=latest`, "jobs", (value) => toJob(operation, value));
       if (run.status !== "completed") keep(`active run ${run.id}`, run);
-      else if (jobs.length === 0) keep(`jobless run ${group}`, run);
+      else if (jobs.length === 0 && latestRunByGroup.get(group)?.id === run.id) keep(`jobless run ${group}`, run);
       for (const job of jobs) keep(`job ${group}/${job.name}`, job);
     }
     return [...newest.values()].map(({ name, status, conclusion }) => ({ name, status, conclusion }));

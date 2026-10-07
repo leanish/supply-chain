@@ -10,7 +10,7 @@
  */
 import { type Config, DEFAULT_CONFIG, parseConfig } from "./config.ts";
 import { type Exceptions, NO_EXCEPTIONS, parseExceptions } from "./exceptions.ts";
-import { compareFindings, findingsOf, type Located } from "./findings.ts";
+import { compareFindings, findingsOf, type Finding, type Located } from "./findings.ts";
 import { checkFloors, type Floor, FLOORS_PATH, parseFloors } from "./floors.ts";
 import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
@@ -53,6 +53,11 @@ export interface GateOutcome {
   readonly gaps: ReadonlyArray<string>;
   readonly osvScannerVersion: string;
   readonly configText: string | undefined;
+}
+
+/** Head findings from the same snapshot that judged the comparison, including inherited and excepted ones. */
+export interface CompareOutcome extends GateOutcome {
+  readonly headFindings: ReadonlyArray<Finding>;
 }
 
 export interface Settings {
@@ -140,7 +145,7 @@ export interface GradleInputs {
   readonly head?: GradleInventory | undefined;
 }
 
-export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
+export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<CompareOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
   const { config, configText, exceptions, floors } = await readSettings(head);
   const sources = await sourcesOf(head, config);
@@ -181,11 +186,13 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const candidates = await gatherCandidates(young, catalogs, config);
 
   const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env, github), [...candidates.versions]);
-  const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
+  const headFindings = findingsOf(headLocated, snapshot);
+  const comparison = compareFindings(findingsOf(baseLocated, snapshot), headFindings);
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange })));
   const floorCheck = await checkFloors(floors, headInventory, head);
   return {
+    headFindings,
     failures: [...verdict.failures, ...problems, ...floorCheck.failures],
     warnings: verdict.warnings,
     notes: [...verdict.notes, ...floorCheck.notes],

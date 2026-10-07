@@ -61,7 +61,8 @@ describe("publication", () => {
     github.fail("updatePullRequest");
     const journal = new MemoryJournal();
     await expect(publishUpdate(context(github, new InMemoryWorkspace(), journal), existing, 7, CONTENT)).rejects.toThrow("unexpected response");
-    expect(await journal.last("leanish/widget", 7)).toEqual({ head: PUSHED_SHA, base: BASE_SHA });
+    expect(await journal.last("leanish/widget", 7)).toEqual({ head: PUSHED_SHA, base: BASE_SHA,
+      publication: { title: CONTENT.title, body: withMarker(RULES, CONTENT.body, { head: PUSHED_SHA, base: BASE_SHA, adaptations: 0 }), adaptations: 0 } });
     expect(stateOf(github.prs.get(7)!.body)?.head).toBe(HEAD_SHA);
   });
 

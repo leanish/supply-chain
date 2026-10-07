@@ -15,7 +15,7 @@ package is the code around them:
   - **Recognition:** a PR is the tool's when it comes from one of its branches (`<tool>/<date>-<topic>`) of the repository itself and carries its marker or its label (`leanish:agent=<tool>`).
   - **State:** the body records the head the tool pushed, the base it computed against, and how many times the agent adapted it.
   - **Race checks:** every write re-reads the PR first and stops unless it's still the tool's, open, and at the expected head.
-  - **Journal** (`journal.ts`): each push is recorded in the tool's state directory before the PR's body is updated. If that update fails, the next review tick recognises the tool's own exact head and repairs the body, instead of taking it for someone else's push.
+  - **Journal** (`journal.ts`): before each update push, the tool records the head/base, matching title and full body (plan included), and adaptation count in its state directory. If the body update fails, the next run or review recognises the tool's exact head and restores that whole publication before reuse or CI handling. A legacy head/base-only recovery forces recomputation and verified republication in a run; review refuses readiness or adaptation until then.
 - **The review tick** (`review.ts`) goes through every open PR of the tool, in this order:
   1. Someone else pushed: leave the PR alone.
   2. The base moved: the tool recomputes on the new base, before anything else, with the base merged in or the conflicting merge left in progress for it to resolve.

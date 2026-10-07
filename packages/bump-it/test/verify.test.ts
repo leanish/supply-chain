@@ -25,12 +25,12 @@ async function fixture(major = false) {
 function gradle(version: string, other = "1.0", resolved = version): GradleInventory {
   return { schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [{ id: ":runtimeClasspath", kind: "project", unresolved: [], error: undefined, resolved: [{ group: "g", name: "lib", version: resolved }], declared: [{ group: "g", name: "lib", version, reason: undefined }] }, { id: ":testRuntimeClasspath", kind: "project", unresolved: [], error: undefined, resolved: [{ group: "g", name: "lib", version: other }], declared: [{ group: "g", name: "lib", version: other, reason: undefined }] }] }] };
 }
-beforeEach(() => { vi.mocked(runCompare).mockClear(); vi.mocked(runCompare).mockResolvedValue({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined }); });
+beforeEach(() => { vi.mocked(runCompare).mockClear(); vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined }); });
 describe("bump verification", () => {
   it("accepts exactly planned files and forwards the full comparison failure", async () => {
     const { input } = await fixture();
     expect(await verifyPlan(input)).toEqual([]);
-    vi.mocked(runCompare).mockResolvedValue({ failures: ["new advisory"], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined });
+    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: ["new advisory"], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined });
     expect(await verifyPlan(input)).toEqual(["compare: new advisory"]);
   });
   it("preserves tool-computed transitives absent from the explicit moves", async () => {

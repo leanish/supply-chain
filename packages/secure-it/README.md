@@ -51,10 +51,11 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    PR's target; that PR doesn't constrain resolution. A failed comparison prevents publishing that edit rather than silently
    choosing a coupled target. The PR description lists required transitive changes too.
 7. **Verifies before publishing** (`verify.ts`):
+   - existing floor records and declarations are preserved before comparison: compatibility floors never change; security-floor updates match exact planned moves and retain their scope and history; only planned security floors may be added;
    - the gate's own policy (its config, its exceptions, workflows and actions outside planned pins) is untouched, major or not;
    - `compare` against the base passes;
    - every move landed at exactly `to` at every planned location (Gradle: declared at exactly `to`);
-   - none of the targeted advisories affects what's left;
+   - none of the targeted advisories affects what's left, using compare's head findings from the same snapshot;
    - no other direct dependency or action use changed;
    - only dependency files changed, unless a move is a major.
 
@@ -94,7 +95,7 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - the Keychain isn't reachable;
   - the sensitive home paths can't be read;
   - writes land only in the working copy, the temp dirs and the build cache.
-- npm dependency edits use `--package-lock-only --ignore-scripts`. The agent keeps the configured release-age window. Planned packages whose target is young (or its publish time cannot be read) get explicit `--min-release-age-exclude` flags, alongside the own-scope patterns. Other packages keep the window; verification still requires the exact planned targets and `compare` passes. This applies to initial edits, rebases/conflict resolution and CI adaptation.
+- npm dependency edits use `--package-lock-only --ignore-scripts`. The agent keeps the configured release-age window. Planned young/unreadable targets and young/unreadable base versions in the affected lockfiles get explicit `--min-release-age-exclude` flags, alongside own-scope patterns. Each exclusion is reported; exact target checks and `compare` still judge all induced versions, including age and identity. This applies to initial edits, rebases/conflict resolution and CI adaptation, and requires npm >= 11.17.0 whenever exclusions are needed.
 - npm 11.17.0 or later is required when an npm plan needs these exclusions. The tool checks the sandbox's npm before starting the agent and reports the required exclusions and detected version on failure.
 - The agent gets the read-only token alone.
 

@@ -24,7 +24,7 @@ import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
 import { revertToBase } from "../../remediation/src/reconcile.ts";
-import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate } from "../../remediation/src/publication.ts";
+import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate, recoverPublication } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
 import { npmWindowFor } from "./npm-window.ts";
@@ -135,13 +135,14 @@ async function agentInput(
   deps: SecureItDeps,
   env: GateEnvironment,
   plan: ChangePlan,
+  base: Tree,
   mode: "apply" | "adapt" | "resolve",
   extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {},
 ) {
-  const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch);
+  const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base));
   for (const detail of window.notes) context.logger.warn("secure-it: npm release-age exclusion", { detail });
   if (plan.moves.some((move) => move.ecosystem === "npm")) {
-    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "planned young or unreadable security targets or own-package exclusions");
+    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young or unreadable security targets or locked base versions, or own-package exclusions");
   }
   return skillInput(context, plan, window.exclude, mode, extra);
 }
@@ -202,12 +203,12 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
   const owned = await recognisedPlans(context, publication, own, plan);
   const already = owned.find((pr) => {
     const previous = planOf(pr.body);
-    return previous !== undefined && planDigest(previous) === planDigest(plan);
+    return stateOf(pr.body)?.head === pr.headSha && previous !== undefined && planDigest(previous) === planDigest(plan);
   });
   const details = { topic: plan.topic, packages: plan.packages };
   if (already !== undefined) return { ...details, outcome: "already-open", pullRequest: already.url };
   // Version support is checked before any old PR's edits are reverted.
-  const input = await agentInput(context, deps, execution.env, plan, "apply");
+  const input = await agentInput(context, deps, execution.env, plan, base.tree, "apply");
   const reusable = owned[0];
   const prepared = await preparePlan(context, deps, plan, reusable, own, base.tree.id);
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
@@ -256,7 +257,7 @@ async function verifyWithRetry(execution: Execution, base: PlanBase, plan: Chang
   context.logger.warn("secure-it: retrying the routine without named package groups", { leftOut: retry.leftOut });
   await deps.revert(context.workingCopy, base.tree.id);
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
-    entrypoint: "secure-it", input: await agentInput(context, deps, env, retry.plan, "apply"), effort: effortFor(context, retry.plan),
+    entrypoint: "secure-it", input: await agentInput(context, deps, env, retry.plan, base.tree, "apply"), effort: effortFor(context, retry.plan),
   });
   if (answer.outcome !== "applied" || answer.publication === undefined) {
     return { plan: retry.plan, content, problems: [`retry could not apply: ${answer.summary}`], named: retry.named, leftOut: retry.plan.leftOut ?? [] };
@@ -273,15 +274,18 @@ async function recognisedPlans(
 ): Promise<GitHubPullRequest[]> {
   const topic = topicOf(RULES, branchFor(RULES, context.now, plan.topic));
   const owned: GitHubPullRequest[] = [];
-  for (const pr of own) {
+  for (const candidate of own) {
     // A numeric suffix is the tool's PR opened next to one a human took over.
-    const previous = planOf(pr.body);
-    if (previous?.kind !== plan.kind) continue;
-    const prTopic = topicOf(RULES, pr.headRef);
+    const previous = planOf(candidate.body);
+    if (previous === undefined || previous.kind !== plan.kind) continue;
+    const prTopic = topicOf(RULES, candidate.headRef);
     const suffix = prTopic?.startsWith(`${topic}-`) ? prTopic.slice(`${topic}-`.length) : undefined;
-    if (prTopic !== topic && (suffix === undefined || !/^\d+$/.test(suffix) || planOf(pr.body)?.topic !== plan.topic)) continue;
+    if (prTopic !== topic && (suffix === undefined || !/^\d+$/.test(suffix) || previous.topic !== plan.topic)) continue;
+    const journaled = await publication.journal.last(context.repo.repo, candidate.number);
+    // Legacy entries prove only the head: reconcile a freshly computed plan rather than trusting the body.
+    const pr = journaled?.head === candidate.headSha && journaled.publication === undefined
+      ? candidate : await recoverPublication(publication, candidate);
     const recorded = stateOf(pr.body);
-    const journaled = await publication.journal.last(context.repo.repo, pr.number);
     if (recorded?.head === pr.headSha || journaled?.head === pr.headSha) owned.push(pr);
   }
   return owned;
@@ -364,7 +368,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       if (changed || merge.kind === "conflicted") {
         const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
           entrypoint: "secure-it",
-          input: await agentInput(context, deps, env, plan, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
+          input: await agentInput(context, deps, env, plan, base, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
           effort: effortFor(context, plan),
         });
         if (answer.outcome !== "applied") throw new Error(`the agent couldn't re-apply the plan on the new base: ${answer.summary}`);
@@ -384,13 +388,13 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const plan = planFrom(pr);
       const checks = await context.github.headChecks({ repo: context.repo.repo, sha: pr.headSha });
       const failingChecks = failingCheckNames(checks);
+      const base = await deps.trees.commit(context.workingCopy, prepared.baseSha);
       const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
         entrypoint: "secure-it",
-        input: await agentInput(context, deps, env, plan, "adapt", { failingChecks }),
+        input: await agentInput(context, deps, env, plan, base, "adapt", { failingChecks }),
         effort: effortFor(context, plan),
       });
       if (answer.outcome !== "applied" || answer.publication === undefined) return false;
-      const base = await deps.trees.commit(context.workingCopy, prepared.baseSha);
       const verified = await verifyWithRetry(execution, { tree: base, gradle: await inventories.ofCommit(base) }, plan, { title: pr.title, body: pr.body, commitMessage: answer.publication.commitMessage });
       if (verified.leftOut.length > 0) notes.push({ number: pr.number, leftOut: verified.leftOut, named: verified.named });
       if (verified.problems.length > 0) throw new Error(`the adaptation doesn't verify: ${verified.problems.join("; ")}`);

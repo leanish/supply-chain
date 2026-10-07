@@ -4,6 +4,9 @@ import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts"
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { InMemoryWorkspace } from "../../agent-basics/src/working-copy/in-memory-workspace.ts";
 import type { BumpCandidate } from "../../ci/src/candidates.ts";
+import { prepareNpmPeers } from "../../ci/src/npm-peers.ts";
+import { versionKey } from "../../ci/src/package-version.ts";
+import { Snapshot } from "../../ci/src/snapshot.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import type { ToolRunContext } from "../../remediation/src/command.ts";
 import { parseToolConfig } from "../../remediation/src/config.ts";
@@ -82,6 +85,37 @@ const major = (bump = candidate()) => majorUnits([bump])[0]!;
 const routine = (bump = candidate()) => routineUnit([bump]);
 
 describe("bump-it run", () => {
+  it("forces reconciliation of a legacy journal head instead of trusting its stale same-plan body", async () => {
+    const pr = await prFor(routine(), { headSha: "9".repeat(40) });
+    const h = harness({ prs: [pr], bumps: [candidate({ major: undefined })] });
+    await h.journal.pushed(REPO, pr.number, { head: pr.headSha, base: BASE_SHA });
+    expect(await bumpIt(h.deps).run(h.context)).toMatchObject({ units: [{ outcome: "updated" }] });
+    expect(h.reverted).toEqual([BASE_SHA]);
+    expect((await h.journal.last(REPO, pr.number))?.publication?.body).toBe(h.github.prs.get(pr.number)?.body);
+  });
+  it("reports cross-major Vitest/UI/coverage peer sets as blocked without coordinating their majors", async () => {
+    const names = ["vitest", "@vitest/ui", "@vitest/coverage-v8"];
+    const manifest = (name: string, version: string) => name === "vitest"
+      ? { peerDependencies: { "@vitest/ui": version, "@vitest/coverage-v8": version } }
+      : { peerDependencies: { vitest: version } };
+    const packages = { "": { devDependencies: Object.fromEntries(names.map((name) => [name, "^4.1.7"])) },
+      ...Object.fromEntries(names.map((name) => [`node_modules/${name}`, { version: "4.1.7", ...manifest(name, "4.1.7") }])) };
+    const lock = { lockfileVersion: 3, packages };
+    const prepared = await prepareNpmPeers(new Map([["package-lock.json", lock]]), names.map((name) => ({ ecosystem: "npm" as const, name, version: "5.0.0" })), {
+      versions: async () => ["4.1.7", "4.1.11", "5.0.0"], manifest: async (name, version) => manifest(name, version),
+      published: async () => new Date("2026-01-01"), identity: async () => [], line: (_name, version) => version.split(".")[0]!, isOwn: () => false, now: NOW, releaseAgeDays: 7,
+    });
+    const snapshot = new Snapshot(new Map([...prepared.bases, ...prepared.candidates].map((pkg) => [versionKey(pkg), []])), [], NOW);
+    const h = harness({ bumps: names.map((name) => candidate({ name, from: "4.1.7", minor: undefined, major: { version: "5.0.0", line: "5" },
+      declarations: [{ lockfile: "package-lock.json", workspace: ".", declaredAs: name, spec: "^4.1.7" }] })) });
+    const found = await h.deps.candidates(tree(BASE_SHA, BASE_FILES), await h.deps.gate(h.context), {});
+    const result = await bumpIt({ ...h.deps, candidates: async () => ({ ...found, npmPeers: { resolve: (moves) => prepared.resolve(moves, snapshot) } }),
+      trees: { ...h.deps.trees, commit: async (_wc, sha) => tree(sha, { "package-lock.json": JSON.stringify(lock), "package.json": JSON.stringify(packages[""]) }) } }).run(h.context);
+    expect(result).toMatchObject({ units: [{ outcome: "nothing-to-move" }, ...names.map(() => ({ outcome: "blocked", detail: expect.stringContaining("no safe aged compatible direct-peer set") }))] });
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toEqual([]);
+    expect(h.computed.map((unit) => unit.topic)).toEqual(["routine"]);
+  });
   it("carries the candidate peer planner through routine and major computation before any agent", async () => {
     const h = harness();
     const found = await h.deps.candidates(tree(BASE_SHA, BASE_FILES), await h.deps.gate(h.context), {});
@@ -133,7 +167,9 @@ describe("bump-it run", () => {
   it("accepts the journal's exact head for run reuse, and never a different head", async () => {
     const pr = await prFor(routine(), { headSha: "9".repeat(40) });
     const h = harness({ prs: [pr], bumps: [candidate({ major: undefined })] });
-    await h.journal.pushed(REPO, pr.number, { head: pr.headSha, base: BASE_SHA });
+    await h.journal.pushed(REPO, pr.number, { head: pr.headSha, base: BASE_SHA, publication: {
+      title: pr.title, body: withMarker(RULES, pr.body, { head: pr.headSha, base: BASE_SHA, adaptations: 0 }), adaptations: 0,
+    } });
     expect(await bumpIt(h.deps).run(h.context)).toMatchObject({ units: [{ outcome: "already-open" }] });
     const human = harness({ prs: [{ ...pr, headRef: "bump-it/2026-10-07-routine" }], bumps: [candidate({ major: undefined })] });
     expect(await bumpIt(human.deps).run(human.context)).toMatchObject({ units: [{ outcome: "published" }] });

@@ -129,6 +129,16 @@ async function vitePr(overrides: Partial<GitHubPullRequest> = {}, fix = vite()):
 }
 
 describe("secure-it run", () => {
+  it("recomputes and republishes a legacy journal head without same-plan suppression", async () => {
+    const pr = await vitePr({ headSha: "9".repeat(40) });
+    const h = harness({ prs: [pr] });
+    h.workspace.setRemoteHead(pr.headRef, pr.headSha);
+    await h.journal.pushed(REPO, pr.number, { head: pr.headSha, base: BASE_SHA });
+    expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "updated", pullRequest: pr.url });
+    expect(h.reverted).toEqual([BASE_SHA]);
+    expect(h.agentCalls).toHaveLength(1);
+    expect((await h.journal.last(REPO, pr.number))?.publication?.body).toBe(h.github.prs.get(pr.number)?.body);
+  });
   it("plans companions before invoking the agent and reports a blocked set while applying the rest", async () => {
     const h = harness({ fixes: [vite(), leftPad()] });
     const found = await h.deps.candidates(tree(BASE_SHA), await h.deps.gate(h.context), {});
@@ -252,10 +262,30 @@ describe("secure-it run", () => {
       calls.push(args);
       return { code: 0, stdout: "11.14.1", stderr: "" };
     } };
-    expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "failed", detail: expect.stringContaining("require npm >= 11.17.0 (min-release-age-exclude: vite)") });
+    expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "failed", detail: expect.stringContaining("require npm >= 11.17.0 (min-release-age-exclude: left-pad, vite)") });
     expect(calls).toEqual([["--version"]]);
     expect(h.agentCalls).toEqual([]);
     expect(h.workspace.publications).toEqual([]);
+  });
+
+  it("exempts an unrelated young locked version while keeping an aged security target exact", async () => {
+    const h = harness();
+    const gate = await h.deps.gate(h.context);
+    const npm: string[][] = [];
+    const deps = { ...h.deps, gate: async () => ({ ...gate, fetch: async (url: string) => ({ ok: true, status: 200, headers: { get: () => null },
+      json: async () => ({ time: String(url).endsWith("left-pad") ? { "1.0.0": "2026-10-06T00:00:00Z" } : { "8.3.1": "2026-09-01T00:00:00Z", "8.3.3": "2026-09-01T00:00:00Z" }, versions: {} }), text: async () => "" }) }),
+      npm: async (_context: ToolRunContext, args: ReadonlyArray<string>) => { npm.push([...args]); return { code: 0, stdout: "11.20.0", stderr: "" }; } };
+    const context = { ...h.context, agent: (async (call: { entrypoint: string; input: Record<string, unknown>; effort?: string }) => {
+      if (!(call.input["npmAgeExclusions"] as string[]).includes("left-pad")) throw new Error("notarget: locked left-pad is too young");
+      return h.context.agent(call);
+    }) as ToolRunContext["agent"] };
+    expect(await secureIt(deps).run(context)).toMatchObject({ outcome: "published" });
+    expect(h.agentCalls[0]?.input).toMatchObject({ npmAgeExclusions: ["left-pad"], moves: [expect.objectContaining({ name: "vite", to: "8.3.3" })] });
+    expect(npm).toEqual([["--version"]]);
+    const old = harness();
+    expect(await secureIt({ ...deps, npm: async () => ({ code: 0, stdout: "11.14.1", stderr: "" }) }).run(old.context)).toMatchObject({ outcome: "failed", detail: expect.stringContaining("min-release-age-exclude: left-pad") });
+    expect(old.agentCalls).toEqual([]);
+    expect(old.workspace.publications).toEqual([]);
   });
 
   it("passes a young target exclusion while preserving own scopes and the sandbox's age", async () => {
@@ -272,15 +302,15 @@ describe("secure-it run", () => {
       return h.context.agent(call);
     }) as ToolRunContext["agent"] };
     expect(await secureIt(deps).run(context)).toMatchObject({ outcome: "published" });
-    expect(h.agentCalls[0]?.input).toMatchObject({ npmAgeExclusions: ["@leanish/*", "vite"] });
+    expect(h.agentCalls[0]?.input).toMatchObject({ npmAgeExclusions: ["@leanish/*", "left-pad", "vite"] });
     expect(context.releaseAgeDays).toBe(7);
     expect(context.releaseAgeExclude).toEqual(["@leanish/*"]);
   });
 
-  it("needs no newer npm when every target is aged and there are no own scopes", async () => {
+  it("needs no newer npm when targets and base copies are aged and there are no own scopes", async () => {
     const h = harness();
     const gate = await h.deps.gate(h.context);
-    const deps = { ...h.deps, gate: async () => ({ ...gate, fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ time: { "8.3.3": "2026-09-01T00:00:00Z" }, versions: {} }), text: async () => "" }) }),
+    const deps = { ...h.deps, gate: async () => ({ ...gate, fetch: async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ time: { "8.3.3": "2026-09-01T00:00:00Z", "8.3.1": "2026-09-01T00:00:00Z", "1.0.0": "2026-09-01T00:00:00Z" }, versions: {} }), text: async () => "" }) }),
       npm: async () => { throw new Error("npm version must not be checked"); } };
     expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "published" });
     expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual([]);
@@ -415,7 +445,7 @@ describe("secure-it review", () => {
     expect(h.reverted).toEqual([NEW_BASE]);
     expect(h.written).toEqual([]);
     expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
-    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["vite"]);
+    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["left-pad", "vite"]);
     const pr = h.github.prs.get(7)!;
     expect(pr.title).toBe("moving vite to 8.3.3");
     expect(planOf(pr.body)?.moves[0]?.to).toBe("8.3.4");
@@ -429,7 +459,7 @@ describe("secure-it review", () => {
     expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
     expect(h.written).toEqual([`package-lock.json=${LOCK}`]);
     expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
-    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["vite"]);
+    expect(h.agentCalls[0]?.input["npmAgeExclusions"]).toEqual(["left-pad", "vite"]);
   });
 
   it("recomputes the whole routine on a moved base, adding new packages and retiring old fixes", async () => {
@@ -486,7 +516,7 @@ describe("secure-it review", () => {
     h.workspace.setRemoteHead("secure-it/2026-10-05-security", HEAD_SHA);
     h.github.checks = { ...RED, statuses: [{ context: "legacy", state: "error" }] };
     expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "adapted" }] });
-    expect(h.agentCalls[0]).toMatchObject({ input: { mode: "adapt", failingChecks: ["check", "legacy"], npmAgeExclusions: ["vite"] } });
+    expect(h.agentCalls[0]).toMatchObject({ input: { mode: "adapt", failingChecks: ["check", "legacy"], npmAgeExclusions: ["left-pad", "vite"] } });
     expect(stateOf(h.github.prs.get(7)!.body)?.adaptations).toBe(1);
 
     const failing = harness({ prs: [await vitePr()], problems: ["compare: new: vite@8.3.3: GHSA-new has no exception"] });

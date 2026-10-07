@@ -217,7 +217,7 @@ function overrideTarget(path: ReadonlyArray<string>): string {
 }
 
 /** The override spec at a key path (a nested override's own version is its `.` key). */
-function overrideAt(overrides: unknown, path: ReadonlyArray<string>): string | undefined {
+export function overrideAt(overrides: unknown, path: ReadonlyArray<string>): string | undefined {
   let node: unknown = overrides;
   for (const key of path) {
     if (!isObject(node)) return undefined;

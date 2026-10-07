@@ -112,8 +112,9 @@ to invent version choices.
 ## npm's release window
 
 The sandbox keeps `npm_config_min_release_age`. A security fix may be younger than that window. The tool supplies
-`npmAgeExclusions`: the repository's own scope patterns plus only planned packages with young or unreadable target
-publish times. It checks npm >= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
+`npmAgeExclusions`: the repository's own scope patterns, planned packages with young or unreadable target publish
+times, and packages with young or unreadable versions already locked in the affected base lockfiles. It checks npm
+>= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
 entry as `--min-release-age-exclude=<entry>` (repeated flags); this keeps the own-scope patterns too, which CLI flags
 would otherwise replace. Never lower or unset the age window, or add exclusions of your own. These flags permit
 installing the selected security target; they do not permit choosing another version for an explicit move. Verification requires the
@@ -126,6 +127,9 @@ exact planned versions and `compare` passes before publication.
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
 - Direct dependencies outside the supplied moves keep their declarations and locked versions. Never edit another
   dependency's version by hand or add an unplanned override or floor.
+- Preserve existing floor records and declarations. Never alter a compatibility floor. A security floor may move
+  only to the supplied exact target at its planned locations, keeping its file, selectors, reason, added date and
+  existing advisory IDs; add only the supplied target IDs. New floors are only for `npm-override` or `gradle-floor`.
 - npm may move transitives required by a planned move when you run its install/override mechanism. Let npm resolve
   them under the supplied release-age window and exclusions; do not edit their lockfile entries by hand, run a
   general refresh, or add age exclusions for them. This is allowed even when another open PR picked a different
