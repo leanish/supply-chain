@@ -68,6 +68,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/usage/skill-usage.ts` | `core/runtime/src/usage/skill-usage.ts` | copied | — |
 | `src/usage/usage-totals.ts` | `core/runtime/src/usage/usage-totals.ts` | copied | — |
 | `src/working-copy/git-clone-auth.ts` | `core/runtime/src/working-copy/git-clone-auth.ts` | copied | `gitCloneAuth(token, host)` replaces `resolveGitCloneAuth(needs, env)`; the tool passes its token |
+| `src/working-copy/in-memory-workspace.ts` | `core/runtime/src/working-copy/in-memory-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project` (a test double the tools' tests use) |
 | `src/working-copy/local-git-workspace.ts` | `core/runtime/src/working-copy/local-git-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory |
 | `src/working-copy/workspace.ts` | `core/runtime/src/working-copy/workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project` |
 | `test/api-cost.test.ts` | `core/runtime/test/unit/api-cost.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
@@ -85,6 +86,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/github-client.test.ts` | `core/runtime/test/unit/github-client.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel |
 | `test/guard.test.ts` | `agents/bump-it/test/local-guard.test.ts` | copied | the guards' directory, and their messages say "agent guard" |
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
+| `test/in-memory-workspace.test.ts` | `core/runtime/test/unit/in-memory-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/isolation.test.ts` | — | new | — |
 | `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/model-prices.test.ts` | `core/runtime/test/unit/model-prices.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |

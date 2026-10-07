@@ -1,0 +1,48 @@
+// Copied from leanish/leanish-development agents/bump-it/test/ci-state.test.ts at e4f8a1e.
+// Local changes: imports.
+import { describe, expect, it } from "vitest";
+
+import type { GitHubCheckRun, GitHubCommitStatus } from "../../agent-basics/src/types/clients.ts";
+
+import { classifyCi } from "../src/ci-state.ts";
+
+function run(status: string, conclusion: string | null, name = "check"): GitHubCheckRun {
+  return { name, status, conclusion };
+}
+
+function status(state: string, context = "ci/legacy"): GitHubCommitStatus {
+  return { context, state };
+}
+
+describe("classifyCi", () => {
+  it.each([
+    ["all succeeded", [run("completed", "success")], [], "success"],
+    ["success plus skipped and neutral", [run("completed", "success"), run("completed", "skipped"), run("completed", "neutral")], [], "success"],
+    ["a successful status only", [], [status("success")], "success"],
+    ["check and status both green", [run("completed", "success")], [status("success")], "success"],
+    ["nothing at all", [], [], "none"],
+    ["skipped only", [run("completed", "skipped")], [], "none"],
+    ["neutral only", [run("completed", "neutral")], [], "none"],
+    ["completed with a null conclusion", [run("completed", null), run("completed", "success")], [], "none"],
+    ["an unknown conclusion", [run("completed", "mystery"), run("completed", "success")], [], "none"],
+    ["an unknown status state", [run("completed", "success")], [status("mystery")], "none"],
+    ["an unknown check-run status", [run("mystery", null), run("completed", "success")], [], "none"],
+    ["an unknown check-run status next to a running one", [run("mystery", null), run("queued", null)], [], "none"],
+    ["an unknown check-run status next to a failure", [run("mystery", null), run("completed", "failure")], [], "failure"],
+    ["waiting", [run("waiting", null)], [], "pending"],
+    ["still queued", [run("queued", null), run("completed", "success")], [], "pending"],
+    ["in progress", [run("in_progress", null)], [], "pending"],
+    ["a pending status", [run("completed", "success")], [status("pending")], "pending"],
+    ["a failed check", [run("completed", "failure"), run("completed", "success")], [], "failure"],
+    ["a failure while another still runs", [run("completed", "failure"), run("in_progress", null)], [], "failure"],
+    ["a failed status while a check runs", [run("in_progress", null)], [status("failure")], "failure"],
+    ["an errored status", [run("completed", "success")], [status("error")], "failure"],
+    ["cancelled", [run("completed", "cancelled")], [], "failure"],
+    ["timed out", [run("completed", "timed_out")], [], "failure"],
+    ["action required", [run("completed", "action_required")], [], "failure"],
+    ["startup failure", [run("completed", "startup_failure")], [], "failure"],
+    ["stale", [run("completed", "stale")], [], "failure"],
+  ] as const)("%s → %s", (_name, checkRuns, statuses, expected) => {
+    expect(classifyCi({ source: "check-runs", checkRuns: [...checkRuns], statuses: [...statuses] })).toBe(expected);
+  });
+});
