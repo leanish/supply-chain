@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 
 import { planBlock, planPayload, withPlanSection as replaceSection } from "../../remediation/src/plan-blocks.ts";
 
+import { WRAPPER_PROPERTIES } from "./gradle-wrapper.ts";
 import type { CopyChange, NpmResult } from "./npm-compute.ts";
 import type { DirectMove, Unit } from "./units.ts";
 
@@ -165,10 +166,10 @@ function validMove(move: unknown): boolean {
   if (!object(move)) {
     return false;
   }
-  if (move.ecosystem !== "npm" && move.ecosystem !== "Maven" && move.ecosystem !== "GitHub Actions") {
+  if (move.ecosystem !== "npm" && move.ecosystem !== "Maven" && move.ecosystem !== "GitHub Actions" && move.ecosystem !== "Gradle Wrapper") {
     return false;
   }
-  const mechanism = { npm: "npm-range", Maven: "gradle-declared", "GitHub Actions": "action-pin" }[move.ecosystem];
+  const mechanism = { npm: "npm-range", Maven: "gradle-declared", "GitHub Actions": "action-pin", "Gradle Wrapper": "gradle-wrapper" }[move.ecosystem];
   if (move.mechanism !== mechanism || typeof move.major !== "boolean") {
     return false;
   }
@@ -181,7 +182,23 @@ function validMove(move: unknown): boolean {
   if (!Array.isArray(move.declarations) || !move.declarations.every(validDeclaration)) {
     return false;
   }
+  if (mechanism === "gradle-wrapper") {
+    return validWrapperMove(move);
+  }
   return mechanism !== "action-pin" || validCommitSha(move.commitSha);
+}
+
+function validWrapperMove(move: Record<string, unknown>): boolean {
+  if (move.name !== "gradle/gradle" || !Array.isArray(move.locations) || move.locations.length !== 1 || move.locations[0] !== WRAPPER_PROPERTIES) {
+    return false;
+  }
+  if (!Array.isArray(move.declarations) || move.declarations.length !== 0 || !object(move.wrapper)) {
+    return false;
+  }
+  if (typeof move.wrapper.distributionUrl !== "string" || !/^https:\/\/services\.gradle\.org\/distributions\/gradle-\d+(?:\.\d+){1,2}-(?:bin|all)\.zip$/.test(move.wrapper.distributionUrl)) {
+    return false;
+  }
+  return validHash(move.wrapper.distributionSha256) && validHash(move.wrapper.jarSha256);
 }
 
 function validDeclaration(declaration: unknown): boolean {

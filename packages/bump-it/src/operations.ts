@@ -12,6 +12,7 @@ import { type GradleInventories, lockfilesOf } from "../../remediation/src/inven
 import { branchFor, ownPullRequests, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, type PublicationContext, type PullRequestContent } from "../../remediation/src/publication.ts";
 
+import type { WrapperPlanner } from "./gradle-wrapper.ts";
 import { constrainedUnit } from "./constraints.ts";
 import type { BumpItDeps } from "./deps.ts";
 import { formatManifest } from "./manifest-format.ts";
@@ -26,6 +27,7 @@ export interface Execution {
   readonly deps: BumpItDeps;
   readonly env: GateEnvironment;
   readonly inventories: GradleInventories;
+  readonly wrapper: WrapperPlanner;
   readonly publication: PublicationContext;
 }
 
@@ -83,14 +85,19 @@ export async function writeNpm(execution: Execution, files: ReadonlyMap<string, 
 export async function verify(execution: Execution, computed: Computed): Promise<void> {
   const { context, deps, env, inventories } = execution;
   const head = deps.trees.working(context.workingCopy);
+  // Inventory executes repository code in its sandbox: hash the jar only after that build has finished.
+  const gradle = { base: computed.gradle, head: await inventories.ofWorkingTree(head) };
+  const changedFiles = await deps.changedSince(context.workingCopy, computed.base.id);
   const problems = await deps.verify({
     plan: computed.plan,
     npmFiles: computed.files,
     base: computed.base,
     head,
     env,
-    gradle: { base: computed.gradle, head: await inventories.ofWorkingTree(head) },
-    changedFiles: await deps.changedSince(context.workingCopy, computed.base.id),
+    wrapper: execution.wrapper,
+    wrapperJarSha256: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.wrapperJarSha256(context.workingCopy) : undefined,
+    gradle,
+    changedFiles,
   });
   if (problems.length > 0) {
     throw new Error(`verification failed: ${problems.join("; ")}`);

@@ -1,6 +1,6 @@
 ---
 name: bump-it
-description: Apply bump-it's selected Gradle declarations and action pins, adapting code only for a major. npm files are written by the tool and must remain unchanged.
+description: Apply bump-it's selected Gradle declarations, wrappers and action pins, adapting code only for a major. npm files are written by the tool and must remain unchanged.
 compatibleCodingAgents: [codex]
 inputSchema:
   type: object
@@ -18,14 +18,22 @@ inputSchema:
         additionalProperties: false
         required: [ecosystem, name, from, to, mechanism, locations, major]
         properties:
-          ecosystem: { type: string, enum: [npm, Maven, GitHub Actions] }
+          ecosystem: { type: string, enum: [npm, Maven, GitHub Actions, Gradle Wrapper] }
           name: { type: string }
           from: { type: string }
           to: { type: string }
-          mechanism: { type: string, enum: [npm-range, gradle-declared, action-pin] }
+          mechanism: { type: string, enum: [npm-range, gradle-declared, action-pin, gradle-wrapper] }
           locations: { type: array, items: { type: string } }
           major: { type: boolean }
           commitSha: { type: string }
+          wrapper:
+            type: object
+            additionalProperties: false
+            required: [distributionUrl, distributionSha256, jarSha256]
+            properties:
+              distributionUrl: { type: string }
+              distributionSha256: { type: string, minLength: 64, maxLength: 64 }
+              jarSha256: { type: string, minLength: 64, maxLength: 64 }
     toolWritten: { type: array, items: { type: string } }
     failingChecks: { type: array, items: { type: string } }
     conflicted: { type: array, items: { type: string } }
@@ -74,6 +82,12 @@ or touch git metadata. Leave no temporary files: everything in the working tree 
   peerDependenciesMeta, overrides, workspaces). Only a major may adapt a manifest's other fields (scripts, config).
 - `gradle-declared`: edit the declarations in every configuration location, to exactly `to`, keeping the repository's
   version catalog and build conventions. Never add or change transitive constraints or raise a floor.
+- `gradle-wrapper`: the tool chose `to` and supplied official checksums in `wrapper`. Run
+  `./gradlew wrapper --no-daemon --gradle-version <to> --distribution-type <bin-or-all> --gradle-distribution-sha256-sum <wrapper.distributionSha256>`
+  twice, sequentially, from the repository root, inside your sandbox. Take bin/all from `wrapper.distributionUrl`.
+  The first invocation selects the new distribution; the second generates its wrapper jar and scripts. Both must
+  succeed. Do not download a jar yourself or substitute a distribution/checksum. Keep the properties file's other
+  settings. Wrapper files may change only when this mechanism is supplied; code adaptation requires a major.
 - `action-pin`: replace the planned action's uses in the named files with its same owner/repo/path at `commitSha # to`.
   Preserve the action's path. When a file has several versions, move only the uses at `from` to that move's target.
 - Never edit a dependency version outside the supplied moves. The tool-written npm graph can already include
@@ -88,7 +102,7 @@ or touch git metadata. Leave no temporary files: everything in the working tree 
 Run the repository's relevant checks. npm commands inherit min-release-age and min-release-age-exclude from the
 runner. Use `npm ci --ignore-scripts` when installation is needed: do not write lockfiles at all. Do not run npm
 install, npm update or any command that rewrites the tool's npm files; --package-lock-only is not a check. Don't run
-Gradle's wrapper-upgrade task; wrapper upgrades are a separate slice.
+Gradle's wrapper task unless a `gradle-wrapper` move is supplied; then run the exact two invocations above.
 
 ## Resolve and adapt
 

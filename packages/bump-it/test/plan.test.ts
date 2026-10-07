@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { planBlock } from "../../remediation/src/plan-blocks.ts";
 import { planDigest, planFor, planOf, planSection, withPlanSection } from "../src/plan.ts";
+import { WRAPPER_PROPERTIES } from "../src/gradle-wrapper.ts";
 import { majorUnits, routineUnit } from "../src/units.ts";
 
 import { candidate } from "./fixtures.ts";
@@ -11,6 +12,18 @@ describe("units and persisted plan", () => {
     const bumps = [candidate(), candidate({ name: "other", locations: ["a", "b"] }), candidate({ from: "0.1.0", locations: ["ws"], minor: undefined })];
     expect(routineUnit(bumps).moves.map((move) => move.name)).toEqual(["lib", "other"]);
     expect(majorUnits(bumps).map((unit) => [unit.package, unit.moves.length])).toEqual([["npm|lib", 2], ["npm|other", 1]]);
+  });
+  it("persists wrapper targets and includes official hashes in identity, rejecting incomplete or unsafe wrapper blocks", async () => {
+    const move = { ecosystem: "Gradle Wrapper" as const, name: "gradle/gradle", from: "8.0", to: "8.1", mechanism: "gradle-wrapper" as const,
+      major: false, locations: [WRAPPER_PROPERTIES], declarations: [],
+      wrapper: { distributionUrl: "https://services.gradle.org/distributions/gradle-8.1-bin.zip", distributionSha256: "a".repeat(64), jarSha256: "b".repeat(64) } };
+    const plan = await planFor(routineUnit([], { routine: move }), { ...npm, files: new Map() }, async () => undefined);
+    expect(planOf(planSection(plan))).toEqual(plan);
+    expect(planDigest({ ...plan, moves: [{ ...move, wrapper: { ...move.wrapper, jarSha256: "c".repeat(64) } }] })).not.toBe(planDigest(plan));
+    for (const changed of [{ ...move, wrapper: undefined }, { ...move, locations: ["other.properties"] },
+      { ...move, wrapper: { ...move.wrapper, distributionUrl: "https://evil.invalid/gradle.zip" } }]) {
+      expect(planOf(planBlock({ ...plan, moves: [changed] }))).toBeUndefined();
+    }
   });
   it("round trips without file contents; hashes include transitive-only changes, not report notes", async () => {
     const plan = await planFor(routineUnit([candidate()]), npm, async () => undefined);

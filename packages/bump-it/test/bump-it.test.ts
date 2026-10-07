@@ -17,6 +17,7 @@ import { bumpIt, type BumpItDeps, RULES } from "../src/bump-it.ts";
 import type { NpmResult } from "../src/npm-compute.ts";
 import { type BumpPlan, planFor, planOf, planSection } from "../src/plan.ts";
 import { majorUnits, routineUnit, type Unit } from "../src/units.ts";
+import { WRAPPER_JAR, WRAPPER_PROPERTIES, WRAPPER_PACKAGE, type WrapperCandidates, type WrapperTarget } from "../src/gradle-wrapper.ts";
 import { candidate } from "./fixtures.ts";
 
 const NOW = new Date("2026-10-07T06:00:00Z");
@@ -37,7 +38,7 @@ function npmOf(unit: Pick<Unit, "moves">): NpmResult {
 }
 async function prFor(unit: Unit, overrides: Partial<GitHubPullRequest> = {}): Promise<GitHubPullRequest> {
   const plan = await planFor(unit, npmOf(unit), async () => "1".repeat(40));
-  return ownPr({ headRef: `bump-it/2026-10-05-${unit.topic}`, labels: [RULES.label], body: withMarker(RULES, `Body.\n\n${planSection(plan)}`, { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }), ...overrides });
+  return ownPr({ headRef: branchFor(RULES, new Date("2026-10-05T00:00:00Z"), unit.topic), labels: [RULES.label], body: withMarker(RULES, `Body.\n\n${planSection(plan)}`, { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }), ...overrides });
 }
 function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; baseSha?: string; problems?: string[]; incomplete?: string[]; deferred?: string[]; refuse?: boolean; npm?: (unit: Unit) => Promise<NpmResult> } = {}) {
   const github = new FakeGitHub(...options.prs ?? []);
@@ -66,6 +67,9 @@ function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; 
   for (const pr of options.prs ?? []) workspace.setRemoteHead(pr.headRef, pr.headSha);
   const context: ToolRunContext = { config: CONFIG, repo: { repo: REPO, branch: undefined }, base: "main", github, workspace, workingCopy: wc, now: NOW, releaseAgeDays: 7, releaseAgeExclude: [], readToken: "read-token", isolation: {}, logger: new ConsoleLogger({ minLevel: "error" }), agent: (async (call: { effort?: string; input: Record<string, unknown> }) => { agentCalls.push(call); return options.refuse ? { outcome: "cannot-apply", summary: "can't migrate" } : { outcome: "applied", summary: "updated", publication: { title: "upgrading lib", body: "Adapts to the upgrade.", commitMessage: "upgrading lib" } }; }) as ToolRunContext["agent"] };
   const deps: BumpItDeps = {
+    wrapper: () => ({ candidates: async () => ({}), verify: async () => [] }),
+    restoreWrapperFile: async () => {},
+    wrapperJarSha256: async () => undefined,
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async (url) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => String(url).includes("/git/") ? { object: { type: "commit", sha: "1".repeat(40) } } : {}, text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
     gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => undefined }),
     trees: { commit: async (_wc, sha) => tree(sha, BASE_FILES), working: () => tree("worktree", files) },
@@ -84,7 +88,68 @@ function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; 
 const major = (bump = candidate()) => majorUnits([bump])[0]!;
 const routine = (bump = candidate()) => routineUnit([bump]);
 
+const wrapperTarget: WrapperTarget = {
+  distributionUrl: "https://services.gradle.org/distributions/gradle-8.1-bin.zip",
+  distributionSha256: "a".repeat(64), jarSha256: "b".repeat(64),
+};
+const wrapperCandidates = (): WrapperCandidates => ({
+  routine: { ecosystem: "Gradle Wrapper", name: "gradle/gradle", from: "8.0", to: "8.1", mechanism: "gradle-wrapper",
+    major: false, declarations: [], locations: [WRAPPER_PROPERTIES], wrapper: wrapperTarget },
+  major: { ecosystem: "Gradle Wrapper", name: "gradle/gradle", from: "8.0", to: "9.0", mechanism: "gradle-wrapper",
+    major: true, declarations: [], locations: [WRAPPER_PROPERTIES], wrapper: { ...wrapperTarget, distributionUrl: wrapperTarget.distributionUrl.replace("8.1", "9.0") } },
+});
+
 describe("bump-it run", () => {
+  it("adds wrapper moves to the routine and its own high-effort major, sharing the planner and reading the jar before verification", async () => {
+    const h = harness({ bumps: [] });
+    const planner = { candidates: async () => wrapperCandidates(), verify: async () => [] };
+    let planners = 0;
+    let jarReads = 0;
+    const order: string[] = [];
+    const deps = { ...h.deps, wrapper: () => { planners++; return planner; },
+      wrapperJarSha256: async () => { order.push("jar"); jarReads++; return wrapperTarget.jarSha256; },
+      gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => { order.push("inventory"); return undefined; } }),
+      verify: async (input: Parameters<BumpItDeps["verify"]>[0]) => {
+        expect(input.wrapper).toBe(planner);
+        expect(input.wrapperJarSha256).toBe(wrapperTarget.jarSha256);
+        return h.deps.verify(input);
+      },
+    };
+    expect(await bumpIt(deps).run(h.context)).toMatchObject({ units: [
+      { topic: "routine", outcome: "published" },
+      { topic: "gradle/gradle-major", outcome: "published" },
+    ] });
+    expect(planners).toBe(1);
+    expect(jarReads).toBe(2);
+    expect(order).toEqual(["inventory", "jar", "inventory", "jar"]);
+    expect(h.agentCalls).toMatchObject([
+      { effort: "medium", input: { kind: "routine", moves: [{ mechanism: "gradle-wrapper", to: "8.1", wrapper: wrapperTarget }] } },
+      { effort: "high", input: { kind: "major", moves: [{ mechanism: "gradle-wrapper", to: "9.0" }] } },
+    ]);
+    expect(h.verified[1]?.package).toBe(WRAPPER_PACKAGE);
+  });
+  it("combines wrapper minors with npm changes in one routine and leaves tool-written npm files protected", async () => {
+    const h = harness({ bumps: [candidate({ major: undefined })] });
+    const wrapper = { routine: wrapperCandidates().routine };
+    const deps = { ...h.deps, wrapper: () => ({ candidates: async () => wrapper, verify: async () => [] }) };
+    expect(await bumpIt(deps).run(h.context)).toMatchObject({ units: [{ outcome: "published" }] });
+    expect(h.agentCalls).toMatchObject([{ input: { kind: "routine", moves: [
+      { mechanism: "npm-range", to: "1.1.0" }, { mechanism: "gradle-wrapper", to: "8.1" },
+    ], toolWritten: ["package-lock.json", "package.json"] } }]);
+    expect(h.workspace.publications).toHaveLength(1);
+    expect(h.verified[0]?.npmFiles).toHaveLength(2);
+  });
+  it("suppresses an identical recognised wrapper plan and withholds publication when its checksum verification fails", async () => {
+    const wrapper = wrapperCandidates();
+    const pr = await prFor(routineUnit([], wrapper));
+    const h = harness({ bumps: [], prs: [pr] });
+    const deps = { ...h.deps, wrapper: () => ({ candidates: async () => ({ routine: wrapper.routine }), verify: async () => [] }) };
+    expect(await bumpIt(deps).run(h.context)).toMatchObject({ units: [{ outcome: "already-open" }] });
+    expect(h.agentCalls).toEqual([]);
+    const failed = harness({ bumps: [], problems: ["wrapper jar must match the official checksum"] });
+    expect(await bumpIt({ ...failed.deps, wrapper: deps.wrapper }).run(failed.context)).toMatchObject({ units: [{ outcome: "failed", detail: expect.stringContaining("wrapper jar") }] });
+    expect(failed.workspace.publications).toEqual([]);
+  });
   it("forces reconciliation of a legacy journal head instead of trusting its stale same-plan body", async () => {
     const pr = await prFor(routine(), { headSha: "9".repeat(40) });
     const h = harness({ prs: [pr], bumps: [candidate({ major: undefined })] });
@@ -239,6 +304,45 @@ describe("bump-it run", () => {
 });
 
 describe("bump-it review", () => {
+  it("recomputes wrapper plans on a new base, retaining same-target major adaptations and re-applying changed targets", async () => {
+    const wrapper = wrapperCandidates();
+    for (const target of ["9.0", "10.0"]) {
+      const h = harness({ bumps: [], prs: [await prFor(majorUnits([], wrapper)[0]!)], baseSha: NEW_BASE });
+      const next = { major: { ...wrapper.major!, to: target, wrapper: { ...wrapper.major!.wrapper!, distributionUrl: `https://services.gradle.org/distributions/gradle-${target}-bin.zip` } } };
+      const deps = { ...h.deps, wrapper: () => ({ candidates: async () => next, verify: async () => [] }) };
+      expect(await bumpIt(deps).review(h.context)).toMatchObject({ reviewed: [{ outcome: "rebased" }] });
+      expect(h.agentCalls).toHaveLength(target === "9.0" ? 0 : 1);
+      if (target !== "9.0") expect(h.agentCalls[0]).toMatchObject({ effort: "high", input: { mode: "apply" } });
+      expect(planOf(h.github.prs.get(7)!.body)?.moves[0]?.to).toBe(target);
+    }
+  });
+  it("restores a conflicted wrapper jar from base as binary before the agent regenerates it", async () => {
+    const wrapper = wrapperCandidates();
+    const h = harness({ bumps: [], prs: [await prFor(majorUnits([], wrapper)[0]!)], baseSha: NEW_BASE });
+    const prepare = h.workspace.prepareBranch.bind(h.workspace);
+    h.workspace.prepareBranch = async (wc, args) => {
+      const result = await prepare(wc, args);
+      return args.start === "remote-merging" && result.kind === "prepared"
+        ? { kind: "conflicted", prepared: result.prepared, conflicted: [WRAPPER_JAR] } : result;
+    };
+    const restored: string[] = [];
+    const deps = { ...h.deps, wrapper: () => ({ candidates: async () => wrapper, verify: async () => [] }),
+      restoreWrapperFile: async (_wc: WorkingCopy, base: string, path: string) => { restored.push(`${base}:${path}`); },
+    };
+    expect(await bumpIt(deps).review(h.context)).toMatchObject({ reviewed: [{ outcome: "rebased" }] });
+    expect(restored).toEqual([`${NEW_BASE}:${WRAPPER_JAR}`]);
+    expect(h.agentCalls).toMatchObject([{ input: { mode: "apply", moves: [{ mechanism: "gradle-wrapper" }] } }]);
+  });
+  it("retires an already-landed wrapper major and adapts its failed CI with high effort", async () => {
+    const wrapper = wrapperCandidates();
+    const pr = await prFor(majorUnits([], wrapper)[0]!);
+    const retired = harness({ bumps: [], prs: [pr], baseSha: NEW_BASE });
+    expect(await bumpIt(retired.deps).review(retired.context)).toMatchObject({ reviewed: [{ outcome: "retired" }] });
+    const failed = harness({ bumps: [], prs: [pr] });
+    failed.github.checks = RED;
+    expect(await bumpIt(failed.deps).review(failed.context)).toMatchObject({ reviewed: [{ outcome: "adapted" }] });
+    expect(failed.agentCalls).toMatchObject([{ effort: "high", input: { mode: "adapt", moves: [{ mechanism: "gradle-wrapper" }] } }]);
+  });
   it("keeps a peer-blocked major on a moved base and continues reviewing other PRs", async () => {
     const pr = await prFor(major());
     const h = harness({ prs: [pr, await prFor(routine(), { number: 8 })], baseSha: NEW_BASE });

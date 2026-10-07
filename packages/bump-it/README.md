@@ -5,7 +5,7 @@ old (or the repository's `releaseAgeDays`), adding no advisory group or malware.
 scopes skip the wait (their dependencies don't).
 Actions pins and Dockerfile CLIs represented by configured npm manifest/lockfiles use the same rule.
 The tool decides versions, computes npm files and verifies every edit before opening a draft PR. The coding agent
-handles Gradle declarations, Actions pins and major migrations.
+handles Gradle declarations and wrappers, Actions pins and major migrations.
 
 ```bash
 packages/remediation/run.sh bump-it run leanish/widget      # weekly
@@ -19,6 +19,12 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   PR, including every declaration of that package with a selected major move. Each unit starts from the default branch,
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
+- The root Gradle wrapper joins the routine within its current major; the highest eligible newer major gets its own
+  `gradle-gradle-major` PR, subject to the same new-major cap and deferred priority. Code picks stable, non-broken
+  services.gradle.org releases at least `releaseAgeDays` old by `buildTime`. Published gradle/gradle repository
+  advisories are read once per run/tick: inherited advisories do not veto a candidate, but any newly affecting
+  advisory does. A rejected newer release does not veto an older eligible one. Missing metadata or unreadable
+  advisory ranges stop selection rather than claiming a safe target.
 - Before npm resolves a routine or major, code checks incoming and outgoing peer constraints against existing directs.
   Rule-picked bump targets stay fixed; required companions are added explicitly at the lowest safe version in their
   own compatible line that makes the set consistent, aged (own scopes: any age), with no new advisory group, malware
@@ -44,7 +50,7 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   induced transitives, even when those versions are absent from the explicit move list; the agent preserves them.
   It may adapt code and manifest scripts/config only for a major, using `majorEffort` (configure Sol with high effort). The [skill](skills/bump-it/SKILL.md) defines the boundary.
 - Verification fences off policy changes first, requires exact planned lockfiles and dependency fields, exact planned
-  Gradle declarations, unchanged unplanned declarations and floors, and correct action pins. Only after every local
+  Gradle declarations, unchanged unplanned declarations and floors, correct action pins and official wrapper checksums. Only after every local
   check passes does it run `compare`, which must also pass. A report of local problems means `compare` has not run.
 - Open PRs count only when the head matches their body state or the exact tool journal entry. Same plan: leave it to
   review. Changed plan: merge base, revert all old PR edits to base, apply the new plan, verify and push a normal commit.
@@ -56,14 +62,19 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
 
 Plans carry moves and npm file hashes, with a bounded copy-change summary, never file contents. Major manifests also
 carry a hash of their dependency fields, allowing later review to protect them while retaining script adaptations.
-The Gradle wrapper is a separate slice E2 and is not upgraded by this command.
+For a planned wrapper move the skill runs `./gradlew wrapper --no-daemon --gradle-version X --distribution-type bin|all
+--gradle-distribution-sha256-sum SUM` twice, sequentially, inside the agent sandbox. The first call selects the target;
+the second regenerates its jar and scripts. The tool preserves the base's bin/all choice and verifies the exact official
+`distributionUrl`, `distributionSha256Sum`, and the jar's binary SHA-256, reusing the release/advisory snapshot.
+Other units cannot edit wrapper files. Only the root `gradle/wrapper/gradle-wrapper.properties` is supported;
+mirrors, custom distribution URLs and prerelease base wrappers are reported as unsupported rather than guessed.
 
 ## Review
 
 The [shared tick](../remediation) leaves human pushes alone, recomputes on any base movement before reading CI, then
 handles pending/green checks without a model. A routine recomputes the whole routine; a major recomputes its package.
 Nothing remains: close. Changed routine plan or major target: reconcile by revert. Otherwise merge, resolve dependency
-conflicts from base and re-apply (major code conflicts go to the agent's `resolve` mode), verify, publish normally.
+conflicts from base (wrapper jars restored as binary) and re-apply (major code conflicts go to the agent's `resolve` mode), verify, publish normally.
 If recomputation blocks a major's direct-peer set, the tick reports an `error` with the reason and retains the PR
 and branch for a later tick; it does not treat the blocked move as completed work.
 Clean same-target major merges preserve existing script/config adaptations. Failed major CI gets at most two

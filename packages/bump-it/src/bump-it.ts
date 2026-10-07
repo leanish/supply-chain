@@ -10,6 +10,7 @@ import { branchFor, topicOf, stateOf } from "../../remediation/src/own-pr.ts";
 import { closeAndDelete, ownOpenPullRequests, publishNew, publishUpdate, recoverPublication } from "../../remediation/src/publication.ts";
 import { reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
+import { WRAPPER_FILES, type WrapperCandidates } from "./gradle-wrapper.ts";
 import { type BumpItDeps, defaultDeps } from "./deps.ts";
 import { type Computed, compute, edit, type Execution, prepare, RULES, verify, writeNpm } from "./operations.ts";
 import { type BumpPlan, planDigest, planOf, withPlanSection } from "./plan.ts";
@@ -31,10 +32,12 @@ export function bumpIt(deps: BumpItDeps = defaultDeps()): ToolHandlers {
 }
 
 async function createExecution(context: ToolRunContext, deps: BumpItDeps): Promise<Execution> {
+  const env = await deps.gate(context);
   return {
     context,
     deps,
-    env: await deps.gate(context),
+    env,
+    wrapper: deps.wrapper(env, context.releaseAgeDays),
     inventories: deps.gradle(context),
     publication: {
       rules: RULES,
@@ -65,12 +68,13 @@ async function run(context: ToolRunContext, deps: BumpItDeps): Promise<Readonly<
   if (found.incomplete.length > 0) {
     return { outcome: "incomplete", incomplete: found.incomplete };
   }
+  const wrapper = await execution.wrapper.candidates(base);
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
   const priority = deps.priority(context);
   const deferredBefore = await priority.read();
   const order = (unit: Unit) => (unit.package === undefined ? -1 : deferredBefore.indexOf(unit.package));
-  const majors = majorUnits(found.bumps).sort((a, b) => (order(a) === -1 ? Infinity : order(a)) - (order(b) === -1 ? Infinity : order(b)));
-  const units = [routineUnit(found.bumps), ...majors];
+  const majors = majorUnits(found.bumps, wrapper).sort((a, b) => (order(a) === -1 ? Infinity : order(a)) - (order(b) === -1 ? Infinity : order(b)));
+  const units = [routineUnit(found.bumps, wrapper), ...majors];
   const results: UnitReport[] = [];
   const deferred: string[] = [];
   let openedMajors = 0;
@@ -167,8 +171,8 @@ function planFrom(pr: GitHubPullRequest): BumpPlan {
   return plan;
 }
 
-function unitFor(previous: BumpPlan, bumps: ReadonlyArray<BumpCandidate>): Unit | undefined {
-  return previous.kind === "routine" ? routineUnit(bumps) : majorUnits(bumps).find((unit) => unit.package === previous.package);
+function unitFor(previous: BumpPlan, bumps: ReadonlyArray<BumpCandidate>, wrapper: WrapperCandidates): Unit | undefined {
+  return previous.kind === "routine" ? routineUnit(bumps, wrapper) : majorUnits(bumps, wrapper).find((unit) => unit.package === previous.package);
 }
 
 function sameTargets(previous: BumpPlan, next: BumpPlan): boolean {
@@ -182,7 +186,8 @@ function targetKeys(plan: BumpPlan): string[] {
       .map((declaration) => `${declaration.lockfile}:${declaration.workspace}:${declaration.declaredAs}`)
       .sort()
       .join(",");
-    return `${move.ecosystem}|${move.name}|${move.to}|${locations}|${declarations}`;
+    const wrapper = move.wrapper === undefined ? "" : `${move.wrapper.distributionUrl}|${move.wrapper.distributionSha256}|${move.wrapper.jarSha256}`;
+    return `${move.ecosystem}|${move.name}|${move.to}|${locations}|${declarations}|${wrapper}`;
   });
   return [...new Set(keys)].sort();
 }
@@ -198,7 +203,7 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
       if (found.incomplete.length > 0) {
         throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
       }
-      const unit = unitFor(previous, found.bumps);
+      const unit = unitFor(previous, found.bumps, await execution.wrapper.candidates(base));
       const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle, found.npmPeers);
       if (computed?.blocked !== undefined) {
         throw new Error(`recomputation is blocked; keeping the PR: ${computed.blocked}`);
@@ -217,8 +222,12 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
         const code: string[] = [];
         const pins = new Set(computed.plan.moves.filter((move) => move.mechanism === "action-pin").flatMap((move) => move.locations));
         for (const path of merge.conflicted) {
-          if (!isMechanical(path) && !pins.has(path)) {
+          if (!isMechanical(path) && !pins.has(path) && !WRAPPER_FILES.includes(path)) {
             code.push(path);
+            continue;
+          }
+          if (WRAPPER_FILES.includes(path)) {
+            await deps.restoreWrapperFile(context.workingCopy, base.id, path);
             continue;
           }
           const theirs = await base.read(path);

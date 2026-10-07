@@ -6,12 +6,15 @@ import { type GateEnvironment, type GradleInputs, readSettings, runCompare, tree
 import type { Tree } from "../../ci/src/tree.ts";
 import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, FLOORS_FILE, isDependencyFile, policyFence } from "../../remediation/src/edit-checks.ts";
 
+import { WRAPPER_FILES, type WrapperPlanner } from "./gradle-wrapper.ts";
 import { plannedPinsLanded } from "./action-pins.ts";
 import { gradleDeclarationProblems } from "./gradle-declarations.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, dependencyDigest, sha256 } from "./plan.ts";
 
 export interface VerifyInputs {
   readonly plan: BumpPlan;
+  readonly wrapper?: WrapperPlanner;
+  readonly wrapperJarSha256?: string;
   readonly npmFiles: ReadonlyMap<string, string>;
   readonly base: Tree;
   readonly head: Tree;
@@ -30,6 +33,13 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     return fenced;
   }
   const problems = await npmProblems(inputs);
+  const wrapperMoves = plan.moves.filter((move) => move.mechanism === "gradle-wrapper");
+  if (wrapperMoves.length > 0) {
+    if (inputs.wrapper === undefined) problems.push("wrapper verification requires the official Gradle catalog");
+    else problems.push(...await inputs.wrapper.verify(wrapperMoves, base, head, inputs.wrapperJarSha256));
+  } else if (inputs.changedFiles.some((path) => WRAPPER_FILES.includes(path))) {
+    problems.push("Gradle wrapper files changed outside the plan");
+  }
   if (await base.read(FLOORS_FILE) !== await head.read(FLOORS_FILE)) {
     problems.push("bump-it may not change dependency floors");
   }
@@ -41,7 +51,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head));
   problems.push(...await plannedPinsLanded(plan.moves, base, head), ...await actionsOutsidePlan(pins, base, head));
   if (plan.kind !== "major") {
-    const outside = inputs.changedFiles.filter((path) => !isDependencyFile(path, pins.length > 0));
+    const outside = inputs.changedFiles.filter((path) => !isDependencyFile(path, pins.length > 0) && !(wrapperMoves.length > 0 && WRAPPER_FILES.includes(path)));
     if (outside.length > 0) {
       problems.push(`only a major may change ${outside.join(", ")}`);
     }
