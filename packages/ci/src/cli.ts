@@ -25,7 +25,7 @@
  * SUPPLY_CHAIN_COMMIT to record the tool's own commit.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -34,6 +34,7 @@ import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, ru
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess, withoutCredentials } from "./process.ts";
 import { type Fetch, namingFailures } from "./http.ts";
+import { npmSignatures } from "./npm-signatures.ts";
 import { configDigest, emitReport, REPORT_SCHEMA_VERSION, type Report } from "./report.ts";
 import { parsePlan, planRescan, type RescanSteps, runRescan } from "./rescan.ts";
 import { gitTree, type Tree, workingTree } from "./tree.ts";
@@ -255,31 +256,9 @@ async function gradleInventoryCommand(repo: string, out: string, which: string |
   }
 }
 
-/**
- * After the gate passed: `npm ci --ignore-scripts` next to every lockfile the
- * tree lists (no package code runs), then `npm audit signatures`, which checks
- * the registry signatures and provenance attestations of what was installed.
- * The problems, if any.
- */
-async function npmSignatures(repo: string): Promise<string[]> {
-  const { lockfiles } = await lenientSources(workingTree(repo));
-  const env = withoutCredentials(process.env);
-  for (const lockfile of lockfiles) {
-    const dir = join(repo, dirname(lockfile));
-    for (const args of [["ci", "--ignore-scripts", "--no-audit", "--no-fund"], ["audit", "signatures"]]) {
-      const result = await runProcess("npm", args, { cwd: dir, env });
-      process.stdout.write(result.stdout);
-      if (result.code !== 0) {
-        return [`npm ${args.join(" ")} in ${dirname(lockfile)} failed: ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`];
-      }
-    }
-  }
-  return [];
-}
-
 async function npmSignaturesCommand(repo: string): Promise<number> {
   try {
-    const problems = await npmSignatures(repo);
+    const problems = await npmSignatures(workingTree(repo), { log: (text) => process.stdout.write(text) });
     for (const problem of problems) console.error(`✗ ${problem}`);
     if (problems.length === 0) console.log("npm-signatures: every lockfile installed without scripts and verified");
     return problems.length === 0 ? 0 : 1;
@@ -339,7 +318,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
           notes: outcome.notes,
         };
       },
-      signatures: () => npmSignatures(repo),
+      signatures: () => npmSignatures(workingTree(repo), { env, log: (text) => process.stdout.write(text) }),
       async reset() {
         await runProcess("git", ["reset", "--hard", "--quiet"], { cwd: repo });
         await runProcess("git", ["clean", "-ffdxq"], { cwd: repo });
