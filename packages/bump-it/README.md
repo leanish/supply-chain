@@ -64,6 +64,8 @@ The [shared tick](../remediation) leaves human pushes alone, recomputes on any b
 handles pending/green checks without a model. A routine recomputes the whole routine; a major recomputes its package.
 Nothing remains: close. Changed routine plan or major target: reconcile by revert. Otherwise merge, resolve dependency
 conflicts from base and re-apply (major code conflicts go to the agent's `resolve` mode), verify, publish normally.
+If recomputation blocks a major's direct-peer set, the tick reports an `error` with the reason and retains the PR
+and branch for a later tick; it does not treat the blocked move as completed work.
 Clean same-target major merges preserve existing script/config adaptations. Failed major CI gets at most two
 high-effort adaptations, with the attempt counted before the agent starts. Routine CI failures are reported without
 an agent; after the shared two-attempt budget the PR closes. One PR's problem does not stop the tick.

@@ -200,6 +200,9 @@ async function review(context: ToolRunContext, deps: BumpItDeps): Promise<Readon
       }
       const unit = unitFor(previous, found.bumps);
       const computed = unit === undefined ? undefined : await compute(execution, unit, base, gradle, found.npmPeers);
+      if (computed?.blocked !== undefined) {
+        throw new Error(`recomputation is blocked; keeping the PR: ${computed.blocked}`);
+      }
       if (computed === undefined || empty(computed)) {
         await closeAndDelete(execution.publication, pr.number, pr.headSha, "Recomputed on the default branch: this unit has nothing left to move.");
         return "retired";

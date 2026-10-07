@@ -239,6 +239,38 @@ describe("bump-it run", () => {
 });
 
 describe("bump-it review", () => {
+  it("keeps a peer-blocked major on a moved base and continues reviewing other PRs", async () => {
+    const pr = await prFor(major());
+    const h = harness({ prs: [pr, await prFor(routine(), { number: 8 })], baseSha: NEW_BASE });
+    h.github.branches.add(pr.headRef);
+    const reason = "lib: no safe aged compatible direct-peer set";
+    const deps: BumpItDeps = {
+      ...h.deps,
+      candidates: async (...args) => ({
+        ...await h.deps.candidates(...args),
+        npmPeers: { resolve: async (moves) => ({
+          additions: [],
+          blocked: moves.some((move) => move.to === "2.0.0") ? [{ moves, reason }] : [],
+          sets: [],
+        }) },
+      }),
+    };
+
+    expect(await bumpIt(deps).review(h.context)).toMatchObject({ reviewed: [
+      { number: pr.number, outcome: "error", detail: expect.stringContaining(reason) },
+      { number: 8, outcome: "rebased" },
+    ] });
+    expect(h.github.prs.get(pr.number)).toEqual(pr);
+    expect(h.github.branches.has(pr.headRef)).toBe(true);
+    expect(h.github.calls.some((call) => call.startsWith("closePullRequest"))).toBe(false);
+    expect(h.github.calls.some((call) => call.startsWith("deleteBranch"))).toBe(false);
+    expect(h.agentCalls).toEqual([]);
+    expect(h.computed).toEqual([{ topic: "routine", base: NEW_BASE }]);
+    expect(h.verified.map((plan) => plan.kind)).toEqual(["routine"]);
+    expect(h.workspace.publications.map((publication) => publication.prepared.branch)).toEqual([
+      h.github.prs.get(8)!.headRef,
+    ]);
+  });
   it("leaves someone else's push alone; pending and green use no model or candidates", async () => {
     const human = harness({ prs: [await prFor(routine(), { headSha: "9".repeat(40) })] });
     expect(await bumpIt(human.deps).review(human.context)).toMatchObject({ reviewed: [{ outcome: "left-alone" }] });
