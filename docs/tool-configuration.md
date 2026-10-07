@@ -2,16 +2,16 @@
 
 secure-it and bump-it each read `~/.config/leanish/<tool>/agent.yaml`. Pass
 `--config /absolute/path/agent.yaml` to use another file. They share the parser,
-but have separate repository opt-ins, tokens, state and schedules. Unknown fields
-fail, including a field belonging to the other tool.
+but have separate repository opt-ins, default Keychain services, state and
+schedules. Unknown fields fail, including a field belonging to the other tool.
 
 Start with the complete examples:
 
 - [secure-it agent.yaml](examples/secure-it-agent.yaml)
 - [bump-it agent.yaml](examples/bump-it-agent.yaml)
 
-Replace `acme/widget`, the commit identity and Keychain service names. Paths may
-be absolute or start with `~/`; the tools expand `~`, but do not expand shell
+Replace `acme/widget` and the commit identity; override Keychain service names only
+if needed. Paths may be absolute or start with `~/`; the tools expand `~`, but do not expand shell
 variables such as `$HOME`. The [adoption guide](adopting-tools.md) covers setup,
 permissions and schedules.
 
@@ -25,8 +25,9 @@ permissions and schedules.
 | `agent.model` | Required | Concrete model ID or family `sol`, `astra`, `luna`. A family resolves to the newest listed model in the installed CLI's catalog; it is not a pinned model ID. |
 | `agent.effort` | Required; example `medium` | Effort for ordinary agent calls. The runner checks catalog-supported efforts when available. |
 | `agent.majorEffort` | Required; example `high` | Effort for majors, including their review adaptations and conflict resolution. |
-| `secrets.write` | Required | macOS Keychain service holding the tool's write PAT. |
-| `secrets.read` | Required | Different service holding a different, read-only PAT for the agent. Both equal names and equal token values are refused. |
+| `secrets` | Optional mapping | Override either or both default services; `{}` uses both defaults. Every opted-in repository uses the same pair. |
+| `secrets.write` | `leanish-<tool>-write` | macOS Keychain service holding the tool's write PAT. |
+| `secrets.read` | `leanish-<tool>-read` | Different service holding a different, read-only PAT for the agent. Both equal names and equal token values are refused. |
 | `commitIdentity.name`, `commitIdentity.email` | Required | Author and committer for the tool's commits; also the identity exposed to agent commands. No developer-global git identity is inherited. |
 | `dirs.state` | `~/.local/share/leanish/<tool>` | Workspaces, separate git metadata, publication journal and protected OSV-Scanner. bump-it also stores deferred-major ordering here. Keep this outside temp and cache roots; see the adoption guide. |
 | `dirs.cache` | `~/.cache/leanish/<tool>` | Sandbox-writable build cache, including Gradle and npm caches. Keep separate from state and between tools. |
@@ -34,6 +35,14 @@ permissions and schedules.
 | `modelPrices` | Unset | Absolute path to the optional JSON price table below. Without prices, token usage is still reported and cost gaps are explicit. |
 | `staleScanHours` | secure-it only, `36` | Positive integer: warn if the base branch's last successful daily full scan is older. This does not replace CI's daily scan or stop planning. |
 | `maxNewMajorsPerRun` | bump-it only, `3` | Nonnegative integer. Caps newly opened major PRs, never updates to existing ones. `0` defers all new majors. Deferred majors have priority next run. |
+
+The defaults are `leanish-secure-it-write` / `leanish-secure-it-read` and
+`leanish-bump-it-write` / `leanish-bump-it-read`, with no owner or repository in
+the names. Both tools may point to the same write/read pair through overrides;
+the write and read items within a pair must remain distinct. Existing explicit
+service names still work. PAT mode remains an alternative when GitHub App mode
+lands. Unknown fields also fail inside `secrets` and each `repos` entry;
+per-repository secrets are not supported.
 
 `run.sh` has a separate lock directory:
 `${XDG_STATE_HOME:-$HOME/.local/state}/leanish/<tool>/locks`. Changing `dirs.state`

@@ -15,6 +15,36 @@ readDeny: [~/dev/private, /Volumes/vault]
 `;
 
 describe("tool config", () => {
+  it.each(["secure-it", "bump-it"] as const)("defaults %s's Keychain services, allowing either or both to be overridden", (tool) => {
+    const withoutSecrets = VALID.replace(/^secrets:.*\n/m, "");
+    const defaults = { write: `leanish-${tool}-write`, read: `leanish-${tool}-read` };
+    const secretsOf = (text: string) => parseToolConfig(tool, text, "agent.yaml", HOME).secrets;
+
+    expect(secretsOf(withoutSecrets)).toEqual(defaults);
+    expect(secretsOf(`${withoutSecrets}secrets: {}\n`)).toEqual(defaults);
+    expect(secretsOf(`${withoutSecrets}secrets: { write: shared-write }\n`)).toEqual({ ...defaults, write: "shared-write" });
+    expect(secretsOf(`${withoutSecrets}secrets: { read: shared-read }\n`)).toEqual({ ...defaults, read: "shared-read" });
+    expect(secretsOf(`${withoutSecrets}secrets: { write: shared-write, read: shared-read }\n`)).toEqual({ write: "shared-write", read: "shared-read" });
+    expect(() => secretsOf(`${withoutSecrets}secrets: { write: ${defaults.read} }\n`)).toThrow("must be different items");
+  });
+
+  it.each([
+    ["null", "secrets must be a mapping"],
+    ["[]", "secrets must be a mapping"],
+    ["shared-write", "secrets must be a mapping"],
+    ["{ reads: shared-read }", "unknown field(s): reads"],
+    ['{ write: "" }', "secrets.write must be a non-empty string"],
+    ["{ read: null }", "secrets.read must be a non-empty string"],
+    ["{ write: 12 }", "secrets.write must be a non-empty string"],
+  ])("rejects invalid secret overrides: %s", (secrets, message) => {
+    expect(() => parseToolConfig("secure-it", VALID.replace(/^secrets:.*$/m, `secrets: ${secrets}`), "agent.yaml", HOME)).toThrow(message);
+  });
+
+  it("rejects repository-specific secrets", () => {
+    const text = VALID.replace("- repo: leanish/sqs-codec", "- repo: leanish/sqs-codec\n    secrets: { write: repo-write, read: repo-read }");
+    expect(() => parseToolConfig("secure-it", text, "agent.yaml", HOME)).toThrow("unknown field(s): secrets");
+  });
+
   it("reads the repos, agent, secrets and identity, with defaults under the home and ~ expanded", () => {
     const config = parseToolConfig("secure-it", VALID, "agent.yaml", HOME);
     expect(config).toEqual({

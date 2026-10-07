@@ -97,6 +97,52 @@ function handlers(run: (context: ToolRunContext) => Promise<Readonly<Record<stri
 }
 
 describe("runToolCommand", () => {
+  it.each(["secure-it", "bump-it"] as const)("uses %s's default Keychain services and gives only the read token to the agent", async (tool) => {
+    const defaults = { [`leanish-${tool}-write`]: "write-token", [`leanish-${tool}-read`]: "read-token" };
+    const { fake, invocations, requested } = machine({
+      readText: async () => CONFIG.replace(/^secrets:.*\n/m, ""),
+      secretValues: defaults,
+    });
+    const toolHandlers = {
+      ...handlers(async (context) => {
+        await context.agent({ entrypoint: "fix", input: { package: "vite" } });
+        return {};
+      }),
+      tool,
+    };
+
+    expect(await runToolCommand(toolHandlers, ["run", "leanish/widget", "--config", "/config/agent.yaml"], fake)).toBe(0);
+    expect(requested[0]).toContain("Bearer write-token");
+    expect(invocations[0]?.env?.["GH_TOKEN"]).toBe("read-token");
+    expect(JSON.stringify(invocations[0]?.env)).not.toContain("write-token");
+  });
+
+  it.each(["secure-it", "bump-it"] as const)("refuses identical token values in %s's default items", async (tool) => {
+    const { fake, finalLine } = machine({
+      readText: async () => CONFIG.replace(/^secrets:.*\n/m, ""),
+      secretValues: { [`leanish-${tool}-write`]: "same-token", [`leanish-${tool}-read`]: "same-token" },
+    });
+    let ran = false;
+    const toolHandlers = {
+      ...handlers(async () => {
+        ran = true;
+        return {};
+      }),
+      tool,
+    };
+
+    expect(await runToolCommand(toolHandlers, ["run", "leanish/widget", "--config", "/config/agent.yaml"], fake)).toBe(1);
+    expect(finalLine()).toMatchObject({ error: expect.stringContaining("hold the same token") });
+    expect(ran).toBe(false);
+  });
+
+  it("allows both tools to use the same explicit pair of Keychain items", async () => {
+    for (const tool of ["secure-it", "bump-it"] as const) {
+      const { fake } = machine();
+      expect(await runToolCommand({ ...handlers(async () => ({})), tool }, ["run", "leanish/widget", "--config", "/config/agent.yaml"], fake)).toBe(0);
+    }
+  });
+
   it("wires a run: default branch, working copy, the agent with the read-only token, and the result in the final line", async () => {
     const { fake, finalLine, invocations, requested } = machine();
     let seen: ToolRunContext | undefined;

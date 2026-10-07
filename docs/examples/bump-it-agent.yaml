@@ -7,9 +7,9 @@ agent:
   model: sol
   effort: medium
   majorEffort: high
-secrets:
-  write: leanish-bump-it-github
-  read: leanish-bump-it-github-read
+# Default Keychain services: leanish-bump-it-write and leanish-bump-it-read.
+# Optional overrides; both tools may use the same write/read pair:
+# secrets: { write: shared-write, read: shared-read }
 commitIdentity:
   name: dependency-bot
   email: dependency-bot@users.noreply.github.com

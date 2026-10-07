@@ -7,9 +7,9 @@ agent:
   model: sol
   effort: medium
   majorEffort: high
-secrets:
-  write: leanish-secure-it-github
-  read: leanish-secure-it-github-read
+# Default Keychain services: leanish-secure-it-write and leanish-secure-it-read.
+# Optional overrides; both tools may use the same write/read pair:
+# secrets: { write: shared-write, read: shared-read }
 commitIdentity:
   name: dependency-bot
   email: dependency-bot@users.noreply.github.com

@@ -43,11 +43,11 @@ Temporary projects, homes and caches are removed on success or failure. This bou
 
 Both tools are in this tree: [`secure-it`](../packages/secure-it) and [`bump-it`](../packages/bump-it), using [`packages/remediation`](../packages/remediation).
 
-- **Two GitHub tokens per tool**, both personal access tokens for now (a GitHub App mode is planned):
+- **Two GitHub tokens per tool**, both personal access tokens for now (PAT mode will remain an alternative when the planned GitHub App mode lands):
   - one that writes (branches, PRs, comments), only for the tool's own process;
   - one read-only, which the coding agent gets as `GH_TOKEN`.
 
-  The tool refuses two Keychain items holding the same token.
+  The tool refuses two Keychain items holding the same token. The default services are `leanish-<tool>-write` and `leanish-<tool>-read`; optional `secrets` overrides may point both tools to the same pair. Every opted-in repository uses that pair, with no per-repository secrets.
 - **Secrets live in the macOS Keychain.** Only the tool's own process reads them, and it never puts them in an environment variable.
 - **Repository code never runs in the tool's process.** The Gradle inventory runs the build under `codex sandbox` with the agent's write profile. Under that profile, checked on macOS, the Keychain isn't reachable, the sensitive home paths (`~/.ssh`, `~/.aws`, the Codex and Claude logins, shell startup files…) can't be read, and writes land only in the working copy, the temp dirs and the build cache. bump-it computes npm changes in exported scratch copies under the same sandbox, with `--package-lock-only --ignore-scripts`, explicit release-age flags and own-scope exclusions. The tool protects exact lockfile bytes and manifest dependency fields; only major migrations may adapt other manifest fields.
 - **npm's age exclusions do not waive verification.** secure-it excludes planned young or unreadable targets, plus young or unreadable versions already locked in the affected base lockfiles, retaining configured own-scope exclusions. This lets npm keep unrelated locked security fixes. It checks sandboxed npm >= 11.17.0 before the agent uses these flags in any editing mode. Every exclusion is reported; exact target verification and `compare` still judge all induced changes, including their age and identity.

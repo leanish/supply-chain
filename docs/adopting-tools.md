@@ -1,8 +1,8 @@
 # Adopting secure-it and bump-it
 
 The tools run on your machine and propose draft PRs; people merge them. Each has
-its own config, two tokens and two schedules: `run` plans changes, `review`
-revisits its open PRs. Either command can push or change a PR. There is currently
+its own config, default Keychain services and two schedules: `run` plans changes,
+`review` revisits its open PRs. Either command can push or change a PR. There is currently
 **no tool dry-run flag**. Start with the candidate preview below before enabling
 publication or a schedule.
 
@@ -63,12 +63,14 @@ keep its path unchanged in your schedules.
 
 ## Two fine-grained PATs per tool
 
-Create **four distinct fine-grained PATs** if adopting both tools. For each,
-select the resource owner and only the repositories that tool's `repos` lists;
-use an expiry and renew the matching Keychain item before it expires. The token
-owner must be allowed to push branches and create PRs, and an organization may
-need to approve the tokens. The current config has one pair per tool; use
-separate configs/launchers when different resource owners need different pairs.
+By default, create a separate write/read pair of fine-grained PATs for each tool.
+You may choose to share a pair between both tools using the optional `secrets`
+overrides. The write and read PATs must still have different values. Every opted-in
+repository uses the tool's pair; there are no per-repository secrets. For each PAT,
+select the resource owner and only the repositories it needs to access; use an
+expiry and renew the matching Keychain item before it expires. The token owner
+must be allowed to push branches and create PRs, and an organization may need to
+approve the tokens. PAT mode will remain an alternative when GitHub App mode lands.
 
 | Repository permission | Tool's write PAT | Agent's read PAT |
 |---|---|---|
@@ -97,14 +99,25 @@ write PAT into your shell or put either PAT's value in `agent.yaml` or a plist.
 ## Keychain and agent.yaml
 
 In **Keychain Access**, add a generic password item in your login keychain for
-each service below (Keychain Item Name is the service, account is your GitHub
-login, password is the corresponding PAT). Use the UI so tokens are not in shell
+each default service below, or your configured overrides (Keychain Item Name is
+the service, account is your GitHub login, password is the corresponding PAT).
+Use the UI so tokens are not in shell
 history or command arguments.
 
 | Tool | Write service | Read service |
 |---|---|---|
-| secure-it | `leanish-secure-it-github` | `leanish-secure-it-github-read` |
-| bump-it | `leanish-bump-it-github` | `leanish-bump-it-github-read` |
+| secure-it | `leanish-secure-it-write` | `leanish-secure-it-read` |
+| bump-it | `leanish-bump-it-write` | `leanish-bump-it-read` |
+
+Omit `secrets` in `agent.yaml` to use these names. Override either or both fields
+only when needed, for example to share a pair between tools:
+
+```yaml
+secrets: { write: shared-write, read: shared-read }
+```
+
+The defaults contain neither owner nor repository names. Existing explicit
+service names remain supported; no Keychain item is renamed automatically.
 
 The tools look up each service with `security find-generic-password -s <service>
 -w`; they refuse identical services or values. Unlock/authorize the login
@@ -140,10 +153,10 @@ TARGET="$HOME/dev/widget"
 PREVIEW="$HOME/.local/share/leanish/candidate-preview"
 mkdir -p "$PREVIEW"
 OSV_SCANNER="$(packages/ci/scripts/install-osv-scanner.sh "$PREVIEW/tools")"
-GH_TOKEN="$(security find-generic-password -s leanish-secure-it-github-read -w)" \
+GH_TOKEN="$(security find-generic-password -s leanish-secure-it-read -w)" \
   OSV_SCANNER="$OSV_SCANNER" node packages/ci/src/cli.ts candidates \
   --rule security --repo "$TARGET" --head HEAD --out "$PREVIEW/security.json"
-GH_TOKEN="$(security find-generic-password -s leanish-bump-it-github-read -w)" \
+GH_TOKEN="$(security find-generic-password -s leanish-bump-it-read -w)" \
   OSV_SCANNER="$OSV_SCANNER" node packages/ci/src/cli.ts candidates \
   --rule bump --repo "$TARGET" --head HEAD --out "$PREVIEW/bump.json"
 ```

@@ -11,13 +11,13 @@ const HOME = "/Users/YOUR_USER";
 const TOOLS = ["secure-it", "bump-it"] as const;
 
 describe("documented agent configs", () => {
-  it.each(TOOLS)("%s's complete example opts in the scheduled repo with separate secrets and directories", async (tool) => {
+  it.each(TOOLS)("%s's complete example opts in the scheduled repo with default Keychain services and separate directories", async (tool) => {
     const file = new URL(`${tool}-agent.yaml`, EXAMPLES);
     const config = parseToolConfig(tool, await readFile(file, "utf8"), fileURLToPath(file), HOME);
 
     expect(repoOf(config, "acme/widget").branch).toBe("main");
     expect(config.agent).toEqual({ codingAgent: "codex", model: "sol", effort: "medium", majorEffort: "high" });
-    expect(config.secrets).toEqual({ write: `leanish-${tool}-github`, read: `leanish-${tool}-github-read` });
+    expect(config.secrets).toEqual({ write: `leanish-${tool}-write`, read: `leanish-${tool}-read` });
     expect(config.dirs).toEqual({ state: `${HOME}/.local/share/leanish/${tool}`, cache: `${HOME}/.cache/leanish/${tool}` });
     expect(config.readDeny).toEqual([]);
     expect(config.staleScanHours).toBe(tool === "secure-it" ? 36 : undefined);

@@ -103,8 +103,11 @@ whenever the final age-exclusion list is non-empty**: own npm scopes or young/un
 and required and detected versions, before editing npm files or publishing. Without exclusions,
 use npm with min-release-age support. No npm installation or registry requests are needed for the unit tests.
 
-Two separate Keychain tokens: the tool alone receives the write token; the agent receives only the read token. npm,
-Gradle inventories and agent checks run under the agent's sandbox, with protected home paths and git metadata, and
+Two separate Keychain tokens, default services `leanish-bump-it-write` and `leanish-bump-it-read`: the tool alone
+receives the write token; the agent receives only the read token. Optional `secrets` overrides may share a pair with
+secure-it; every opted-in repo uses this pair, and write/read values must differ. PAT mode remains an alternative
+when GitHub App mode lands. npm, Gradle inventories and agent checks run under the agent's sandbox,
+with protected home paths and git metadata, and
 writes restricted to the working copy, temp and build cache. The pinned OSV-Scanner stays in protected tool state,
 verified immediately before running. See [the security model](../../docs/security-model.md).
 

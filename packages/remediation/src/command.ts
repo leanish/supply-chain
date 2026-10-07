@@ -1,7 +1,8 @@
 /**
  * The command around one run of a tool: `<tool> run|review <owner/repo>
  * [--config <file>]`. It reads the config (the repository must be listed),
- * the two tokens from the secret store (the write one for the tool's own
+ * the two tokens from the config's resolved per-tool Keychain services
+ * (defaults or explicit overrides; the write one for the tool's own
  * GitHub calls, clone and push; the read-only one, the only credential the
  * agent's commands get), syncs the working copy, wires the isolated coding
  * agent, hands everything to the tool's `run` or `review`, and always ends with
