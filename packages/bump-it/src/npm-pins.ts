@@ -59,8 +59,9 @@ export function pinnedManifests(graph: NpmGraph, pins: ReadonlyArray<Pin>, manif
       for (const edge of declared) setDeclared(edit(edge.from), edge.key, exactSpec(pin), pin.copy.path);
       continue;
     }
-    if (overrides.rangeFor(pin.copy.name) !== undefined) {
-      rootOverrides()[pin.copy.name] = exactSpec(pin);
+    const overrideKey = overrides.rangeFor(pin.copy.installedAs) !== undefined ? pin.copy.installedAs : pin.copy.name;
+    if (overrides.rangeFor(overrideKey) !== undefined) {
+      rootOverrides()[overrideKey] = exactSpec(pin);
       continue;
     }
     transitive.push(pin);

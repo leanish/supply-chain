@@ -29,7 +29,7 @@ What can run where, and which credential it can reach.
 
 ## secure-it and bump-it
 
-secure-it is in this tree ([`packages/secure-it`](../packages/secure-it)); bump-it is being built on the same code ([`packages/remediation`](../packages/remediation)).
+Both tools are in this tree: [`secure-it`](../packages/secure-it) and [`bump-it`](../packages/bump-it), using [`packages/remediation`](../packages/remediation).
 
 - **Two GitHub tokens per tool**, both personal access tokens for now (a GitHub App mode is planned):
   - one that writes (branches, PRs, comments), only for the tool's own process;
@@ -37,6 +37,6 @@ secure-it is in this tree ([`packages/secure-it`](../packages/secure-it)); bump-
 
   The tool refuses two Keychain items holding the same token.
 - **Secrets live in the macOS Keychain.** Only the tool's own process reads them, and it never puts them in an environment variable.
-- **Repository code never runs in the tool's process.** The Gradle inventory runs the build under `codex sandbox` with the agent's write profile. Under that profile, checked on macOS, the Keychain isn't reachable, the sensitive home paths (`~/.ssh`, `~/.aws`, the Codex and Claude logins, shell startup files…) can't be read, and writes land only in the working copy, the temp dirs and the build cache. npm runs only `--package-lock-only --ignore-scripts`.
+- **Repository code never runs in the tool's process.** The Gradle inventory runs the build under `codex sandbox` with the agent's write profile. Under that profile, checked on macOS, the Keychain isn't reachable, the sensitive home paths (`~/.ssh`, `~/.aws`, the Codex and Claude logins, shell startup files…) can't be read, and writes land only in the working copy, the temp dirs and the build cache. bump-it computes npm changes in exported scratch copies under the same sandbox, with `--package-lock-only --ignore-scripts`, explicit release-age flags and own-scope exclusions. The tool protects exact lockfile bytes and manifest dependency fields; only major migrations may adapt other manifest fields.
 - **The agent edits a clone whose git metadata it can't write.** It can't commit or push. The `gh` and `git` guards on its PATH stop writes before they reach GitHub; they are guard rails, not a boundary.
 - **The tool decides versions, verifies the result with this gate, and publishes.** Every write to a PR re-reads it first and stops unless it's still the tool's, at the expected head. Nothing merges by itself.

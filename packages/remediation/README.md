@@ -8,7 +8,7 @@ package is the code around them:
   - the coding agent, model and efforts (`majorEffort` for majors and their reviews);
   - the names of the two secrets (the tool's write token and the agent's read-only one);
   - the commit identity, the state and cache directories, and paths the agent may not read;
-  - for secure-it, `staleScanHours`.
+  - for secure-it, `staleScanHours`; for bump-it, `maxNewMajorsPerRun` (default 3, new majors only).
 
   What's about the repository (release age, own packages, registries) comes from its `.github/supply-chain.json`.
 - **The tool's PRs** (`own-pr.ts`, `publication.ts`):

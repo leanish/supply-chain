@@ -4,15 +4,15 @@
  * are (design item 26): a package with a plain top-level override
  * (`"lib": "^1.4.0"`, or `"$lib"` for the root's own range) moves only within
  * it; one the overrides name in any other way (a key with a version, a
- * nested rule) is left to npm under the repository's rules, and reported.
+ * nested rule) is frozen at its base version and reported as unresolved.
  */
-import semver from "semver";
+import { rangeOf } from "./npm-graph.ts";
 
 export interface RepositoryOverrides {
   /** The range a plain top-level override holds `name` to; undefined when none does. */
   readonly rangeFor: (name: string) => string | undefined;
-  /** Whether the overrides name `name` in a way bump-it doesn't reason about: npm decides those copies. */
-  readonly leftToNpm: (name: string) => boolean;
+  /** Whether the overrides name `name` in a way bump-it doesn't reason about: selection cannot prove those copies. */
+  readonly isComplex: (name: string) => boolean;
   /** Every key at the top level, as written (bump-it's temporary locks must not collide with them). */
   readonly topLevelKeys: ReadonlySet<string>;
 }
@@ -29,7 +29,7 @@ export function repositoryOverrides(manifest: unknown): RepositoryOverrides {
       if (key === ".") continue;
       const { name, spec } = splitKey(key);
       if (isObject(value)) {
-        complex.add(name);
+        if ("." in value) complex.add(name);
         visit(value, true);
         continue;
       }
@@ -39,14 +39,14 @@ export function repositoryOverrides(manifest: unknown): RepositoryOverrides {
       }
       // `$lib` means the root's own spec for lib.
       const range = value.startsWith("$") ? own[value.slice(1)] : value;
-      if (range === undefined || semver.validRange(range) === null) complex.add(name);
+      if (range === undefined || rangeOf(range) === undefined) complex.add(name);
       else ranges.set(name, range);
     }
   };
   visit(overrides, false);
   return {
     rangeFor: (name) => (complex.has(name) ? undefined : ranges.get(name)),
-    leftToNpm: (name) => complex.has(name),
+    isComplex: (name) => complex.has(name),
     topLevelKeys: new Set(Object.keys(overrides)),
   };
 }

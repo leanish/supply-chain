@@ -17,11 +17,12 @@
  * and lockfile that differs from the base, byte for byte, what moved, and
  * what was left as it was and why.
  */
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import type { NpmDeclaration } from "../../ci/src/candidates.ts";
-import { directDependencies } from "../../ci/src/npm-lock.ts";
+
+import { assertLocalFile } from "./files.ts";
 
 import { NpmGraph, rewriteSpec } from "./npm-graph.ts";
 import { repositoryOverrides } from "./npm-overrides.ts";
@@ -91,13 +92,23 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   const at = (path: string) => join(inputs.dir, root, path);
   const repoPath = (path: string) => (root === "" ? path : `${root}/${path}`);
   const baseLock = inputs.baseLocks.get(lockfile)!;
+  if (basename(lockfile) === "package-lock.json") {
+    try { await lstat(at("npm-shrinkwrap.json")); throw new Error(`${lockfile} is shadowed by npm-shrinkwrap.json; configure the shrinkwrap instead`); }
+    catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }
+  }
+  const lockName = basename(lockfile);
+  if (!["package-lock.json", "npm-shrinkwrap.json"].includes(lockName)) throw new Error(`unsupported npm lockfile: ${lockfile}`);
+  await assertLocalFile(inputs.dir, lockfile);
   const baseGraph = new NpmGraph(baseLock);
-  const lockText = await readFile(at("package-lock.json"), "utf8");
+  const lockText = await readFile(at(lockName), "utf8");
 
   // The root's and each workspace's package.json, as in the base, then with the planned ranges.
   const declaring = ["", ...Object.keys(baseGraph.packages).filter((path) => path !== "" && !path.includes("node_modules/") && baseGraph.packages[path]?.link !== true)];
   const baseTexts = new Map<string, string>();
-  for (const path of declaring) baseTexts.set(path, await readFile(at(manifestOf(path)), "utf8"));
+  for (const path of declaring) {
+    await assertLocalFile(inputs.dir, repoPath(manifestOf(path)));
+    baseTexts.set(path, await readFile(at(manifestOf(path)), "utf8"));
+  }
   const planned = plannedManifests(baseTexts, inputs.moves.filter((move) => move.lockfile === lockfile), lockfile);
   const plannedParsed = new Map([...planned].map(([path, text]) => [path, JSON.parse(text) as Manifest]));
   const writePlanned = async () => {
@@ -115,16 +126,23 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
 
   const overrides = repositoryOverrides(plannedParsed.get(""));
   const plannedDirect = new Map(inputs.moves.filter((move) => move.lockfile === lockfile).map((move) => [`${move.workspace}:${move.declaredAs}`, move.to]));
-  const baseDirect = new Map(directDependencies(baseLock).map((dependency) => [`${dependency.workspace || "."}:${dependency.declaredAs}`, dependency.version]));
+  const baseCopies = new Map(baseGraph.copies().map((copy) => [copy.path, copy.version]));
+  const baseDirect = new Map(baseGraph.declaredEdges().flatMap((edge) => {
+    const version = edge.to === undefined ? undefined : baseCopies.get(edge.to);
+    return version === undefined ? [] : [[`${edge.from === "" ? "." : edge.from}:${edge.key}`, version] as const];
+  }));
   let decisions: Decision[] = [];
   for (let pass = 0; ; pass++) {
-    const graph = new NpmGraph(JSON.parse(await readFile(at("package-lock.json"), "utf8")));
-    const direct = directTargets(graph, plannedDirect, inputs.kind === "routine" ? baseDirect : new Map());
+    const graph = new NpmGraph(JSON.parse(await readFile(at(lockName), "utf8")));
+    const direct = directTargets(graph, plannedDirect, baseDirect);
     decisions =
       inputs.kind === "routine"
         ? await decideTargets({ graph, base: baseGraph, baseVersions, overrides, direct }, inputs.sources)
         : graph.copies().flatMap((copy) => (direct.has(copy.path) ? [{ copy, kind: "target" as const, target: direct.get(copy.path)!, direct: true }] : []));
-    const off = decisions.flatMap((decision) => (decision.kind !== "left-to-npm" && decision.target !== undefined && decision.target !== decision.copy.version ? [{ copy: decision.copy, target: decision.target }] : []));
+    if (decisions.some((decision) => decision.kind === "unresolved" && decision.target === undefined)) {
+      throw new Error(`a new copy in ${lockfile} has no eligible target: ${decisions.filter((decision) => decision.kind === "unresolved").map((decision) => decision.why).join("; ")}`);
+    }
+    const off = decisions.flatMap((decision) => (decision.target !== undefined && decision.target !== decision.copy.version ? [{ copy: decision.copy, target: decision.target }] : []));
     if (off.length === 0) break;
     if (pass === MAX_PASSES) {
       throw new Error(`npm didn't keep the targets in ${lockfile} after ${MAX_PASSES} passes: ${off.map((pin) => `${pin.copy.name} at ${pin.copy.path} is ${pin.copy.version}, not ${pin.target}`).join("; ")}`);
@@ -142,10 +160,10 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
     if (onDisk !== text) throw new Error(`npm rewrote ${repoPath(manifestOf(path))}; bump-it lands only the ranges it planned`);
     if (text !== baseTexts.get(path)) files.set(repoPath(manifestOf(path)), text);
   }
-  const finalText = await readFile(at("package-lock.json"), "utf8");
+  const finalText = await readFile(at(lockName), "utf8");
   if (finalText !== lockText) files.set(lockfile, finalText);
   const notes = decisions.flatMap((decision) =>
-    decision.kind === "unresolved" ? [`${lockfile}: ${decision.copy.name} at ${decision.copy.path} stays at ${decision.target ?? decision.copy.version}: ${decision.why}`] : decision.kind === "left-to-npm" ? [`${lockfile}: ${decision.why}`] : [],
+    decision.kind === "unresolved" ? [`${lockfile}: ${decision.copy.name} at ${decision.copy.path} stays at ${decision.target ?? decision.copy.version}: ${decision.why}`] : [],
   );
   return { files, changes: changesBetween(lockfile, baseGraph, new NpmGraph(JSON.parse(finalText))), notes };
 }
@@ -206,15 +224,21 @@ function escape(text: string): string {
  */
 function directTargets(graph: NpmGraph, planned: ReadonlyMap<string, string>, base: ReadonlyMap<string, string>): Map<string, string> {
   const targets = new Map<string, string>();
+  const seen = new Set<string>();
   for (const edge of graph.declaredEdges()) {
-    if (edge.to === undefined) continue;
     const key = `${edge.from === "" ? "." : edge.from}:${edge.key}`;
+    if (edge.to === undefined) {
+      if (planned.has(key) || base.has(key)) throw new Error(`declared dependency ${key} disappeared from the npm graph`);
+      continue;
+    }
+    seen.add(key);
     const target = planned.get(key) ?? base.get(key);
     if (target === undefined) continue;
     const other = targets.get(edge.to);
     if (other !== undefined && other !== target) throw new Error(`declarations sharing ${edge.to} want ${other} and ${target}`);
     targets.set(edge.to, target);
   }
+  for (const key of planned.keys()) if (!seen.has(key)) throw new Error(`planned declaration ${key} disappeared from the npm graph`);
   return targets;
 }
 

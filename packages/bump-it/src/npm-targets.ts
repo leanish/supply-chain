@@ -14,10 +14,10 @@
  *     when nothing newer is eligible;
  *   - a copy whose candidates can't all be judged (the registry can't list
  *     them, a publish time is unknown, a dependent's spec isn't a range) is
- *     unresolved: it stays at its base version, or where npm put it when it's
- *     new, and is reported, never claimed as the rule's choice;
+ *     unresolved: it stays at its base version, and is reported, never claimed as the rule's choice; a new copy
+ *     with no provable target fails the unit;
  *   - a package the repository's overrides name in a way this doesn't reason
- *     about is left to npm under them, and reported.
+ *     about is kept at base and reported as unresolved.
  */
 import semver from "semver";
 
@@ -58,12 +58,11 @@ export interface TargetInputs {
 
 export type Decision =
   | { readonly copy: Copy; readonly kind: "target"; readonly target: string; readonly direct: boolean }
-  | { readonly copy: Copy; readonly kind: "unresolved"; readonly target: string | undefined; readonly why: string }
-  | { readonly copy: Copy; readonly kind: "left-to-npm"; readonly why: string };
+  | { readonly copy: Copy; readonly kind: "unresolved"; readonly target: string | undefined; readonly why: string };
 
 /** The target of every copy that can move on its own (bundled ones ride with their parent). */
 export async function decideTargets(inputs: TargetInputs, sources: TargetSources): Promise<Decision[]> {
-  const { graph, base, overrides, direct } = inputs;
+  const { graph, overrides, direct } = inputs;
   const copies = graph.copies().filter((copy) => !copy.bundled);
   const pending: Array<{ copy: Copy; baseVersion: string | undefined; candidates: string[] }> = [];
   const decisions: Decision[] = [];
@@ -73,8 +72,8 @@ export async function decideTargets(inputs: TargetInputs, sources: TargetSources
       decisions.push({ copy, kind: "target", target: planned, direct: true });
       continue;
     }
-    if (overrides.leftToNpm(copy.name)) {
-      decisions.push({ copy, kind: "left-to-npm", why: `the repository's overrides name ${copy.name}; npm resolves it under them` });
+    if ((overrides.isComplex(copy.installedAs) || overrides.isComplex(copy.name))) {
+      decisions.push({ copy, kind: "unresolved", target: baseVersionOf(copy, inputs, () => true), why: `the repository's scoped overrides name ${copy.name}; keeping its base version instead of claiming a choice` });
       continue;
     }
     const found = await candidatesOf(copy, inputs, sources);
@@ -86,18 +85,29 @@ export async function decideTargets(inputs: TargetInputs, sources: TargetSources
   const names = [...new Set(pending.map(({ copy }) => copy.name))];
   const baseline = names.flatMap((name) => (inputs.baseVersions.get(name) ?? []).map((version) => ({ ecosystem: "npm" as const, name, version })));
   const weighed = pending.flatMap(({ copy, candidates }) => candidates.map((version) => ({ ecosystem: "npm" as const, name: copy.name, version })));
-  const snapshot = await sources.snapshot(baseline, weighed);
+  let snapshot: Snapshot;
+  try { snapshot = await sources.snapshot(baseline, weighed); }
+  catch (err) {
+    return [...decisions, ...pending.map(({ copy, baseVersion }) => ({ copy, kind: "unresolved" as const, target: baseVersion, why: `advisory lookup failed: ${(err as Error).message}` }))];
+  }
   for (const { copy, baseVersion, candidates } of pending) {
-    const inherited = new Set((inputs.baseVersions.get(copy.name) ?? []).flatMap((version) => [...groupsOf(snapshot, { ecosystem: "npm", name: copy.name, version })]));
     let target: string | undefined;
-    for (const version of candidates) {
-      if (await eligible(copy.name, version, baseVersion, inherited, snapshot, sources)) {
-        target = version;
-        break;
+    try {
+      if ([...(inputs.baseVersions.get(copy.name) ?? []), ...candidates].some((version) => !snapshot.covers({ ecosystem: "npm", name: copy.name, version }))) throw new Error("the snapshot does not cover every candidate and base version");
+      const inherited = new Set((inputs.baseVersions.get(copy.name) ?? []).flatMap((version) => [...groupsOf(snapshot, { ecosystem: "npm", name: copy.name, version })]));
+      for (const version of candidates) {
+        if (await eligible(copy.name, version, baseVersion, inherited, snapshot, sources)) {
+          target = version;
+          break;
+        }
       }
+    } catch (err) {
+      decisions.push({ copy, kind: "unresolved", target: baseVersion, why: `candidate lookup failed: ${(err as Error).message}` });
+      continue;
     }
     target ??= baseVersion;
     if (target === undefined) decisions.push({ copy, kind: "unresolved", target: undefined, why: `no version of ${copy.name} within its ranges is eligible, and it's new here` });
+    else if (semver.valid(rangeOf(overrides.rangeFor(copy.installedAs) ?? overrides.rangeFor(copy.name) ?? "*") ?? "") !== null) decisions.push({ copy, kind: "unresolved", target, why: "the repository override pins this copy" });
     else decisions.push({ copy, kind: "target", target, direct: false });
   }
   return decisions;
@@ -109,11 +119,11 @@ async function candidatesOf(
   inputs: TargetInputs,
   sources: TargetSources,
 ): Promise<{ readonly baseVersion: string | undefined; readonly candidates: string[] } | { readonly baseVersion: string | undefined; readonly why: string }> {
-  const overridden = inputs.overrides.rangeFor(copy.name);
+  const overridden = inputs.overrides.rangeFor(copy.installedAs) ?? inputs.overrides.rangeFor(copy.name);
   const specs = overridden !== undefined ? [overridden] : inputs.graph.edgesTo(copy.path).map((edge) => edge.spec);
   const ranges = specs.map(rangeOf);
   const within = (version: string) => ranges.every((range) => range !== undefined && semver.satisfies(version, range));
-  const baseVersion = baseVersionOf(copy, inputs, within);
+  const baseVersion = baseVersionOf(copy, inputs, ranges.some((range) => range === undefined) ? () => true : within);
   if (ranges.some((range) => range === undefined)) return { baseVersion, why: `a dependent of ${copy.name} at ${copy.path} asks for '${specs.find((spec) => rangeOf(spec) === undefined)}', not a version range` };
   let listed: ReadonlyArray<string> | undefined;
   try {
@@ -134,7 +144,9 @@ async function candidatesOf(
       candidates.push(version);
       continue;
     }
-    const published = await sources.published(copy.name, version);
+    let published: Date | undefined;
+    try { published = await sources.published(copy.name, version); }
+    catch (err) { return { baseVersion, why: `publish-time lookup failed: ${(err as Error).message}` }; }
     if (published === undefined) return { baseVersion, why: `the registry has no publish time for ${copy.name}@${version}, so its age can't be judged` };
     if ((sources.now.getTime() - published.getTime()) / DAY_MS >= sources.releaseAgeDays) candidates.push(version);
   }
