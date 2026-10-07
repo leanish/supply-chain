@@ -94,7 +94,7 @@ describe("rescan", () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const calls: string[] = [];
     expect((await rescan(steps(fail, [], calls), github({}, posts))).posted).toBe(1);
-    expect(calls).toEqual(["prepare", "compare b..c -g", "signatures", "reset"]);
+    expect(calls).toEqual(["prepare", "compare b..c -g", "reset"]);
     expect(posts).toEqual([
       {
         url: `${API}/statuses/${HEAD}`,
@@ -107,7 +107,9 @@ describe("rescan", () => {
       },
     ]);
     const passed: Array<{ url: string; body: unknown }> = [];
-    await rescan(steps(pass), github({}, passed));
+    const passingCalls: string[] = [];
+    await rescan(steps(pass, [], passingCalls), github({}, passed));
+    expect(passingCalls).toEqual(["prepare", "compare b..c -g", "signatures", "reset"]);
     expect(passed[0]!.body).toMatchObject({ state: "success", description: "Daily rescan: clean" });
   });
 
@@ -155,6 +157,16 @@ describe("rescan", () => {
       state: "failure",
       description: "Daily rescan: 1 failure(s): npm audit signatures in . failed: 1 package has an invalid signature",
     });
+  });
+
+  it("never runs npm after comparison rejects dependency sources", async () => {
+    await inventory(["base", "head"]);
+    const calls: string[] = [];
+    const posts: Array<{ url: string; body: unknown }> = [];
+    const rejected = { ...fail, failures: ["evil doesn't come from an allowed registry: git+https://example.invalid/evil.git"] };
+    await rescan(steps(rejected, [], calls), github({}, posts));
+    expect(calls).toEqual(["prepare", "compare b..c --", "reset"]);
+    expect(posts[0]!.body).toMatchObject({ state: "failure" });
   });
 
   it("posts a failure when an inventory side didn't complete, or the comparison throws", async () => {
