@@ -110,10 +110,15 @@ function parseJson(text: string, path: string): unknown {
 }
 
 /** Every version each ecosystem's registry lists, and when each was published. */
-export function versionCatalogs(config: Config, env: GateEnvironment, github: ActionsGitHub): Readonly<Record<Ecosystem, VersionCatalog>> {
+export function versionCatalogs(
+  config: Config,
+  env: GateEnvironment,
+  github: ActionsGitHub,
+  registry: NpmRegistry = new NpmRegistry(env.fetch),
+): Readonly<Record<Ecosystem, VersionCatalog>> {
   const dates = new MavenDates(env.fetch, config.maven.repositories);
   return {
-    npm: new NpmCatalog(new NpmRegistry(env.fetch)),
+    npm: new NpmCatalog(registry),
     Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates),
     "GitHub Actions": new ActionsCatalog(github),
   };
@@ -152,7 +157,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   // What head adds or changes, with publish times, before the snapshot: young versions' candidates join it.
   const registry = new NpmRegistry(env.fetch);
   const dates = new MavenDates(env.fetch, config.maven.repositories);
-  const catalogs = versionCatalogs(config, env, github);
+  const catalogs = versionCatalogs(config, env, github, registry);
   const problems: string[] = [
     ...bundleFailures(headInventory),
     ...resolutionFailures(baseInventory, config, "base"),
@@ -241,6 +246,11 @@ export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleIn
     osvScannerVersion: version,
     configText,
   };
+}
+
+/** What makes an inventory incomplete: bundles its lockfiles don't record, and configurations that didn't resolve. */
+export function inventoryProblems(inventory: Inventory, config: Config): string[] {
+  return [...bundleFailures(inventory), ...resolutionFailures(inventory, config, undefined)];
 }
 
 function bundleFailures(inventory: Inventory): string[] {

@@ -52,7 +52,10 @@ function environment(affected: Record<string, string[]>, registry: Registry, sca
     scans.push(requested.map((pkg) => `${pkg.name}@${pkg.version}`).sort());
     const packages = requested.map((pkg) => ({
       package: pkg,
-      vulnerabilities: (affected[`${pkg.name}@${pkg.version}`] ?? []).map((id) => ({ id, summary: `${id} summary` })),
+      vulnerabilities: (affected[`${pkg.name}@${pkg.version}`] ?? []).map((entry) => {
+        const [id, aliases] = entry.split("=");
+        return { id, summary: `${id} summary`, ...(aliases === undefined ? {} : { aliases: aliases.split(",") }) };
+      }),
     }));
     return { code: 1, stdout: JSON.stringify({ results: [{ packages }] }), stderr: "" };
   };
@@ -89,7 +92,7 @@ describe("securityCandidates", () => {
         targets: ["GHSA-a"],
         unfixable: [],
         malicious: false,
-        to: { version: "1.0.2", line: "1", aged: true, major: false },
+        to: { version: "1.0.2", line: "1", aged: true, major: false, blockers: [] },
         problem: undefined,
       },
     ]);
@@ -100,14 +103,14 @@ describe("securityCandidates", () => {
     const affected = { "lib@1.9.4": ["GHSA-a"] };
     const registry = { lib: { "1.9.4": OLD, "1.9.5": YESTERDAY, "2.0.0": OLD } };
     const found = await securityCandidates(await tree({ lib: "1.9.4" }), environment(affected, registry));
-    expect(found.fixes[0]?.to).toEqual({ version: "1.9.5", line: "1", aged: false, major: false });
+    expect(found.fixes[0]?.to).toEqual({ version: "1.9.5", line: "1", aged: false, major: false, blockers: [] });
   });
 
   it("moves to the lowest fixing major when only a major fixes, flagged for the agent", async () => {
     const affected = { "lib@1.0.0": ["GHSA-a"], "lib@1.5.0": ["GHSA-a"] };
     const registry = { lib: { "1.0.0": OLD, "1.5.0": OLD, "2.0.0": YESTERDAY, "2.1.0": OLD, "3.0.0": OLD } };
     const found = await securityCandidates(await tree({ lib: "1.0.0" }), environment(affected, registry));
-    expect(found.fixes[0]?.to).toEqual({ version: "2.1.0", line: "2", aged: true, major: true });
+    expect(found.fixes[0]?.to).toEqual({ version: "2.1.0", line: "2", aged: true, major: true, blockers: [] });
   });
 
   it("fixes A and leaves B when nothing fixes B, never adding an advisory", async () => {
@@ -174,6 +177,67 @@ describe("securityCandidates", () => {
   });
 });
 
+describe("securityCandidates, regressions", () => {
+  it("regroups targets on the second snapshot, where a candidate can link an alias into another canonical id", async () => {
+    const affected = { "lib@1.0.0": ["CVE-2026-1"], "lib@1.0.1": ["GHSA-a=CVE-2026-1"] };
+    const registry = { lib: { "1.0.0": OLD, "1.0.1": OLD, "1.0.2": OLD } };
+    const found = await securityCandidates(await tree({ lib: "1.0.0" }), environment(affected, registry));
+    expect(found.fixes[0]).toMatchObject({ targets: ["GHSA-a"], to: { version: "1.0.2" } });
+  });
+
+  it("lets an own package leave malware for a clean version however young", async () => {
+    const affected = { "@acme/lib@1.0.1": ["MAL-2026-2"] };
+    const registry = { "@acme/lib": { "1.0.1": OLD, "1.0.2": YESTERDAY } };
+    const head = await tree({ "@acme/lib": "1.0.1" }, { ".github/supply-chain.json": JSON.stringify({ ownPackages: { npm: { scopes: ["@acme"] } } }) });
+    const found = await securityCandidates(head, environment(affected, registry));
+    expect(found.fixes[0]).toMatchObject({ malicious: true, to: { version: "1.0.2", aged: false } });
+  });
+
+  it("keeps a publisher identity break the gate would reject as a blocker on the move", async () => {
+    const affected = { "lib@1.0.0": ["GHSA-a"] };
+    const env = environment(affected, { lib: { "1.0.0": OLD, "1.0.1": OLD } });
+    const manifest = (publisher: string) => ({ _npmUser: { name: publisher }, dist: { tarball: "https://registry.npmjs.org/lib/-/lib.tgz", integrity: "sha512-BBBB" } });
+    const withPublishers: GateEnvironment = {
+      ...env,
+      fetch: async (url, init) => {
+        if (url !== "https://registry.npmjs.org/lib") return env.fetch(url, init);
+        const body = { time: { "1.0.0": OLD, "1.0.1": "2026-02-01T00:00:00Z" }, versions: { "1.0.0": manifest("maintainer"), "1.0.1": manifest("stranger") } };
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => body, text: async () => JSON.stringify(body) };
+      },
+    };
+    const found = await securityCandidates(await tree({ lib: "1.0.0" }), withPublishers);
+    expect(found.fixes[0]?.to?.version).toBe("1.0.1");
+    expect(found.fixes[0]?.to?.blockers).toEqual([expect.stringContaining("stranger")]);
+  });
+
+  it("says when the inventory is incomplete, so an empty list can't read as clean", async () => {
+    const head = await tree({}, { "settings.gradle": "" });
+    const gradle = {
+      head: {
+        tree: "worktree",
+        builds: [
+          {
+            build: ".",
+            configurations: [
+              {
+                id: ":runtimeClasspath",
+                kind: "project" as const,
+                resolved: [],
+                unresolved: [{ requested: "com.acme:gone:1.0", failure: "Could not resolve com.acme:gone:1.0" }],
+                declared: [],
+                error: undefined,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const found = await securityCandidates(head, environment({}, {}), gradle as never);
+    expect(found.fixes).toEqual([]);
+    expect(found.incomplete).toEqual([expect.stringContaining("Could not resolve com.acme:gone:1.0")]);
+  });
+});
+
 describe("bumpCandidates", () => {
   it("moves each direct dependency to its line's highest aged version and its highest newer line's, leaving transitives alone", async () => {
     const scans: string[][] = [];
@@ -186,12 +250,22 @@ describe("bumpCandidates", () => {
     const found = await bumpCandidates(head, environment({}, registry, scans));
     expect(found.bumps).toEqual([
       // npm's caret line for 0.x is the minor: 0.6.0 is a "major" move.
-      { ecosystem: "npm", name: "dev", from: "0.5.0", locations: ["package-lock.json#."], minor: { version: "0.5.1", line: "0.5" }, major: { version: "0.6.0", line: "0.6" }, problems: [] },
+      {
+        ecosystem: "npm",
+        name: "dev",
+        from: "0.5.0",
+        locations: ["package-lock.json#."],
+        declarations: [{ lockfile: "package-lock.json", workspace: ".", declaredAs: "dev", spec: "~0.5.0" }],
+        minor: { version: "0.5.1", line: "0.5" },
+        major: { version: "0.6.0", line: "0.6" },
+        problems: [],
+      },
       {
         ecosystem: "npm",
         name: "lib",
         from: "1.0.0",
         locations: ["package-lock.json#."],
+        declarations: [{ lockfile: "package-lock.json", workspace: ".", declaredAs: "lib", spec: "^1.0.0" }],
         minor: { version: "1.2.0", line: "1" },
         major: { version: "3.1.0", line: "3" },
         problems: [],
@@ -211,9 +285,10 @@ describe("bumpCandidates", () => {
         name: "lib",
         from: "1.0.0",
         locations: ["package-lock.json#."],
+        declarations: [{ lockfile: "package-lock.json", workspace: ".", declaredAs: "lib", spec: "^1.0.0" }],
         minor: { version: "1.1.0", line: "1" },
         major: undefined,
-        problems: ["each of the 1 newest versions of line 2 old enough adds an advisory or is malicious"],
+        problems: ["each of the 1 newest versions of line 2 old enough adds an advisory, is malicious or breaks identity"],
       },
     ]);
   });
@@ -234,6 +309,35 @@ describe("bumpCandidates", () => {
     expect(found.bumps.map((bump) => [bump.name, bump.from, bump.locations, bump.minor?.version])).toEqual([
       ["@acme/kit", "1.0.0", ["package-lock.json#."], "1.0.1"],
       ["shared", "2.0.0", ["package-lock.json#tools/x"], "2.1.0"],
+    ]);
+  });
+
+  it("tries newer lines from the highest down until one has an acceptable version", async () => {
+    const affected = { "lib@3.0.0": ["GHSA-three"] };
+    const registry = { lib: { "1.0.0": OLD, "2.0.0": OLD, "3.0.0": OLD, "4.0.0": YESTERDAY } };
+    const head = await tree({ lib: "1.0.0" }, {}, { name: "app", dependencies: { lib: "^1.0.0" } });
+    const found = await bumpCandidates(head, environment(affected, registry));
+    expect(found.bumps[0]).toMatchObject({ minor: undefined, major: { version: "2.0.0", line: "2" } });
+  });
+
+  it("reads a nested workspace's copy from its parent workspace, and keeps npm aliases under their target's name", async () => {
+    const registry = { lib: { "1.0.0": OLD, "1.1.0": OLD, "2.0.0": OLD } };
+    const tarball = (version: string) => ({ resolved: `https://registry.npmjs.org/lib/-/lib-${version}.tgz`, integrity: "sha512-AAAA" });
+    const head = await tree(
+      {},
+      {},
+      { name: "app", workspaces: ["apps/a", "apps/a/b"], dependencies: { compat: "npm:lib@^1.0.0" } },
+      {
+        "node_modules/lib": { version: "2.0.0", ...tarball("2.0.0") },
+        "node_modules/compat": { name: "lib", version: "1.0.0", ...tarball("1.0.0") },
+        "apps/a": { name: "a", dependencies: { lib: "^1.0.0" } },
+        "apps/a/node_modules/lib": { version: "1.0.0", ...tarball("1.0.0") },
+        "apps/a/b": { name: "b", dependencies: { lib: "^1.0.0" } },
+      },
+    );
+    const found = await bumpCandidates(head, environment({}, registry));
+    expect(found.bumps.map((bump) => [bump.name, bump.from, bump.declarations.map((d) => `${d.workspace}:${d.declaredAs}`), bump.minor?.version])).toEqual([
+      ["lib", "1.0.0", [".:compat", "apps/a:lib", "apps/a/b:lib"], "1.1.0"],
     ]);
   });
 });

@@ -163,7 +163,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
 /**
  * Where to move versions, as JSON, written to `--out` or printed: the security fixes (`--rule security`, for
  * secure-it) or the bumps of direct dependencies (`--rule bump`, for bump-it). Exits 0 when it could tell, whatever
- * it found.
+ * it found; 2 when it couldn't, including an incomplete inventory (the JSON is still written, with `incomplete`).
  */
 async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: string): Promise<number> {
   if (values.rule !== "security" && values.rule !== "bump") {
@@ -184,7 +184,8 @@ async function candidatesCommand(values: Options, env: NodeJS.ProcessEnv, repo: 
     const json = `${JSON.stringify({ tree: head.id, ...found }, null, 2)}\n`;
     if (values.out === undefined) process.stdout.write(json);
     else await writeFile(values.out, json);
-    return 0;
+    for (const problem of found.incomplete) console.error(`✗ incomplete inventory: ${problem}`);
+    return found.incomplete.length === 0 ? 0 : 2;
   } catch (err) {
     console.error(`✗ ${(err as Error).message}`);
     return 2;
