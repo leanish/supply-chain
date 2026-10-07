@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { CodexRunnerOptions } from "../../agent-basics/src/skill/codex-runner.ts";
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { treeSources } from "../../ci/src/gate.ts";
-import { type GradleInventory, parseGradleInventory } from "../../ci/src/gradle.ts";
+import { gradleFailureDetails, type GradleInventory, parseGradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 
 import { exportCommit } from "./git-copies.ts";
@@ -42,7 +42,7 @@ export function sandboxedGradleInventories(isolation: CodexRunnerOptions, workin
         codex,
       );
       if (result.code !== 0) {
-        throw new Error(`the sandboxed Gradle inventory of ${label} failed (exit ${result.code}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
+        throw new Error(`the sandboxed Gradle inventory of ${label} failed (exit ${result.code}): ${gradleFailureDetails(result.stderr)}`);
       }
       // Made from a plain directory, so labelled `worktree`; the caller knows which tree it is.
       return { ...parseGradleInventory(JSON.parse(await readFile(out, "utf8")), "worktree", builds), tree: tree.id };

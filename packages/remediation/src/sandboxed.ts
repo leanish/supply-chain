@@ -5,7 +5,9 @@
  * write token lives), the sensitive home paths, anything but the working
  * copy, the temp dirs and the build cache for writes. No model is involved.
  * Its environment is the scrubbed one the agent's commands get, without any
- * credential.
+ * credential. A caller running Gradle must pass --no-daemon: a reused daemon
+ * retains another command's sandbox. Inventories do so explicitly instead
+ * of rewriting GRADLE_OPTS or the repository's JVM settings.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
