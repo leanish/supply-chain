@@ -27,6 +27,9 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   with a reason in run results and plan notes. A rejected newer release does not veto an older eligible one.
   Missing metadata or unreadable
   advisory ranges leave the wrapper out with a reported reason; other moves continue.
+  Advisory reading supports inclusive `to`/`through` ranges, bracketed intervals and wildcard upper lines,
+  plus lists of maintenance-line fixes. An unknown advisory range omits the entire wrapper selection: without
+  readable bounds, code cannot prove which versions it might affect. Verification of a planned wrapper fails closed.
 - Before npm resolves a routine or major, code checks incoming and outgoing peer constraints against existing directs.
   Rule-picked bump targets stay fixed; required companions are added explicitly at the lowest safe version in their
   own compatible line that makes the set consistent, aged (own scopes: any age), with no new advisory group, malware

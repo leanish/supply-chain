@@ -3,8 +3,9 @@ import type { GateEnvironment } from "../../ci/src/gate.ts";
 import { isObject } from "../../ci/src/json.ts";
 import { fetchRepositoryAdvisories, type RepositoryAdvisory } from "../../ci/src/repository-advisories.ts";
 import type { Tree } from "../../ci/src/tree.ts";
-import { inAdvisoryRange, parseAdvisoryRange, versionScheme } from "../../ci/src/versions.ts";
+import { versionScheme } from "../../ci/src/versions.ts";
 
+import { gradleAdvisoryAffects } from "./gradle-advisories.ts";
 import type { DirectMove } from "./units.ts";
 import { wrapperProperties } from "./wrapper-properties.ts";
 
@@ -198,21 +199,7 @@ function majorOf(version: string): number {
 
 /** Repository advisories describe Gradle itself; never silently discard an unreadable published range. */
 function affecting(advisories: ReadonlyArray<RepositoryAdvisory>, version: string): string[] {
-  return advisories.filter((advisory) => {
-    if (advisory.vulnerabilities.length === 0) throw new Error(`${advisory.ghsaId}: no Gradle vulnerability ranges`);
-    return advisory.vulnerabilities.map((vulnerability) => {
-      const range = vulnerability.range;
-      const intervals = range === undefined ? undefined : parseAdvisoryRange(range);
-      if (intervals === undefined) throw new Error(`${advisory.ghsaId}: unreadable Gradle advisory range`);
-      const hit = inAdvisoryRange(SCHEME, range!, version);
-      if (hit === undefined) throw new Error(`${advisory.ghsaId}: unreadable Gradle advisory range`);
-      // An open-ended range stops at the maintainer's single patched version, as in the gate.
-      if (!hit || vulnerability.patched === undefined || intervals.some((interval) => interval.upper !== undefined)) return hit;
-      const patch = vulnerability.patched.trim().replace(/^v/, "");
-      if (!/^\d+(?:\.\d+){1,2}$/.test(patch)) throw new Error(`${advisory.ghsaId}: unreadable Gradle patched version`);
-      return SCHEME.compare(version, patch) < 0;
-    }).some(Boolean);
-  }).map((advisory) => advisory.ghsaId);
+  return advisories.filter((advisory) => gradleAdvisoryAffects(advisory, version)).map((advisory) => advisory.ghsaId);
 }
 
 async function officialTarget(release: Release, type: CurrentWrapper["type"], env: GateEnvironment): Promise<WrapperTarget> {

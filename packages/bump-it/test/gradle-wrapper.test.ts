@@ -89,6 +89,14 @@ describe("Gradle wrapper candidates", () => {
     expect(found.routine?.to).toBe("8.1");
     expect(found.major?.to).toBe("9.0");
   });
+  it("selects through the real repository's mixed comparator and to range without adding the advisory", async () => {
+    const { planner } = fixture([release("9.2.1"), release("9.3.0")], [advisory("GHSA-mqwm-5m85-gmcv", "< 8.14.4, 9.0.0 to 9.2.1", {
+      vulnerabilities: [{ package: { ecosystem: "maven", name: "org.gradle:gradle-core" },
+        vulnerable_version_range: "< 8.14.4, 9.0.0 to 9.2.1", patched_versions: "8.14.4, >= 9.3.0" }],
+    })]);
+    expect(await planner.candidates(tree("8.14.4"))).toMatchObject({ major: { to: "9.3.0" } });
+    expect((await planner.candidates(tree("8.14.4"))).unavailable).toBeUndefined();
+  });
   it("reads the published repository advisories and releases once for all candidates, recomputations and verification", async () => {
     const { planner, calls } = fixture();
     const move = (await planner.candidates(tree())).routine!;
