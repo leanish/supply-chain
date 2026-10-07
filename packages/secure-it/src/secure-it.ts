@@ -24,6 +24,7 @@ import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from 
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
+import { revertToBase } from "../../remediation/src/reconcile.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
@@ -54,6 +55,8 @@ export interface SecureItDeps {
   readonly journal: (context: ToolRunContext) => PublicationJournal;
   /** Writes `content` at `path` (relative to the working copy): taking the base's side of a conflicted dependency file. */
   readonly writeFile: (workingCopy: WorkingCopy, path: string, content: string) => Promise<void>;
+  /** Puts every path that differs from `baseSha` back to the base's content (reconcile by revert); returns them. */
+  readonly revert: (workingCopy: WorkingCopy, baseSha: string) => Promise<string[]>;
 }
 
 export function defaultDeps(): SecureItDeps {
@@ -72,6 +75,7 @@ export function defaultDeps(): SecureItDeps {
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
     journal: (context) => new FileJournal(context.config.dirs.state),
     writeFile: (workingCopy, path, content) => writeFile(join(workingCopy.path, path), content),
+    revert: (workingCopy, baseSha) => revertToBase(workingCopy, baseSha),
   };
 }
 
@@ -158,13 +162,11 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   });
   if (already !== undefined) return { ...report, outcome: "already-open", pullRequest: already.url, waiting };
 
-  // An open PR for the package is updated with the new plan; one someone else pushed to is left alone.
+  // An open PR for the package is reconciled to the new plan; one someone else pushed to is left alone.
   const reusable: GitHubPullRequest | undefined = owned[0];
   let prepared: PreparedBranch;
   if (reusable !== undefined) {
-    const checkedOut = await context.workspace.prepareBranch(context.workingCopy, { branch: reusable.headRef, start: "remote" });
-    if (checkedOut.kind !== "prepared" || checkedOut.prepared.remoteHeadSha !== reusable.headSha) throw new Error(`${reusable.url} moved while secure-it prepared it`);
-    prepared = checkedOut.prepared;
+    prepared = await reconcileBranch(context, deps, reusable, baseSha);
   } else {
     const taken = new Set(own.map((pr) => pr.headRef));
     let branch = topicBranch;
@@ -189,6 +191,21 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const created = await publishNew(publication, prepared, content);
   if (created === undefined) return { ...report, outcome: "nothing-changed", summary: answer.summary };
   return { ...report, outcome: "published", pullRequest: created.url, waiting };
+}
+
+/**
+ * The PR's branch with the default branch (at `baseSha`, what the new plan was
+ * computed on) merged in and every file it changed put back to the base's
+ * content (design item 28): the new plan then goes on the base as it is, and
+ * what the old plan changed and the new one doesn't want goes.
+ */
+async function reconcileBranch(context: ToolRunContext, deps: SecureItDeps, pr: GitHubPullRequest, baseSha: string): Promise<PreparedBranch> {
+  const merged = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote-merging" });
+  if (merged.kind === "conflict") throw new Error(`${pr.headRef}: remote-merging reported a conflict without leaving it in progress`);
+  if (merged.prepared.remoteHeadSha !== pr.headSha) throw new Error(`${pr.url} moved while secure-it prepared it`);
+  if (merged.prepared.baseSha !== baseSha) throw new Error(`the default branch moved while secure-it ran (${baseSha.slice(0, 12)} → ${merged.prepared.baseSha.slice(0, 12)}); the next run starts over`);
+  await deps.revert(context.workingCopy, baseSha);
+  return merged.prepared;
 }
 
 /** Item 23 on the working copy as the agent left it, against `base`. */
@@ -238,28 +255,37 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const { work, blocked } = selectWork(still);
       if (work.length === 0) throw new Error(`on the new base the fix is blocked: ${blocked.flatMap((group) => group.reasons).join("; ")}`);
       const plan = await planFor(work, { lockfiles: await lockfilesOf(base), gradle: baseGradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) });
+      const changed = planDigest(plan) !== planDigest(previous);
       const code: string[] = [];
-      if (merge.kind === "conflicted") {
+      if (changed) {
+        // A different plan: the old one's edits go (conflicts included), the new one is applied on the base as it is.
+        await deps.revert(context.workingCopy, baseSha);
+      } else if (merge.kind === "conflicted") {
         for (const path of merge.conflicted) {
           const theirs = isMechanical(path) ? await base.read(path) : undefined;
           if (theirs === undefined) code.push(path);
           else await deps.writeFile(context.workingCopy, path, theirs);
         }
       }
-      // The dependency files have the base's side where they conflicted; the agent re-applies the (regenerated) plan
-      // when anything needs it, resolving code conflicts too.
-      if (merge.kind === "conflicted" || planDigest(plan) !== planDigest(previous)) {
+      // The agent applies a changed plan, or re-applies the same one over the base's side of conflicted dependency
+      // files, resolving code conflicts too.
+      let content = { title: pr.title, body: withPlanSection(pr.body, plan), commitMessage: `merging ${context.base}` };
+      if (changed || merge.kind === "conflicted") {
         const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
           entrypoint: "secure-it",
           input: skillInput(context, plan, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
           effort: effortFor(context, plan),
         });
         if (answer.outcome !== "applied") throw new Error(`the agent couldn't re-apply the plan on the new base: ${answer.summary}`);
+        // A different plan is a different change: its own title and description.
+        if (changed && answer.publication !== undefined) {
+          content = { title: answer.publication.title, body: `${answer.publication.body}\n\n${planSection(plan)}`, commitMessage: answer.publication.commitMessage };
+        }
       }
       // Fixes remain (the recomputation said so): an edit that left the base as it was fails verification, it isn't retired.
       const problems = await verifyEdit(context, deps, plan, env, inventories, base, baseGradle);
       if (problems.length > 0) throw new Error(`after merging the default branch: ${problems.join("; ")}`);
-      await publishUpdate(publication, merge.prepared, pr.number, { title: pr.title, body: withPlanSection(pr.body, plan), commitMessage: `merging ${context.base}` });
+      await publishUpdate(publication, merge.prepared, pr.number, content);
       return "rebased";
     },
     async adapt(pr, prepared, _context, attempt) {

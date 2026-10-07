@@ -24,7 +24,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | Actions | any | pin to the tag's commit |
 5. **Looks at its open PRs first.**
    - An open secure-it PR with the same plan: nothing to do, its review owns it.
-   - One with a different plan: that PR is updated, as long as its head is still the tool's.
+   - One with a different plan, while its head is still the tool's: that PR is reconciled. The default branch is merged into it, every file it changed goes back to the base's content, and the new plan is applied on top, so nothing the old plan did lingers. It's pushed as a normal commit.
    - One someone else pushed to: the fix goes in a PR of its own.
 6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
 7. **Verifies before publishing** (`verify.ts`):
@@ -44,9 +44,9 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
 
 - **The base moved:**
   - The fix is recomputed on the new base first. If the base already has it, the PR is closed.
-  - Otherwise the regenerated plan replaces the PR's. Conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
-  - If the result equals the base, the PR is closed: the default branch has the fix.
-  - Otherwise the merge is verified like a run and pushed, with the new plan in the PR.
+  - A different plan on the new base: the PR is reconciled as in a run (reverted to the base, conflicts included, then the new plan applied), with the agent's new title and description.
+  - The same plan: conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
+  - Either way the result is verified like a run and pushed, with the plan in the PR. Fixes remained on the new base, so an edit that leaves the base as it was fails verification; it doesn't retire the PR.
 - **CI failed:** the agent adapts, at most twice, and the result is verified before it's pushed.
 
 ## Isolation

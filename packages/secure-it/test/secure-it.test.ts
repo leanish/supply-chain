@@ -62,6 +62,7 @@ interface Harness {
   readonly workspace: InMemoryWorkspace;
   readonly agentCalls: Array<{ entrypoint: string; input: Record<string, unknown>; effort?: string }>;
   readonly written: string[];
+  readonly reverted: string[];
   readonly journal: MemoryJournal;
 }
 
@@ -71,6 +72,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
   const workingCopy: WorkingCopy = { projectId: REPO, path: "/synthetic/leanish/widget", branch: "main", headSha: options.baseSha ?? BASE_SHA, gitDir: "/synthetic/.git" };
   const agentCalls: Harness["agentCalls"] = [];
   const written: string[] = [];
+  const reverted: string[] = [];
   const journal = new MemoryJournal();
   const context: ToolRunContext = {
     config: CONFIG,
@@ -102,8 +104,12 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     writeFile: async (_wc, path, content) => {
       written.push(`${path}=${content}`);
     },
+    revert: async (_wc, sha) => {
+      reverted.push(sha);
+      return ["package-lock.json"];
+    },
   };
-  return { context, deps, github, workspace, agentCalls, written, journal };
+  return { context, deps, github, workspace, agentCalls, written, reverted, journal };
 }
 
 /** An open secure-it PR for vite, carrying `plan`'s block, published at HEAD_SHA on BASE_SHA. */
@@ -125,7 +131,7 @@ describe("secure-it run", () => {
     expect(stateOf(pr.body)).toEqual({ head: PUSHED_SHA, base: BASE_SHA, adaptations: 0 });
   });
 
-  it("leaves the same plan's open PR to its review tick, and updates one whose plan changed while it's still the tool's", async () => {
+  it("leaves the same plan's open PR to its review tick, and reconciles one whose plan changed while it's still the tool's", async () => {
     const same = harness({ prs: [await vitePr()] });
     expect(await secureIt(same.deps).run(same.context)).toMatchObject({ outcome: "already-open", pullRequest: "https://github.com/leanish/widget/pull/7" });
     expect(same.agentCalls).toEqual([]);
@@ -133,7 +139,20 @@ describe("secure-it run", () => {
     const changed = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } }))] });
     changed.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
     expect(await secureIt(changed.deps).run(changed.context)).toMatchObject({ outcome: "updated", pullRequest: "https://github.com/leanish/widget/pull/7" });
+    // The base merged in and the old plan's edits reverted before the agent applies the new one.
+    expect(changed.reverted).toEqual([BASE_SHA]);
+    expect(changed.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
     expect(planOf(changed.github.prs.get(7)!.body)?.moves[0]?.to).toBe("8.3.3");
+  });
+
+  it("stops reconciling when the default branch moved while the run computed its plan", async () => {
+    const h = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } }))] });
+    h.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
+    const prepare = h.workspace.prepareBranch.bind(h.workspace);
+    h.workspace.prepareBranch = async (workingCopy, args) => prepare({ ...workingCopy, headSha: "f".repeat(40) }, args);
+    await expect(secureIt(h.deps).run(h.context)).rejects.toThrow("the default branch moved while secure-it ran");
+    expect(h.reverted).toEqual([]);
+    expect(h.agentCalls).toEqual([]);
   });
 
   it("doesn't take a PR someone else pushed to as covering the same plan", async () => {
@@ -197,14 +216,19 @@ describe("secure-it review", () => {
     expect(merged.agentCalls).toEqual([]);
   });
 
-  it("has the agent re-apply a plan the moved base changed, and records the new plan in the PR", async () => {
+  it("reconciles a PR whose plan the moved base changed: reverted to the base, the new plan applied and recorded", async () => {
     const h = harness({ prs: [await vitePr()], baseSha: NEW_BASE, fixes: [vite({ to: { version: "8.3.4", line: "8", aged: true, major: false, blockers: [] } })] });
     h.workspace.setRemoteHead("secure-it/2026-10-05-vite", HEAD_SHA);
+    h.workspace.setPrepareConflict("secure-it/2026-10-05-vite");
     expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
+    // Reverting resolves the conflicts too: nothing is taken file by file, and the agent applies on the base.
+    expect(h.reverted).toEqual([NEW_BASE]);
+    expect(h.written).toEqual([]);
     expect(h.agentCalls.map((call) => call.input["mode"])).toEqual(["apply"]);
-    const body = h.github.prs.get(7)!.body;
-    expect(planOf(body)?.moves[0]?.to).toBe("8.3.4");
-    expect(body.match(/What secure-it moved/g)).toHaveLength(1);
+    const pr = h.github.prs.get(7)!;
+    expect(pr.title).toBe("moving vite to 8.3.3");
+    expect(planOf(pr.body)?.moves[0]?.to).toBe("8.3.4");
+    expect(pr.body.match(/What secure-it moved/g)).toHaveLength(1);
   });
 
   it("takes the base's side of a conflicted lockfile and has the agent re-apply, or resolve code conflicts", async () => {
