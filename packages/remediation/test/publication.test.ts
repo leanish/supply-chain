@@ -49,6 +49,13 @@ describe("publication", () => {
     expect(stateOf(result.pr.body)).toEqual({ head: HEAD_SHA, base: BASE_SHA, adaptations: 1 });
   });
 
+  it("records the commit in the journal before pushing it, and pushes nothing when it can't", async () => {
+    const workspace = new InMemoryWorkspace();
+    const rejecting = { pushed: async () => { throw new Error("disk full"); }, last: async () => undefined };
+    await expect(publishUpdate({ ...context(new FakeGitHub(ownPr()), workspace), journal: rejecting }, existing, 7, CONTENT)).rejects.toThrow("disk full");
+    expect(workspace.publications).toHaveLength(1);
+  });
+
   it("records a push in the journal before the body says so, so a failed update leaves a trace", async () => {
     const github = new FakeGitHub(ownPr());
     github.fail("updatePullRequest");

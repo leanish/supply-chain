@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/local-git-workspace.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; a new `remote-merging` test;
+// Local changes: `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; new `remote-merging` and `beforePush` tests;
 // imports this package's modules from `../src/` instead of `../../src/`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -336,6 +336,31 @@ describe.skipIf(!hasGit)("LocalGitWorkspace branch publication (real git)", () =
     if (published.kind !== "pushed") throw new Error("expected a push");
     expect(gitOut(origin, ["log", "-1", "--format=%P|%s", BRANCH])).toBe(`${prHead} ${mainHead}|merging main`);
     expect(gitOut(origin, ["show", `${BRANCH}:README.md`])).toBe("both sides");
+  });
+
+  it("calls beforePush with the commit before pushing it, and pushes nothing when it throws", async () => {
+    const { origin, scratch } = makeOrigin();
+    git(scratch, ["checkout", "-q", "-b", BRANCH]);
+    commitIn(scratch, "deps.txt", "a=1\n", "first refresh");
+    git(scratch, ["push", "-q", "origin", BRANCH]);
+    const before = gitOut(origin, ["rev-parse", `refs/heads/${BRANCH}`]);
+
+    const { ws, wc } = await synced(origin);
+    const prep = await ws.prepareBranch(wc, { branch: BRANCH, start: "remote" });
+    if (prep.kind !== "prepared") throw new Error("expected a prepared branch");
+    writeFileSync(join(wc.path, "deps.txt"), "a=2\n");
+    const seen: string[] = [];
+    await expect(
+      ws.publishBranch(wc, prep.prepared, {
+        message: "refreshing",
+        beforePush: async (sha) => {
+          seen.push(sha);
+          throw new Error("journal unwritable");
+        },
+      }),
+    ).rejects.toThrow("journal unwritable");
+    expect(seen).toEqual([gitOut(wc.path, ["rev-parse", "HEAD"])]);
+    expect(gitOut(origin, ["rev-parse", `refs/heads/${BRANCH}`])).toBe(before);
   });
 
   it("refuses to publish when the remote branch moved since it was prepared", async () => {

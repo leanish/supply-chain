@@ -1,6 +1,7 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at e4f8a1e; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory;
-// the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved.
+// the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved;
+// `beforePush`, called with the commit before it's pushed.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
@@ -204,6 +205,7 @@ export class LocalGitWorkspace implements Workspace {
           `(expected ${preparation.remoteHeadSha ?? "no branch"}, found ${remoteHead ?? "no branch"})`,
       );
     }
+    await args.beforePush?.(head);
     // A plain push: GitHub refuses anything but a fast-forward or a new branch.
     await this.#run(repo, "push", [
       ...cloneAuthArgs(this.#gitAuth, repo.url),

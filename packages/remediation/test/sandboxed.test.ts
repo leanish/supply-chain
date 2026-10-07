@@ -8,7 +8,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { runSandboxed } from "../src/sandboxed.ts";
 
-const hasCodex = spawnSync("codex", ["sandbox", "--help"], { stdio: "ignore" }).status === 0;
+// Codex can apply its seatbelt here (not inside another sandbox, where `sandbox_apply` is refused).
+const hasCodex = spawnSync("codex", ["sandbox", "--", "/usr/bin/true"], { stdio: "ignore" }).status === 0;
 let root: string;
 let workingCopy: WorkingCopy;
 let secretDir: string;

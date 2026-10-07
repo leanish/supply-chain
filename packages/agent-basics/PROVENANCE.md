@@ -60,7 +60,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/types/clients.ts` | `core/runtime/src/types/clients.ts` | copied | only the GitHub client's types |
 | `src/types/logger.ts` | `core/runtime/src/types/logger.ts` | copied | — |
 | `src/types/repo-source.ts` | — | new | — |
-| `src/types/working-copy.ts` | `core/runtime/src/types/working-copy.ts` | copied | the `remote-merging` start and its `conflicted` result |
+| `src/types/working-copy.ts` | `core/runtime/src/types/working-copy.ts` | copied | the `remote-merging` start and its `conflicted` result; `PublishBranchArgs.beforePush` |
 | `src/usage/api-cost.ts` | `core/runtime/src/usage/api-cost.ts` | copied | — |
 | `src/usage/model-prices.ts` | `core/runtime/src/usage/model-prices.ts` | copied | — |
 | `src/usage/quota.ts` | `core/runtime/src/usage/quota.ts` | copied | — |
@@ -68,8 +68,8 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/usage/skill-usage.ts` | `core/runtime/src/usage/skill-usage.ts` | copied | — |
 | `src/usage/usage-totals.ts` | `core/runtime/src/usage/usage-totals.ts` | copied | — |
 | `src/working-copy/git-clone-auth.ts` | `core/runtime/src/working-copy/git-clone-auth.ts` | copied | `gitCloneAuth(token, host)` replaces `resolveGitCloneAuth(needs, env)`; the tool passes its token |
-| `src/working-copy/in-memory-workspace.ts` | `core/runtime/src/working-copy/in-memory-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json); a test double the tools' tests use |
-| `src/working-copy/local-git-workspace.ts` | `core/runtime/src/working-copy/local-git-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory; the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved |
+| `src/working-copy/in-memory-workspace.ts` | `core/runtime/src/working-copy/in-memory-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json); calls `beforePush`; a test double the tools' tests use |
+| `src/working-copy/local-git-workspace.ts` | `core/runtime/src/working-copy/local-git-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory; the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved; `beforePush`, called with the commit before it's pushed |
 | `src/working-copy/workspace.ts` | `core/runtime/src/working-copy/workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project` |
 | `test/api-cost.test.ts` | `core/runtime/test/unit/api-cost.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/claude-code-runner.test.ts` | `core/runtime/test/unit/claude-code-runner.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
@@ -88,7 +88,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/in-memory-workspace.test.ts` | `core/runtime/test/unit/in-memory-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/isolation.test.ts` | — | new | — |
-| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; a new `remote-merging` test (markers refused, the resolved merge published); imports this package's modules from `../src/` instead of `../../src/` |
+| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; new `remote-merging` (markers refused, the resolved merge published) and `beforePush` tests; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/model-prices.test.ts` | `core/runtime/test/unit/model-prices.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/output-parse.test.ts` | `core/runtime/test/unit/output-parse.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/quota.test.ts` | `core/runtime/test/unit/quota.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |

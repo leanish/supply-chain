@@ -99,8 +99,11 @@ export async function publishUpdate(
   const remoteHead = existingHead(context, prepared);
   const current = await reReadOwn(context, number, remoteHead);
   if (!current.isDraft) await github.convertToDraft({ nodeId: current.nodeId });
-  const pushed = await context.workspace.publishBranch(context.workingCopy, prepared, { message: content.commitMessage });
-  if (pushed.kind === "pushed") await context.journal.pushed(repo, current.number, { head: pushed.sha, base: prepared.baseSha });
+  const pushed = await context.workspace.publishBranch(context.workingCopy, prepared, {
+    message: content.commitMessage,
+    // Recorded before the push: whatever fails after it lands, the next tick still knows this exact head as the tool's.
+    beforePush: (sha) => context.journal.pushed(repo, current.number, { head: sha, base: prepared.baseSha }),
+  });
   // GitHub may still report the old head for a moment after a push; anything else is someone else's push.
   await reReadOwn(context, current.number, remoteHead, ...(pushed.kind === "pushed" ? [pushed.sha] : []));
   const head = pushed.kind === "pushed" ? pushed.sha : remoteHead;

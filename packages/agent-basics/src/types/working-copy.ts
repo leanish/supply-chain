@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/types/working-copy.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: the `remote-merging` start and its `conflicted` result.
+// Local changes: the `remote-merging` start and its `conflicted` result; `PublishBranchArgs.beforePush`.
 /**
  * Runtime-owned references to checked-out project working copies. Returned
  * by `runtime.syncWorkingCopies(projects)` and consumed by `runtime.runSkill`.
@@ -99,6 +99,11 @@ export type PrepareBranchResult =
 export interface PublishBranchArgs {
   /** The commit message for the agent's working-tree changes (one commit). */
   readonly message: string;
+  /**
+   * Called with the commit about to be pushed, after it's committed and before the push: a caller records it here,
+   * so a push that lands while what follows fails can still be recognised. If it throws, nothing is pushed.
+   */
+  readonly beforePush?: (sha: string) => Promise<void>;
 }
 
 export type PublishBranchResult =

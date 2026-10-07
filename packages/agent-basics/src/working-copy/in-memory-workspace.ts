@@ -1,5 +1,6 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/in-memory-workspace.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json).
+// Local changes: `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json);
+// calls `beforePush`.
 import type { RepoSource as Project } from "../types/repo-source.ts";
 
 import type {
@@ -110,6 +111,7 @@ export class InMemoryWorkspace implements Workspace {
       this.#nextPublishUnchanged = false;
       return { kind: "unchanged" };
     }
+    await args.beforePush?.("c".repeat(40));
     return { kind: "pushed", sha: "c".repeat(40) };
   }
 
