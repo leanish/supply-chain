@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/github-client.test.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel.
 import { describe, expect, it } from "vitest";
 
 import { createGitHubClient, GitHubApiError } from "../src/github/github-client.ts";

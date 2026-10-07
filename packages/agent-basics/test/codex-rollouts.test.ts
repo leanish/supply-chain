@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/codex-rollouts.test.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`, its fixtures from `./fixtures/`.
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
