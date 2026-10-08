@@ -286,6 +286,35 @@ describe("securityCandidates, regressions", () => {
 });
 
 describe("bumpCandidates", () => {
+  it.each(["24.19.0", "22.0.0"])("caps Node types from %s at the runtime minimum before choosing routine and major targets", async (from) => {
+    const versions = ["22.0.0", "22.1.0", "24.19.0", "24.20.0", "26.6.3"];
+    const root = { engines: { node: ">=24" }, devDependencies: { "@types/node": `^${from}` } };
+    const head = await tree({ "@types/node": from }, { "package.json": JSON.stringify(root) }, root);
+    const scans: string[][] = [];
+    const found = await bumpCandidates(head, environment({}, { "@types/node": Object.fromEntries(versions.map((version) => [version, OLD])) }, scans));
+    expect(found.bumps[0]?.minor?.version).toBe(from === "24.19.0" ? "24.20.0" : "22.1.0");
+    expect(found.bumps[0]?.major?.version).toBe(from === "24.19.0" ? undefined : "24.20.0");
+    expect(found.bumps[0]?.problems).toContainEqual(expect.stringContaining("lowest supported Node major (24"));
+    expect(scans.flat()).not.toContain("@types/node@26.6.3");
+  });
+
+  it("keeps the current type major and reports unreadable runtime metadata", async () => {
+    const root = { devDependencies: { "@types/node": "^24.19.0" } };
+    const head = await tree({ "@types/node": "24.19.0" }, { ".nvmrc": "lts/*" }, root);
+    const registry = { "@types/node": { "24.19.0": OLD, "24.20.0": OLD, "26.6.3": OLD } };
+    const found = await bumpCandidates(head, environment({}, registry));
+    expect(found.bumps[0]).toMatchObject({ minor: { version: "24.20.0" }, major: undefined });
+    expect(found.bumps[0]?.problems).toContainEqual(expect.stringContaining("cannot read a supported Node major"));
+  });
+
+  it("does not make a routine move above the runtime even when the existing type major is already too new", async () => {
+    const root = { engines: { node: ">=24 <25" }, devDependencies: { "@types/node": "^26.0.0" } };
+    const head = await tree({ "@types/node": "26.0.0" }, { "package.json": JSON.stringify(root) }, root);
+    const found = await bumpCandidates(head, environment({}, { "@types/node": { "26.0.0": OLD, "26.1.0": OLD } }));
+    expect(found.bumps[0]).toMatchObject({ minor: undefined, major: undefined });
+    expect(found.bumps[0]?.problems).toContainEqual(expect.stringContaining("lowest supported Node major (24"));
+  });
+
   it("skips deprecated routine and major releases, including aws-cdk's accidental major", async () => {
     const registry = { "aws-cdk": { "2.1000.0": OLD, "2.1143.0": OLD, "2.1144.0": OLD, "3.0.0": OLD } };
     const head = await tree({ "aws-cdk": "2.1000.0" }, {}, { dependencies: { "aws-cdk": "^2.1000.0" } });

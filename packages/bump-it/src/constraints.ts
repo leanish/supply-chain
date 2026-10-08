@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 
 import semver from "semver";
 
+import { nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "../../ci/src/node-runtime.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 
 import { rangeOf } from "./npm-graph.ts";
@@ -17,6 +18,13 @@ export async function constrainedUnit(unit: Unit, base: Tree): Promise<{ unit: U
     if (move.ecosystem !== "npm") {
       moves.push(move);
       continue;
+    }
+    if (move.name === "@types/node") {
+      const runtime = await nodeRuntime(base, move.declarations);
+      if (nodeTypeVersions(move.from, [move.to], runtime).length === 0) {
+        notes.push(nodeTypeProblem(runtime));
+        continue;
+      }
     }
     const declarations = [];
     for (const declaration of move.declarations) {

@@ -19,6 +19,13 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   PR, including every declaration of that package with a selected major move. Each unit starts from the default branch,
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
+- `@types/node` targets never exceed the lowest supported Node major found in `engines.node`, `.nvmrc`,
+  `.node-version`, `volta.node`, or static `actions/setup-node` CI versions (including matrices). Root, lockfile-root
+  and declaring-workspace constraints are combined by taking the minimum; a newer development or CI runtime never
+  raises an older support floor. This applies to both routine updates and majors, and to direct peer companions.
+  If none is readable, only updates within the current type major are allowed and the run reports why majors were
+  withheld. Floating aliases and unresolved CI expressions do not establish a support floor. An existing type major
+  above the runtime is left for a manual correction; bump-it does not raise it further or silently downgrade it.
 - The root Gradle wrapper joins the routine within its current major; the highest eligible newer major gets its own
   `gradle-gradle-major` PR, subject to the same new-major cap and deferred priority. Code picks stable, non-broken
   services.gradle.org releases at least `releaseAgeDays` old by `buildTime`. Published gradle/gradle repository
