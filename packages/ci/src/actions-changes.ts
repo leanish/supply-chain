@@ -53,10 +53,9 @@ export interface ActionChanges {
 
 /**
  * Each `uses:` occurrence is judged on its own: one is new or changed unless
- * base has as many occurrences with the same file, action (subpath included),
- * ref and comment. So removing a comment, repointing a ref, switching a
- * subpath, or copying an unpinned ref (into another workflow or the same one)
- * all count as changes.
+ * base has the same file, action, ref and comment. So removing a comment,
+ * repointing a ref, or copying an unpinned ref into another workflow all
+ * count as changes.
  */
 export async function actionChanges(
   base: ActionsInventory,
@@ -65,10 +64,7 @@ export async function actionChanges(
   github: ActionsGitHub,
   config: Config,
 ): Promise<ActionChanges> {
-  // Counted, so a second copy of a step is a change too.
-  const before = new Map<string, number>();
-  for (const use of base.uses) before.set(occurrenceKey(use), (before.get(occurrenceKey(use)) ?? 0) + 1);
-  const counted = new Map<string, number>();
+  const before = new Set(base.uses.map(occurrenceKey));
   const problems: string[] = [];
   const gaps: string[] = [...head.gaps, ...head.docker.map((use) => `GitHub Actions ${use}: no advisory source covers container images`)];
   const changes = new Map<string, ChangedVersion>();
@@ -81,15 +77,11 @@ export async function actionChanges(
   );
   for (const use of head.uses) {
     const occurrence = occurrenceKey(use);
-    const nth = (counted.get(occurrence) ?? 0) + 1;
-    counted.set(occurrence, nth);
-    const changed = nth > (before.get(occurrence) ?? 0);
-    // Report each problem or gap once per occurrence key; an extra copy only matters if it's a change.
-    if (seen.has(occurrence) && !changed) continue;
-    if (seen.has(`${occurrence}|changed`) && changed) continue;
-    seen.add(changed ? `${occurrence}|changed` : occurrence);
+    if (seen.has(occurrence)) continue;
+    seen.add(occurrence);
     const resolution = resolutions.get(resolutionKey(use))!;
-    const label = `${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref} (${use.file})`;
+    const label = `${use.name}@${use.ref} (${use.file})`;
+    const changed = !before.has(occurrence);
     if (resolution.kind === "unpinned") {
       if (changed) problems.push(`${label} is new or changed, so it must be pinned to a full commit SHA with a \`# vX.Y.Z\` comment`);
       else gaps.push(`GitHub Actions ${label}: not pinned to a commit, so its version (and advisories) can't be told`);

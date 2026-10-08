@@ -11,6 +11,7 @@
 import { type Config, DEFAULT_CONFIG, parseConfig } from "./config.ts";
 import { type Exceptions, NO_EXCEPTIONS, parseExceptions } from "./exceptions.ts";
 import { compareFindings, findingsOf } from "./findings.ts";
+import { checkFloors, type Floor, FLOORS_PATH, parseFloors } from "./floors.ts";
 import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
 import { type Inventory, isEmpty, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
@@ -55,15 +56,18 @@ export interface Settings {
   readonly config: Config;
   readonly configText: string | undefined;
   readonly exceptions: Exceptions;
+  readonly floors: ReadonlyArray<Floor>;
 }
 
 export async function readSettings(head: Tree): Promise<Settings> {
   const configText = await head.read(CONFIG_PATH);
   const exceptionsText = await head.read(EXCEPTIONS_PATH);
+  const floorsText = await head.read(FLOORS_PATH);
   return {
     config: configText === undefined ? DEFAULT_CONFIG : parseConfig(parseJson(configText, CONFIG_PATH)),
     configText,
     exceptions: exceptionsText === undefined ? NO_EXCEPTIONS : parseExceptions(parseJson(exceptionsText, EXCEPTIONS_PATH)),
+    floors: floorsText === undefined ? [] : parseFloors(parseJson(floorsText, FLOORS_PATH)),
   };
 }
 
@@ -120,7 +124,7 @@ export interface GradleInputs {
 
 export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
-  const { config, configText, exceptions } = await readSettings(head);
+  const { config, configText, exceptions, floors } = await readSettings(head);
   const sources = await sourcesOf(head, config);
   const headInventory = await readInventory(head, sources, { gradle: gradle.head });
   if (isEmpty(headInventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
@@ -166,10 +170,11 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange })));
+  const floorCheck = await checkFloors(floors, headInventory, head);
   return {
-    failures: [...verdict.failures, ...problems],
+    failures: [...verdict.failures, ...problems, ...floorCheck.failures],
     warnings: verdict.warnings,
-    notes: verdict.notes,
+    notes: [...verdict.notes, ...floorCheck.notes],
     gaps: [...snapshot.gaps, ...actions.gaps],
     osvScannerVersion: version,
     configText,
@@ -189,7 +194,7 @@ function mergeChanges(changes: ReadonlyArray<ChangedVersion>): ChangedVersion[] 
 
 export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
-  const { config, configText, exceptions } = await readSettings(head);
+  const { config, configText, exceptions, floors } = await readSettings(head);
   const sources = await sourcesOf(head, config);
   const inventory = await readInventory(head, sources, { gradle: gradle.head });
   if (isEmpty(inventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
@@ -201,10 +206,11 @@ export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleIn
   const npmSources = inventory.npm.flatMap((lockfile) =>
     sourceProblems(lockfile.packages, config.npm.registries).map((problem) => prefixed(inventory, lockfile.path, problem)),
   );
+  const floorCheck = await checkFloors(floors, inventory, head);
   return {
-    failures: [...verdict.failures, ...bundleFailures(inventory), ...npmSources, ...resolutionFailures(inventory, config, undefined)],
+    failures: [...verdict.failures, ...bundleFailures(inventory), ...npmSources, ...resolutionFailures(inventory, config, undefined), ...floorCheck.failures],
     warnings: [],
-    notes: verdict.notes,
+    notes: [...verdict.notes, ...floorCheck.notes],
     gaps: [...snapshot.gaps, ...actionGaps(inventory.actions, resolutions)],
     osvScannerVersion: version,
     configText,
