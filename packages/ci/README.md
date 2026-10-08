@@ -217,6 +217,20 @@ What runs where:
 
 **Updating the pin:** a PR that changes the SHA (and its `# vX.Y.Z` comment); bump-it does it like any other action update.
 
-## Coming next
+## Picking a fix: `candidates`
 
-A `candidates` command for secure-it and bump-it.
+`supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]` prints, as JSON, where secure-it and bump-it move versions.
+
+**`--rule security`** picks, for every version a full scan fails on, the version the rule above picks: what secure-it moves to. It reuses the rule's code, so what it picks is what the gate then accepts.
+
+- **Candidates:** every version above it the registry lists, in any line, scanned in a second snapshot together with the version itself.
+- **Targets:** the version's failing advisory groups (an excepted one stays as it is), as that second snapshot groups them (a candidate can link aliases). A target no listed version fixes is reported as `unfixable` and left: fixing A and leaving B is allowed.
+- **The choice:** the rule's first line, lowest aged fix, else lowest fix; a choice outside the version's own line is flagged `major`, for the agent to adapt the code. Own packages skip the wait.
+- **Malware:** the nearest clean version at least `releaseAgeDays` old (own packages: any age): newer in its line first, then older in its line (a downgrade), then a newer line.
+- **Blockers:** an npm choice whose publisher identity `compare` would reject keeps the rule's version and lists the break: it needs a reviewed `identity` exception.
+- **No choice:** each entry says why (no version fixes, an older fix's publish time is unknown, the registry can't list the versions).
+- **Incomplete inventories:** a Gradle configuration that didn't resolve or an unrecorded bundle is listed under `incomplete`, and the command exits 2: an empty list then doesn't mean nothing fails. Coverage gaps (actions included) are listed too.
+
+On sqs-codec today it picks Guava 33.7.2-jre for 33.5.0-jre and 33.7.1-jre, and snappy-java 1.1.10.10 (young, the lowest that fixes all seven advisories) for 1.1.10.8.
+
+**`--rule bump`** gives, for every directly declared dependency, the highest version at least `releaseAgeDays` old (own packages: any age) that adds no advisory group, no malware and, on npm, no publisher identity break: in its own line (`minor`: minors and patches, one PR together) and in the highest newer line that has one (`major`: a PR of its own; lines are tried from the highest down). Direct means the npm dependencies the root and the workspaces of every checked lockfile declare (each with the copy Node resolves for it, walking up from the workspace; `npm:` aliases under their target's name, with the key and range to edit in `declarations`), the Gradle dependencies declared with a version (recorded floors aside: bump-it doesn't raise floors), and every `uses:` pinned to a release; Gradle transitives are never bumped. It weighs a line's ten newest versions old enough, and says so when all of them are out.

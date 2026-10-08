@@ -145,3 +145,72 @@ export function changedPackages(
   const before = new Map(base.map((pkg) => [pkg.path, `${pkg.name}@${pkg.version}`]));
   return head.filter((pkg) => before.get(pkg.path) !== `${pkg.name}@${pkg.version}`);
 }
+
+/** A dependency a lockfile's root or one of its workspaces declares, with the version installed for it. */
+export interface DirectDependency {
+  /** The registry package's name (an `npm:` alias's target). */
+  readonly name: string;
+  /** The key it's declared under: `name`, or the alias (`"compat": "npm:lib@^1"` → `compat`). */
+  readonly declaredAs: string;
+  /** The declared range, as written: `^1.2.0`, `npm:lib@^1`. */
+  readonly spec: string;
+  /** The workspace that declares it (`""` for the root). */
+  readonly workspace: string;
+  /** Lockfile key of the installed copy that workspace uses. */
+  readonly path: string;
+  readonly version: string;
+}
+
+/**
+ * The registry dependencies the root and every workspace declare
+ * (`dependencies`, `devDependencies`, `optionalDependencies`), each with the
+ * copy Node resolves for it: the nearest `node_modules` walking up from the
+ * workspace, as npm installs them (a nested workspace may use its parent
+ * workspace's copy). `npm:` aliases count, under their target's name. Specs
+ * that aren't registry ranges (`file:`, `workspace:`, git, URLs, paths) and
+ * optional dependencies that aren't installed are left out.
+ */
+export function directDependencies(lock: unknown): DirectDependency[] {
+  const { packages } = (lock ?? {}) as { packages?: Record<string, LockEntry & DeclaringEntry> };
+  if (!isPlainObject(packages)) throw new Error("package-lock.json has no `packages` map");
+  const found: DirectDependency[] = [];
+  for (const [workspace, entry] of Object.entries(packages)) {
+    if (workspace.includes("node_modules/") || entry.link === true) continue;
+    const declared = { ...entry.optionalDependencies, ...entry.devDependencies, ...entry.dependencies };
+    for (const [declaredAs, spec] of Object.entries(declared)) {
+      // `npm:lib`, `npm:@acme/lib` (any version, as npm reads them) or with a range: `npm:lib@^1`.
+      const alias = /^npm:((?:@[^/@]+\/)?[^@]+)(?:@(.+))?$/.exec(spec.trim());
+      if (alias === null && !isRegistryRange(spec)) continue;
+      if (alias !== null && alias[2] !== undefined && !isRegistryRange(alias[2])) continue;
+      const path = installedFor(packages, workspace, declaredAs);
+      const installed = path === undefined ? undefined : packages[path];
+      if (path === undefined || installed?.version === undefined || installed.link === true) continue;
+      found.push({ name: installed.name ?? alias?.[1] ?? declaredAs, declaredAs, spec, workspace, path, version: installed.version });
+    }
+  }
+  return found;
+}
+
+/** The lockfile key of `key` as seen from `workspace`: its own `node_modules`, then each ancestor's, then the root's. */
+function installedFor(packages: Record<string, unknown>, workspace: string, key: string): string | undefined {
+  const parts = workspace === "" ? [] : workspace.split("/");
+  for (let depth = parts.length; depth >= 0; depth--) {
+    const dir = parts.slice(0, depth).join("/");
+    const path = dir === "" ? `node_modules/${key}` : `${dir}/node_modules/${key}`;
+    if (packages[path] !== undefined) return path;
+  }
+  return undefined;
+}
+
+interface DeclaringEntry {
+  readonly devDependencies?: Record<string, string>;
+  readonly optionalDependencies?: Record<string, string>;
+}
+
+/** A range or dist-tag the registry resolves: no protocol (`file:`, `npm:`, `git+…`), no URL, no path, no `owner/repo`. */
+function isRegistryRange(spec: string): boolean {
+  const trimmed = spec.trim();
+  // `~1.2` and `^1` are ranges; `~/dir` and `./dir` are paths.
+  if (/^[\^~<>=\d\s.xX*|-]+$/.test(trimmed)) return true;
+  return !/^[a-z+]+:/i.test(trimmed) && !/^[./~]/.test(trimmed) && !trimmed.includes("/");
+}
