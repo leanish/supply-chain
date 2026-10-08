@@ -34,7 +34,7 @@ jobs:
   supply-chain:
     needs: gate
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Require a successful supply-chain gate
         env:
