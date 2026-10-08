@@ -1,0 +1,127 @@
+// Gradle init script for the supply-chain gate: exports what a build really resolves.
+//
+//   ./gradlew -p <build> --init-script supply-chain-inventory.init.gradle \
+//     -DsupplyChain.out=<dir> --no-configuration-cache --quiet supplyChainInventory
+//
+// For every project, every resolvable configuration (runtime, compile, tests, annotation
+// processors, tools such as checkstyle or pitest) and the buildscript classpath (where the
+// plugins DSL and `buildscript {}` put plugins), plus the settings classpath once per build:
+// every module component the resolution selected, every dependency it couldn't resolve, and
+// the external dependencies declared in or inherited by that configuration, with their version
+// and `because(...)` reason (what the floors check reads). The CLI reads the files as data.
+//
+// The requested build exports from the `supplyChainInventory` task. Nested builds Gradle
+// configures in the same run (buildSrc, included builds, plugin builds) export once all their
+// projects are evaluated, each file naming its build relative to the requested one. Every
+// build also writes a manifest, from Gradle's own model: its projects (so the CLI can tell
+// none is missing) and the builds nested in it (so it can tell each was exported). Nothing is
+// filtered: a configuration that fails to resolve is reported with its failure, and the CLI
+// fails the run on it.
+
+import groovy.json.JsonOutput
+import org.gradle.api.artifacts.ExternalModuleDependency
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.result.UnresolvedDependencyResult
+
+def outPath = System.getProperty("supplyChain.out")
+if (outPath == null || outPath.isEmpty()) {
+    throw new GradleException("supply-chain inventory: pass -DsupplyChain.out=<directory>")
+}
+def outDir = new File(outPath)
+outDir.mkdirs()
+
+// The requested build's root, known before any settings run (a plugin build included from the
+// root's settings is evaluated before the root's settings finish), shared with nested builds:
+// each runs its own copy of this script.
+if (gradle.parent == null) {
+    def requested = gradle.startParameter.projectDir ?: gradle.startParameter.currentDir
+    System.setProperty("supplyChain.requestedRoot", requested.canonicalPath)
+}
+def relativeToRequested = { File dir ->
+    def requested = new File(System.getProperty("supplyChain.requestedRoot")).toPath()
+    def relative = requested.relativize(dir.canonicalFile.toPath()).toString()
+    relative.isEmpty() ? "." : relative
+}
+
+def describe = { configuration, String id, String kind ->
+    def entry = [id: id, kind: kind, resolved: [], unresolved: [], declared: [], error: null]
+    // allDependencies: what this configuration declares and inherits (compileClasspath gets implementation's).
+    configuration.allDependencies.withType(ExternalModuleDependency).each { dependency ->
+        def constraint = dependency.versionConstraint
+        entry.declared << [
+            group  : dependency.group,
+            name   : dependency.name,
+            version: dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null,
+            reason : dependency.reason,
+        ]
+    }
+    try {
+        def result = configuration.incoming.resolutionResult
+        result.allComponents.each { component ->
+            if (component.id instanceof ModuleComponentIdentifier) {
+                entry.resolved << [group: component.id.group, name: component.id.module, version: component.id.version]
+            }
+        }
+        result.allDependencies.each { dependency ->
+            if (dependency instanceof UnresolvedDependencyResult) {
+                entry.unresolved << [requested: dependency.requested.displayName, failure: dependency.failure.message]
+            }
+        }
+    } catch (Exception failure) {
+        entry.error = failure.message ?: failure.class.name
+    }
+    entry
+}
+
+def projectConfigurations = { String projectPath, buildscriptConfigurations, configurations ->
+    def prefix = projectPath == ":" ? ":" : projectPath + ":"
+    def described = []
+    buildscriptConfigurations.findAll { it.canBeResolved }.sort { it.name }.each {
+        described << describe(it, prefix + "buildscript." + it.name, "buildscript")
+    }
+    configurations.findAll { it.canBeResolved }.sort { it.name }.each {
+        described << describe(it, prefix + it.name, "project")
+    }
+    described
+}
+
+// One file per (build, project), named so no two can collide.
+def write = { String build, String project, Map content ->
+    def name = URLEncoder.encode(build + "|" + project, "UTF-8") + ".json"
+    new File(outDir, name).text = JsonOutput.prettyPrint(JsonOutput.toJson([schemaVersion: 1, build: build, project: project] + content))
+}
+
+settingsEvaluated { settings ->
+    def label = relativeToRequested(settings.rootDir)
+    gradle.ext.supplyChainBuild = label
+    def classpath = settings.buildscript.configurations.findByName("classpath")
+    write(label, "settings", [configurations: classpath == null ? [] : [describe(classpath, "settings.classpath", "settings")]])
+}
+
+gradle.projectsEvaluated { evaluated ->
+    def label = evaluated.ext.supplyChainBuild
+    def nested = evaluated.includedBuilds.collect { relativeToRequested(it.projectDir) }
+    def buildSrc = new File(evaluated.rootProject.projectDir, "buildSrc")
+    if (buildSrc.isDirectory()) nested << relativeToRequested(buildSrc)
+    write(label, "manifest", [manifest: [projects: evaluated.rootProject.allprojects.collect { it.path }.sort(), nestedBuilds: nested.unique().sort()]])
+    if (evaluated.parent != null) {
+        evaluated.rootProject.allprojects { project ->
+            write(label, project.path, [configurations: projectConfigurations(project.path, project.buildscript.configurations, project.configurations)])
+        }
+    }
+}
+
+if (gradle.parent == null) {
+    allprojects { project ->
+        // Captured at configuration time: the task action doesn't touch Task.project.
+        def projectPath = project.path
+        def configurations = project.configurations
+        def buildscriptConfigurations = project.buildscript.configurations
+        project.tasks.register("supplyChainInventory") {
+            description = "Exports the resolved dependencies of every resolvable configuration for the supply-chain gate."
+            doLast {
+                write(".", projectPath, [configurations: projectConfigurations(projectPath, buildscriptConfigurations, configurations)])
+            }
+        }
+    }
+}

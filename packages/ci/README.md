@@ -1,16 +1,18 @@
 # supply-chain CLI
 
-The CI gate. It reads what a repository installs, looks every package version up against **one advisory snapshot**, and:
+The CI gate. It reads what a repository installs (npm lockfiles, and what Gradle builds really resolve), looks every package version up against **one advisory snapshot**, and:
 
 - on a **pull request** (`compare`), fails only on what the PR makes worse: a finding head has and base doesn't, malware anywhere in head, or an added or changed version that fails the release-age, source or identity checks;
 - on the **default branch** (`scan`), fails on every finding without a valid exception, so a dependency flagged after it merged turns `main` red.
 
-It runs with plain Node 24 (type stripping), reads files from git objects or the working tree, and never runs anything from the repository it checks.
+It runs with plain Node 24 (type stripping) and reads files from git objects or the working tree. The only thing that runs code from the checked repository is `gradle-inventory`, which runs its Gradle build to learn what it resolves; in CI that happens in a job of its own, and the comparison only reads the JSON it wrote.
 
 ```bash
 node packages/ci/src/cli.ts compare --base HEAD^1 --head HEAD --report report.json
 node packages/ci/src/cli.ts scan --head HEAD
-node packages/ci/src/cli.ts scan --head worktree --repo ../my-repo
+node packages/ci/src/cli.ts scan --head worktree --repo ../my-repo        # runs Gradle inline if the repo has a build
+node packages/ci/src/cli.ts gradle-inventory --repo checkout --out head-gradle.json
+node packages/ci/src/cli.ts compare --base "$BASE" --head "$HEAD" --base-gradle base-gradle.json --head-gradle head-gradle.json
 ```
 
 Exit codes: `0` pass, `1` fail, `2` the gate couldn't complete (a failure too: an unreachable registry, OSV or GitHub API, or data that doesn't parse, never reads as clean).
@@ -40,6 +42,17 @@ One snapshot per run, shared by base and head:
 
 A package with no GitHub source repository, an unreadable repository, and a range the gate can't read are **coverage gaps**: listed in the report, never a pass in disguise.
 
+## Gradle builds
+
+`gradle-inventory` runs [`gradle/supply-chain-inventory.init.gradle`](gradle/supply-chain-inventory.init.gradle) on a clean checkout and records, for every project, **every resolvable configuration**: runtime, compile and test classpaths, annotation processors, tool configurations (checkstyle, pitest, jacoco…), the buildscript classpath (where `plugins {}` and `buildscript {}` put plugins) and the settings classpath. Each configuration lists what resolution selected, what it couldn't resolve, and the external dependencies it declares or inherits, with Gradle's `because(...)` reason.
+
+- `buildSrc`, included builds and plugin builds (`pluginManagement { includeBuild(...) }`) that Gradle configures from the root build are covered by the same run, under their own location prefix (`buildSrc/:compileClasspath`). Each build also writes a manifest from Gradle's own model (its projects and nested builds), so a project without output, or a nested build the run didn't export, fails the run; such a build has to be listed in `gradle.builds`.
+- A configuration that doesn't resolve fails the run on either side: a hole in the inventory would read as clean. `gradle.ignoreConfigurations` names locations to leave out, explicitly.
+- The inventory names the commit it was made from, and `compare`/`scan` check it matches and covers the builds the tree lists.
+- Base and head each have their own sources: a PR can add a repository's first Gradle build (base needs no inventory) or remove its last one (base's inventory still counts, and what it had shows as fixed).
+- A plugin's injected dependencies show up in its consumers' builds, which run this gate themselves (for example, java-conventions' checkstyle and errorprone dependencies in sqs-codec).
+- Gradle runs the build's own code, so a malicious build script or plugin can alter its own inventory; keeping that job apart keeps it from touching the comparison and its credentials, not from lying about itself.
+
 ## Release age, source and identity (npm)
 
 For every version a PR adds or changes:
@@ -51,6 +64,10 @@ For every version a PR adds or changes:
 
 After a scriptless `npm ci --ignore-scripts`, `npm audit signatures` verifies registry signatures and attestations of what was installed (a workflow step, not this CLI).
 
+## Release age (Maven)
+
+Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix needs a `releaseAge` exception (with `"ecosystem": "Maven"`), checked against the snapshot like npm's. What a version replaces is read per configuration: upgraded at runtime while tests keep the old version, it still replaces the runtime one.
+
 ## Configuration: `.github/supply-chain.json`
 
 Optional; read from head. Unknown fields fail, so a typo can't turn a check off.
@@ -58,19 +75,26 @@ Optional; read from head. Unknown fields fail, so a typo can't turn a check off.
 ```json
 {
   "npm": { "lockfiles": ["package-lock.json", "docker/cli/package-lock.json"], "registries": ["https://registry.npmjs.org"] },
+  "gradle": { "builds": ["."], "ignoreConfigurations": [] },
+  "maven": { "repositories": ["https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2"] },
   "releaseAgeDays": 7,
-  "ownPackages": { "npm": { "scopes": ["@acme"] } },
+  "ownPackages": {
+    "npm": { "scopes": ["@acme"] },
+    "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] }
+  },
   "repositories": { "npm:some-package": "owner/repo", "Maven:group:artifact": "owner/repo" }
 }
 ```
 
-Every listed lockfile must exist in head; one base doesn't have yet reads as empty there.
+- Without `npm.lockfiles`, the gate reads `package-lock.json` if the tree has one; without `gradle.builds`, the root build if the tree has a `settings.gradle(.kts)` or `build.gradle(.kts)`. So an ecosystem in the repository is never skipped for lack of configuration; `"builds": []` turns Gradle off explicitly.
+- Every listed lockfile must exist in head; one base doesn't have yet reads as empty there.
+- Own Maven packages: exact `groups`, and `pluginIdPrefixes` that only match Gradle plugin markers (`<id>:<id>.gradle.plugin`), so `com.acme.` doesn't exempt every `com.acme.*` group.
 
 ## Exceptions: `.github/supply-chain-exceptions.json`
 
 Reviewed exceptions in three lists. Each entry names the exact package and version, a `reason` and an `expires` date (valid through that UTC day); an optional `ecosystem` narrows it.
 
-- `vulnerabilities`: `id` (any alias of the advisory), `package`, `version`, and the `paths` it covers (lockfile paths like `node_modules/aws-cdk-lib/node_modules/brace-expansion`; for a lockfile in a subdirectory, prefixed with it). A copy anywhere else still fails.
+- `vulnerabilities`: `id` (any alias of the advisory), `package`, `version`, and the `paths` it covers: lockfile paths like `node_modules/aws-cdk-lib/node_modules/brace-expansion` (for a lockfile in a subdirectory, prefixed with it), or Gradle configuration locations like `:checkstyle` or `buildSrc/:runtimeClasspath`. A copy anywhere else still fails.
 - `releaseAge`: `package`, `version` and the `advisory` the young version fixes.
 - `identity`: a reviewed publisher identity break.
 
@@ -82,4 +106,4 @@ Malware ids can't be excepted.
 
 ## Coming next
 
-Gradle inventories (with Maven release age and floors), GitHub Actions as an ecosystem, the automatic proof that a young security fix may skip the wait, the floors file, and the reusable workflow with its daily rescan of open PRs.
+GitHub Actions as an ecosystem, the automatic proof that a young security fix may skip the wait, the floors file, and the reusable workflow with its daily rescan of open PRs.

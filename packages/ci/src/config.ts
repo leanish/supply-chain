@@ -5,22 +5,44 @@
  *
  *   {
  *     "npm": { "lockfiles": ["package-lock.json"], "registries": ["https://registry.npmjs.org"] },
+ *     "gradle": { "builds": ["."], "ignoreConfigurations": [] },
+ *     "maven": { "repositories": ["https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2"] },
  *     "releaseAgeDays": 7,
- *     "ownPackages": { "npm": { "scopes": ["@acme"] } },
+ *     "ownPackages": { "npm": { "scopes": ["@acme"] }, "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] } },
  *     "repositories": { "npm:some-package": "owner/repo" }
  *   }
  */
 import { isObject } from "./json.ts";
 import { NPM_REGISTRY } from "./npm-lock.ts";
+import { MAVEN_CENTRAL } from "./source-repos.ts";
 import { packageKey, type PackageName } from "./package-version.ts";
 import { ECOSYSTEMS, type Ecosystem } from "./versions.ts";
 
 export interface Config {
   readonly npm: {
-    /** Lockfiles to read, relative to the repository root; each must exist. */
-    readonly lockfiles: ReadonlyArray<string>;
+    /**
+     * Lockfiles to read, relative to the repository root; each must exist.
+     * Undefined (not configured): `package-lock.json` if the tree has one.
+     */
+    readonly lockfiles: ReadonlyArray<string> | undefined;
     /** Registries a locked package may come from. */
     readonly registries: ReadonlyArray<string>;
+  };
+  readonly gradle: {
+    /**
+     * Gradle builds to inventory, relative to the repository root. Undefined
+     * (not configured): the root build if the tree has one; `[]` turns Gradle off.
+     */
+    readonly builds: ReadonlyArray<string> | undefined;
+    /** Configuration locations (`:sub:someConfiguration`) whose resolution failures don't fail the run. */
+    readonly ignoreConfigurations: ReadonlyArray<string>;
+  };
+  readonly maven: {
+    /**
+     * Immutable repositories whose POM `Last-Modified` is the publish time, in
+     * the order they're asked; a version in none of them fails the age check.
+     */
+    readonly repositories: ReadonlyArray<string>;
   };
   /** The wait before a new version is taken, in days. */
   readonly releaseAgeDays: number;
@@ -32,27 +54,40 @@ export interface Config {
 export interface OwnPackages {
   /** npm scopes, with the `@`. */
   readonly npmScopes: ReadonlyArray<string>;
+  /** Exact Maven groups. */
+  readonly mavenGroups: ReadonlyArray<string>;
+  /** Gradle plugin id prefixes; they match plugin marker coordinates `<id>:<id>.gradle.plugin` only. */
+  readonly pluginIdPrefixes: ReadonlyArray<string>;
 }
 
+export const GRADLE_PLUGIN_PORTAL = "https://plugins.gradle.org/m2";
+
 export const DEFAULT_CONFIG: Config = {
-  npm: { lockfiles: ["package-lock.json"], registries: [NPM_REGISTRY] },
+  npm: { lockfiles: undefined, registries: [NPM_REGISTRY] },
+  gradle: { builds: undefined, ignoreConfigurations: [] },
+  maven: { repositories: [MAVEN_CENTRAL, GRADLE_PLUGIN_PORTAL] },
   releaseAgeDays: 7,
-  ownPackages: { npmScopes: [] },
+  ownPackages: { npmScopes: [], mavenGroups: [], pluginIdPrefixes: [] },
   repositories: new Map(),
 };
 
 /** Own packages skip the release-age wait, and only that. */
 export function isOwnPackage(own: OwnPackages, pkg: PackageName): boolean {
   if (pkg.ecosystem === "npm") return own.npmScopes.some((scope) => pkg.name.startsWith(`${scope}/`));
-  return false;
+  const [group, artifact] = pkg.name.split(":");
+  if (own.mavenGroups.includes(group!)) return true;
+  return own.pluginIdPrefixes.some((prefix) => group!.startsWith(prefix) && artifact === `${group}.gradle.plugin`);
 }
 
 export function parseConfig(raw: unknown): Config {
   const where = "supply-chain.json";
-  const root = object(raw, where, ["npm", "releaseAgeDays", "ownPackages", "repositories"]);
+  const root = object(raw, where, ["npm", "gradle", "maven", "releaseAgeDays", "ownPackages", "repositories"]);
   const npm = root["npm"] === undefined ? {} : object(root["npm"], `${where}: npm`, ["lockfiles", "registries"]);
-  const own = root["ownPackages"] === undefined ? {} : object(root["ownPackages"], `${where}: ownPackages`, ["npm"]);
+  const gradle = root["gradle"] === undefined ? {} : object(root["gradle"], `${where}: gradle`, ["builds", "ignoreConfigurations"]);
+  const maven = root["maven"] === undefined ? {} : object(root["maven"], `${where}: maven`, ["repositories"]);
+  const own = root["ownPackages"] === undefined ? {} : object(root["ownPackages"], `${where}: ownPackages`, ["npm", "Maven"]);
   const ownNpm = own["npm"] === undefined ? {} : object(own["npm"], `${where}: ownPackages.npm`, ["scopes"]);
+  const ownMaven = own["Maven"] === undefined ? {} : object(own["Maven"], `${where}: ownPackages.Maven`, ["groups", "pluginIdPrefixes"]);
   const releaseAgeDays = root["releaseAgeDays"] ?? DEFAULT_CONFIG.releaseAgeDays;
   if (typeof releaseAgeDays !== "number" || !Number.isInteger(releaseAgeDays) || releaseAgeDays < 0) {
     throw new Error(`${where}: releaseAgeDays must be a nonnegative integer`);
@@ -63,13 +98,29 @@ export function parseConfig(raw: unknown): Config {
   }
   return {
     npm: {
-      lockfiles: strings(npm["lockfiles"], `${where}: npm.lockfiles`) ?? DEFAULT_CONFIG.npm.lockfiles,
+      lockfiles: strings(npm["lockfiles"], `${where}: npm.lockfiles`),
       registries: (strings(npm["registries"], `${where}: npm.registries`) ?? DEFAULT_CONFIG.npm.registries).map((url) =>
         url.replace(/\/+$/, ""),
       ),
     },
+    gradle: {
+      builds: strings(gradle["builds"], `${where}: gradle.builds`)?.map((build) => {
+        if (build.startsWith("/") || build.split("/").includes("..")) throw new Error(`${where}: gradle.builds has ${build}, not a path inside the repository`);
+        return build.replace(/\/+$/, "") || ".";
+      }),
+      ignoreConfigurations: strings(gradle["ignoreConfigurations"], `${where}: gradle.ignoreConfigurations`) ?? [],
+    },
+    maven: {
+      repositories: (strings(maven["repositories"], `${where}: maven.repositories`) ?? DEFAULT_CONFIG.maven.repositories).map((url) =>
+        url.replace(/\/+$/, ""),
+      ),
+    },
     releaseAgeDays,
-    ownPackages: { npmScopes: scopes },
+    ownPackages: {
+      npmScopes: scopes,
+      mavenGroups: strings(ownMaven["groups"], `${where}: ownPackages.Maven.groups`) ?? [],
+      pluginIdPrefixes: strings(ownMaven["pluginIdPrefixes"], `${where}: ownPackages.Maven.pluginIdPrefixes`) ?? [],
+    },
     repositories: repositories(root["repositories"], `${where}: repositories`),
   };
 }
