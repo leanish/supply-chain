@@ -1,12 +1,12 @@
 ---
 name: secure-it
-description: Apply the security fix secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
+description: Apply the routine security batch, major fix or malware plan secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
 compatibleCodingAgents:
   - codex
 inputSchema:
   type: object
   additionalProperties: false
-  required: [repo, mode, moves, floorsFile, today]
+  required: [repo, mode, moves, floorsFile, today, npmAgeExclusions]
   properties:
     repo:
       type: string
@@ -48,6 +48,10 @@ inputSchema:
             type: string
           declaredAs:
             type: string
+    npmAgeExclusions:
+      type: array
+      items:
+        type: string
     floorsFile:
       type: string
     failingChecks:
@@ -91,19 +95,50 @@ outputSchema:
 
 # secure-it
 
-You apply one security fix to the working copy of `repo`. **secure-it already decided everything that's a decision:**
-which packages, which versions, and how each version is changed (`mechanism`). Your job is the edit, done the way this
-repository does things, and the text of the PR. After you finish, the tool verifies the result with the supply-chain
-gate and publishes it; anything outside the plan makes it refuse.
+You apply the security moves supplied for the working copy of `repo`. **secure-it already chose the explicit targets
+and mechanisms.** Your job is the edit, done the way this repository does things, and the text of the PR. npm may
+also resolve transitive changes required by those moves, under the limits below. The tool verifies the whole result
+with the supply-chain gate before publishing it.
+
+Apply every explicit move together. A routine plan batches non-major fixes across packages and ecosystems; a major
+plan keeps that package's failing copies together; malware is one indivisible plan. Never silently omit a move or
+publish only the easiest ones. If you cannot apply the supplied plan, answer `cannot-apply`. The tool owns the one
+verification retry that may remove named package groups, and records those omissions in the report and PR body.
+The moves may include direct peer companions with no advisory targets (for example vitest's UI and coverage
+packages). Code chose their exact versions to make the set consistent; apply them too. Never choose or add further
+direct companions yourself. Report an unhandled peer conflict as `cannot-apply`; the tool does not parse your prose
+to invent version choices.
+
+## npm's release window
+
+The sandbox keeps `npm_config_min_release_age`. A security fix may be younger than that window. The tool supplies
+`npmAgeExclusions`: the repository's own scope patterns, planned packages with young or unreadable target publish
+times, and packages with young or unreadable versions already locked in the affected base lockfiles. It checks npm
+>= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
+entry as `--min-release-age-exclude=<entry>` (repeated flags); this keeps the own-scope patterns too, which CLI flags
+would otherwise replace. Never lower or unset the age window, or add exclusions of your own. These flags permit
+installing the selected security target; they do not permit choosing another version for an explicit move. Verification requires the
+exact planned versions and `compare` passes before publication.
 
 ## What you may change
 
 - Only what the moves need: dependency declarations, lockfiles, Gradle build and settings files, `gradle/libs.versions.toml`,
   and `floorsFile` (`.github/dependency-floors.json`).
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
-- Never another dependency's version, `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a
-  workflow or action file, except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects
-  any other change to them, whatever the move.
+- Direct dependencies outside the supplied moves keep their declarations and locked versions. Never edit another
+  dependency's version by hand or add an unplanned override or floor.
+- Preserve existing floor records and declarations. Never alter a compatibility floor. A security floor may move
+  only to the supplied exact target at its planned locations, keeping its file, selectors, reason, added date and
+  existing advisory IDs; add only the supplied target IDs. New floors are only for `npm-override` or `gradle-floor`.
+- npm may move transitives required by a planned move when you run its install/override mechanism. Let npm resolve
+  them under the supplied release-age window and exclusions; do not edit their lockfile entries by hand, run a
+  general refresh, or add age exclusions for them. This is allowed even when another open PR picked a different
+  version for that transitive. Do not refuse merely because such a required transitive is absent from `moves`.
+  Every explicit move must still land exactly at `to`. The tool runs `compare` on every changed version, including
+  induced transitives: advisory, age and identity failures prevent publication.
+- Never change `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a workflow or action file,
+  except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects any other change to them,
+  whatever the move.
 - Never commit, push, create branches or touch git: the tool does that. Leave nothing else in the working tree (temporary
   files included): everything left there is committed.
 
@@ -144,9 +179,11 @@ changes and what this PR's moves need (a major's adaptation), with no conflict m
 
 ## `mode: adapt`
 
-The change was published and CI failed (`failingChecks` names the checks). Find out why with `gh pr checks` or `gh run
-view --log-failed` (your token reads only). Fix what the move broke, within what you may change. If the failure isn't
-caused by the move, or fixing it needs more than that, answer `cannot-apply` and say why.
+The change was published and CI failed (`failingChecks` names the jobs and status contexts). Find out why with
+`gh run list --commit <head SHA>` and `gh run view --log-failed` (Actions read), or read the failing commit status
+contexts (Commit statuses read). The Checks API is not needed; your token reads only. Fix what the move broke,
+within what you may change. If the failure isn't caused by the move, or fixing it needs more than that, answer
+`cannot-apply` and say why.
 
 ## Your answer
 
@@ -154,5 +191,7 @@ End with one fenced `json` block, nothing after it:
 
 - `applied`, with `publication`: a title like `moving snappy-java to 1.1.10.10 for 7 advisories` (lower case, what
   changes); a body that says why (the advisories, in a sentence or two) and, for a major, what you adapted (secure-it
-  adds the table of moves itself); a commit message in the repository's style.
+  adds the table of moves itself). Also mention required transitive changes npm made and why; their versions are
+  npm's resolution, not explicit rule-picked targets. The tool verifies them before publishing. Use a commit message
+  in the repository's style.
 - `cannot-apply`, with a `summary` of what stopped you. No `publication`.

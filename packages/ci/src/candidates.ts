@@ -39,6 +39,7 @@ import { gradleLocation } from "./gradle.ts";
 import type { NpmLockfile } from "./inventory.ts";
 import { directDependencies, type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
+import { type NpmPeerPlanner, prepareNpmPeers } from "./npm-peers.ts";
 import { type PackageName, type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { takeSnapshot } from "./take-snapshot.ts";
@@ -83,6 +84,8 @@ export interface SecurityFix {
 
 export interface SecurityCandidates {
   readonly fixes: ReadonlyArray<SecurityFix>;
+  /** Direct-peer closure on the same snapshot as these security targets. */
+  readonly npmPeers?: NpmPeerPlanner;
   /** What makes the inventory incomplete (a configuration that didn't resolve, an unrecorded bundle): the list can't be trusted to be whole. */
   readonly incomplete: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
@@ -113,9 +116,11 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
     listings.set(versionKey(pkg), moves);
     candidates.push(...(moves ?? []).map((version) => ({ ...pkg, version })));
   }
-  // One snapshot over the failing versions and every candidate: targets and fixes come from the same data.
-  const snapshot = await takeSnapshot([...failing.values()].map(({ pkg }) => pkg), snapshotOptions(config, env, state.github), candidates);
   const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
+  const peers = await preparePeers(head, state, registry, catalogs.npm, candidates, identity, now);
+  // Direct-peer candidates join the security candidates: one snapshot decides the entire batch.
+  const bases = [...failing.values()].map(({ pkg }) => pkg);
+  const snapshot = await takeSnapshot([...bases, ...peers.bases], snapshotOptions(config, env, state.github), [...candidates, ...peers.candidates]);
 
   const found: SecurityFix[] = [];
   for (const { pkg } of failing.values()) {
@@ -137,6 +142,7 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
   }
   return {
     fixes: found,
+    npmPeers: { resolve: (moves) => peers.resolve(moves, snapshot) },
     incomplete: inventoryProblems(state.inventory, config),
     gaps: [...state.snapshot.gaps, ...snapshot.gaps, ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
@@ -229,7 +235,7 @@ async function isAged(pkg: PackageVersion, catalog: VersionCatalog, config: Conf
  * another: against every copy of the replaced version the lockfiles ship from
  * the registry, with the same exceptions. Other ecosystems have none.
  */
-class IdentityCheck {
+export class IdentityCheck {
   readonly #registry: NpmRegistry;
   readonly #lockfiles: ReadonlyArray<NpmLockfile>;
   readonly #exceptions: Exceptions;
@@ -303,6 +309,7 @@ export interface BumpCandidate {
 
 export interface BumpCandidates {
   readonly bumps: ReadonlyArray<BumpCandidate>;
+  readonly npmPeers?: NpmPeerPlanner;
   /** As in `SecurityCandidates`: the inventory isn't whole, so neither is this list. */
   readonly incomplete: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
@@ -409,12 +416,37 @@ export async function bumpCandidates(head: Tree, env: GateEnvironment, gradle: G
     major: majors.get(versionKey(pkg)),
     problems: problems.get(versionKey(pkg))!,
   }));
+  const selected = bumps.flatMap((bump) => [bump.minor, bump.major].flatMap((move) =>
+    move === undefined ? [] : [{ ecosystem: bump.ecosystem, name: bump.name, version: move.version }]));
+  const peers = await preparePeers(head, state, registry, catalogs.npm, selected, identity, now);
+  const peerSnapshot = peers.bases.length === 0 ? undefined : await takeSnapshot(peers.bases, snapshotOptions(config, env, state.github), peers.candidates);
   return {
     bumps,
+    npmPeers: peerSnapshot === undefined ? undefined : { resolve: (moves) => peers.resolve(moves, peerSnapshot) },
     incomplete: inventoryProblems(state.inventory, config),
-    gaps: [...state.snapshot.gaps, ...snapshots.flatMap((snapshot) => snapshot.gaps), ...actionGaps(state.inventory.actions, state.resolutions)],
+    gaps: [...state.snapshot.gaps, ...snapshots.flatMap((snapshot) => snapshot.gaps), ...(peerSnapshot?.gaps ?? []), ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
   };
+}
+
+async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry, catalog: VersionCatalog, seeds: ReadonlyArray<PackageVersion>, identity: IdentityCheck, now: Date) {
+  const locks = new Map<string, unknown>();
+  for (const lock of state.inventory.npm) {
+    const text = await head.read(lock.path);
+    if (text === undefined) throw new Error(`${lock.path} disappeared while reading peers`);
+    locks.set(lock.path, JSON.parse(text));
+  }
+  const config = state.settings.config;
+  return prepareNpmPeers(locks, seeds, {
+    versions: (name) => catalog.versions({ ecosystem: "npm", name }),
+    manifest: async (name, version) => (await registry.packument(name)).versions[version],
+    published: (name, version) => catalog.published({ ecosystem: "npm", name, version }),
+    identity: (name, from, to) => identity.problems({ ecosystem: "npm", name, version: from }, to),
+    line: (name, version) => compatibleLine(config, { ecosystem: "npm", name }, version),
+    isOwn: (name) => isOwnPackage(config.ownPackages, { ecosystem: "npm", name }),
+    now,
+    releaseAgeDays: config.releaseAgeDays,
+  });
 }
 
 /** The highest of `lines` (consumed from the front) with a version old enough to weigh, or none left. */

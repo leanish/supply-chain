@@ -53,6 +53,8 @@ export interface ToolRunContext {
   readonly now: Date;
   /** The repository's release age, from its `.github/supply-chain.json`. */
   readonly releaseAgeDays: number;
+  /** npm patterns exempt from it: the repository's own scopes (`@scope/*`), whose young versions resolve anyway. */
+  readonly releaseAgeExclude: ReadonlyArray<string>;
   /** The agent's read-only token: for the gate's own GitHub reads (advisories, actions), never for writes. */
   readonly readToken: string;
   /** How the agent is isolated; `runSandboxed` runs repository code the same way. */
@@ -129,11 +131,13 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
     const synced = await workspace.sync([{ id: repo.repo, source: { url: `https://github.com/${repo.repo}.git`, branch: base } }]);
     const workingCopy = synced.workingCopies[0]!;
     const { config: repoConfig } = await readSettings(workingTree(workingCopy.path));
+    const releaseAgeExclude = repoConfig.ownPackages.npmScopes.map((scope) => `${scope}/*`);
     const isolation = codexIsolation({
       commitIdentity: config.commitIdentity,
       readDeny: config.readDeny,
       commandPath: [GUARD_DIR],
       releaseAgeDays: repoConfig.releaseAgeDays,
+      releaseAgeExclude,
       buildCacheRoot: config.dirs.cache,
     });
     const runner = m.runner(isolation);
@@ -161,6 +165,7 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
       logger,
       now: m.now(),
       releaseAgeDays: repoConfig.releaseAgeDays,
+      releaseAgeExclude,
       readToken: read,
       isolation,
       agent: (call) =>

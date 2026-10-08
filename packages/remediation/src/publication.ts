@@ -1,6 +1,7 @@
 // Adapted from leanish/leanish-development agents/bump-it/src/publication.ts at e4f8a1e: parametrised by the tool's
 // own-PR rules; a repository can have several open PRs of a tool (one per topic); the workspace and logger are passed
-// in instead of bump-it's runtime; Dependabot closing is left out; the PR body records the published state.
+// in instead of bump-it's runtime; Dependabot closing is left out; the PR body records the published state;
+// the pre-push journal stores the matching title, body, plan and adaptation count for recovery.
 import { GitHubApiError } from "../../agent-basics/src/github/github-client.ts";
 import type { GitHubClient, GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { Logger } from "../../agent-basics/src/types/logger.ts";
@@ -98,25 +99,42 @@ export async function publishUpdate(
   const { github, repo } = context;
   const remoteHead = existingHead(context, prepared);
   const current = await reReadOwn(context, number, remoteHead);
+  const attempts = adaptations ?? stateOf(current.body)?.adaptations ?? 0;
+  const bodyAt = (head: string) => withMarker(context.rules, content.body, { head, base: prepared.baseSha, adaptations: attempts });
   if (!current.isDraft) await github.convertToDraft({ nodeId: current.nodeId });
   const pushed = await context.workspace.publishBranch(context.workingCopy, prepared, {
     message: content.commitMessage,
     // Recorded before the push: whatever fails after it lands, the next tick still knows this exact head as the tool's.
-    beforePush: (sha) => context.journal.pushed(repo, current.number, { head: sha, base: prepared.baseSha }),
+    beforePush: (sha) => context.journal.pushed(repo, current.number, {
+      head: sha,
+      base: prepared.baseSha,
+      publication: { title: content.title, body: bodyAt(sha), adaptations: attempts },
+    }),
   });
   // GitHub may still report the old head for a moment after a push; anything else is someone else's push.
   await reReadOwn(context, current.number, remoteHead, ...(pushed.kind === "pushed" ? [pushed.sha] : []));
   const head = pushed.kind === "pushed" ? pushed.sha : remoteHead;
-  const body = withMarker(context.rules, content.body, {
-    head,
-    base: prepared.baseSha,
-    adaptations: adaptations ?? stateOf(current.body)?.adaptations ?? 0,
-  });
+  const body = bodyAt(head);
   const updated = await github.updatePullRequest({ repo, number: current.number, title: content.title, body });
   // Nothing new reached the branch: the PR stays as ready as it was.
   if (pushed.kind === "unchanged" && !current.isDraft) await markReady(context, current.number, remoteHead);
   await ensureLabel(context, updated);
   return { pr: updated, pushed: pushed.kind === "pushed" };
+}
+
+/** Restore the entire publication for this exact pushed head, never an old plan with a new state marker. */
+export async function recoverPublication(context: PublicationContext, pr: GitHubPullRequest): Promise<GitHubPullRequest> {
+  const recorded = stateOf(pr.body);
+  if (recorded === undefined || recorded.head === pr.headSha) return pr;
+  const pushed = await context.journal.last(context.repo, pr.number);
+  if (pushed?.head !== pr.headSha) return pr;
+  const saved = pushed.publication;
+  const state = saved === undefined ? undefined : stateOf(saved.body);
+  if (saved === undefined || state?.head !== pushed.head || state.base !== pushed.base || state.adaptations !== saved.adaptations) {
+    throw new Error(`${pr.url}: the journal has no matching publication content; rerun the tool to recompute before reviewing`);
+  }
+  await reReadOwn(context, pr.number, pr.headSha);
+  return context.github.updatePullRequest({ repo: context.repo, number: pr.number, title: saved.title, body: saved.body });
 }
 
 /**

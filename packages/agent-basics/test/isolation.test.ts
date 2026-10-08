@@ -13,6 +13,7 @@ const SETTINGS: IsolationSettings = {
   readDeny: ["/Users/dev/private-data"],
   commandPath: ["/opt/tool/guard"],
   releaseAgeDays: 7,
+  releaseAgeExclude: [],
   buildCacheRoot: "/Users/dev/.cache/leanish/secure-it",
 };
 const HOME = "/Users/dev";
@@ -46,11 +47,12 @@ describe("codexIsolation", () => {
     });
   });
 
-  it("reuses $CODEX_HOME's login and the repository's release age", () => {
-    const options = codexIsolation({ ...SETTINGS, releaseAgeDays: 3, commandPath: [] }, { home: HOME, env: { CODEX_HOME: "/opt/codex" }, exists: () => false });
+  it("reuses $CODEX_HOME's login and the repository's release age, its own scopes exempt", () => {
+    const options = codexIsolation({ ...SETTINGS, releaseAgeDays: 3, releaseAgeExclude: ["@leanish/*", "@acme/*"], commandPath: [] }, { home: HOME, env: { CODEX_HOME: "/opt/codex" }, exists: () => false });
     expect(options.loginHome).toBe("/opt/codex");
     expect(options.readDenied).toContain("/opt/codex/auth.json");
     expect(options.env?.["npm_config_min_release_age"]).toBe("3");
+    expect(options.env?.["npm_config_min_release_age_exclude"]).toBe("@leanish/*,@acme/*");
     expect(options.env?.["PATH"]).toBeUndefined();
   });
 
@@ -87,12 +89,13 @@ describe("codexIsolation", () => {
     }
   });
 
-  it("refuses relative paths and a negative or fractional release age", () => {
+  it("refuses relative paths, a negative or fractional release age, and an exclusion npm would split", () => {
     const machine = { home: HOME, env: {}, exists: () => false };
     expect(() => codexIsolation({ ...SETTINGS, readDeny: ["private"] }, machine)).toThrow("must be absolute; got 'private'");
     expect(() => codexIsolation({ ...SETTINGS, commandPath: ["guard"] }, machine)).toThrow("got 'guard'");
     expect(() => codexIsolation({ ...SETTINGS, releaseAgeDays: -1 }, machine)).toThrow("non-negative integer");
     expect(() => codexIsolation({ ...SETTINGS, releaseAgeDays: 1.5 }, machine)).toThrow("non-negative integer");
+    expect(() => codexIsolation({ ...SETTINGS, releaseAgeExclude: ["@a/*,@b/*"] }, machine)).toThrow("no comma");
   });
 });
 

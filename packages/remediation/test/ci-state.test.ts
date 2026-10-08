@@ -1,10 +1,10 @@
 // Copied from leanish/leanish-development agents/bump-it/test/ci-state.test.ts at e4f8a1e.
-// Local changes: imports.
+// Local changes: imports; uses actions-jobs source; failingCheckNames regression for Actions job and commit status failures.
 import { describe, expect, it } from "vitest";
 
 import type { GitHubCheckRun, GitHubCommitStatus } from "../../agent-basics/src/types/clients.ts";
 
-import { classifyCi } from "../src/ci-state.ts";
+import { classifyCi, failingCheckNames } from "../src/ci-state.ts";
 
 function run(status: string, conclusion: string | null, name = "check"): GitHubCheckRun {
   return { name, status, conclusion };
@@ -43,6 +43,13 @@ describe("classifyCi", () => {
     ["startup failure", [run("completed", "startup_failure")], [], "failure"],
     ["stale", [run("completed", "stale")], [], "failure"],
   ] as const)("%s → %s", (_name, checkRuns, statuses, expected) => {
-    expect(classifyCi({ source: "check-runs", checkRuns: [...checkRuns], statuses: [...statuses] })).toBe(expected);
+    expect(classifyCi({ source: "actions-jobs", checkRuns: [...checkRuns], statuses: [...statuses] })).toBe(expected);
+  });
+});
+
+describe("failingCheckNames", () => {
+  it("includes failed jobs and statuses, with the classifier's failure rules", () => {
+    expect(failingCheckNames({ source: "actions-jobs", checkRuns: [run("completed", "failure", "job"), run("completed", "skipped"), run("in_progress", null), run("completed", "mystery")],
+      statuses: [status("failure", "legacy"), status("error", "job"), status("pending"), status("success")] })).toEqual(["job", "legacy"]);
   });
 });

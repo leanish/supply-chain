@@ -4,11 +4,11 @@ Parts of this package are adapted from [leanish/leanish-development](https://git
 
 | File | Source | How | Local changes |
 |---|---|---|---|
-| `src/ci-state.ts` | `agents/bump-it/src/ci-state.ts` | copied | `CiConclusion` defined here instead of bump-it's handler type |
+| `src/ci-state.ts` | `agents/bump-it/src/ci-state.ts` | copied | `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations |
 | `src/own-pr.ts` | `agents/bump-it/src/own-pr.ts` | adapted | one set of rules per tool instead of bump-it's constants; the PR's state (pushed head, base, adaptations) in its body |
-| `src/publication.ts` | `agents/bump-it/src/publication.ts` | adapted | parametrised by the tool's rules; several open PRs per tool; workspace and logger passed in instead of the runtime; no Dependabot closing; the PR's state recorded on every publication |
+| `src/publication.ts` | `agents/bump-it/src/publication.ts` | adapted | parametrised by the tool's rules; several open PRs per tool; workspace and logger passed in instead of the runtime; no Dependabot closing; the PR's state recorded on every publication; pre-push journal saves the full title/body/plan and adaptation count; guarded recovery restores that exact publication |
 | `run.sh` | `agents/bump-it/local/run.sh` | adapted | for any tool; owner/slug checked like the tool does; no secrets or runtime variables (the tool reads its own) |
-| `test/ci-state.test.ts` | `agents/bump-it/test/ci-state.test.ts` | copied | imports |
-| `test/fake-github.ts` | `agents/bump-it/test/fake-github.ts` | adapted | secure-it's rules and PR state; no Dependabot PR factory |
+| `test/ci-state.test.ts` | `agents/bump-it/test/ci-state.test.ts` | copied | imports; uses actions-jobs source; failingCheckNames regression for Actions job and commit status failures |
+| `test/fake-github.ts` | `agents/bump-it/test/fake-github.ts` | adapted | secure-it's rules and PR state; no Dependabot PR factory; CI fixtures use actions-jobs source |
 | `test/run-sh.test.ts` | `agents/bump-it/test/local-run.test.ts` | adapted | the lock, the final-line handshake and the phases, with a fake tool command |
-| `src/config.ts`, `src/review.ts`, `src/command.ts`, `src/journal.ts`, `src/sandboxed.ts`, `src/git-copies.ts`, `src/osv-scanner.ts` and their tests | — | new | — |
+| `src/config.ts`, `src/review.ts`, `src/command.ts`, `src/journal.ts`, `src/sandboxed.ts`, `src/git-copies.ts`, `src/osv-scanner.ts`, `src/npm-version.ts` and their tests | — | new | — |

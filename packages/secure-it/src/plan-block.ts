@@ -6,9 +6,11 @@
  */
 import { createHash } from "node:crypto";
 
+import { planBlock, planPayload, withPlanSection as replaced } from "../../remediation/src/plan-blocks.ts";
+
 import type { ChangePlan, PlannedMove } from "./plan.ts";
 
-const BLOCK = /<!-- leanish:plan ([A-Za-z0-9+/=]+) -->/;
+const HEADING = "### What secure-it moved";
 
 /** A stable digest of what the plan moves: two runs with the same moves and targets get the same one. */
 export function planDigest(plan: ChangePlan): string {
@@ -22,41 +24,63 @@ export function planDigest(plan: ChangePlan): string {
 export function planSection(plan: ChangePlan): string {
   const rows = plan.moves.map(
     (move) =>
-      `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${move.advisories.join(", ")} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
+      `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${fixesLabel(plan, move)} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
   );
-  const encoded = Buffer.from(JSON.stringify(plan)).toString("base64");
   return [
-    "### What secure-it moved",
+    HEADING,
     "",
     "| Ecosystem | Package | Version | How | Fixes | Where |",
     "|---|---|---|---|---|---|",
     ...rows,
+    ...omittedSection(plan),
     "",
-    "The versions are the ones the supply-chain gate's rule picks (`supply-chain candidates --rule security`); the gate verified the change before it was published.",
+    "Security targets are the versions the supply-chain gate's rule picks (`supply-chain candidates --rule security`); code chose any required direct-peer companions at their lowest safe compatible versions. The gate verified the change before it was published.",
     "",
-    `<!-- leanish:plan ${encoded} -->`,
+    planBlock(plan),
   ].join("\n");
+}
+
+/** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
+function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
+  if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
+  const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
+  return coupled ? "direct peer compatibility" : "";
+}
+
+/** Omissions are visible to reviewers as well as the command report and persisted plan. */
+function omittedSection(plan: ChangePlan): string[] {
+  if (plan.leftOut === undefined || plan.leftOut.length === 0) return [];
+  return [
+    "",
+    "#### Left out after verification failed",
+    "",
+    ...plan.leftOut.flatMap((entry) => [
+      ...entry.moves.map((move) => `- ${move.ecosystem} \`${move.name}\` ${move.from} → ${move.to}: omitted from this batch's explicit moves.`),
+      ...entry.problems.map((problem) => `  - ${problem.replace(/\s+/g, " ")}`),
+    ]),
+    "",
+    "The remaining batch was re-applied from the base and verified. npm may still induce transitive changes; omitted explicit moves are not claimed as completed.",
+  ];
 }
 
 /** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none). */
 export function withPlanSection(body: string, plan: ChangePlan): string {
-  const start = body.indexOf("### What secure-it moved");
-  const block = BLOCK.exec(body);
-  if (start === -1 || block === null) return `${body.trimEnd()}\n\n${planSection(plan)}`;
-  const end = block.index + block[0].length;
-  return `${body.slice(0, start)}${planSection(plan)}${body.slice(end)}`;
+  return replaced(body, HEADING, planSection(plan));
 }
 
 /** The plan a PR's body carries, if it has one that parses. */
 export function planOf(body: string): ChangePlan | undefined {
-  const found = BLOCK.exec(body);
-  if (found === null) return undefined;
-  try {
-    const plan = JSON.parse(Buffer.from(found[1]!, "base64").toString("utf8")) as ChangePlan;
-    return Array.isArray(plan.moves) && plan.moves.every(isMove) ? plan : undefined;
-  } catch {
-    return undefined;
-  }
+  const plan = planPayload(body) as ChangePlan | undefined;
+  return plan !== undefined && typeof plan === "object" && plan !== null && Array.isArray(plan.moves) && plan.moves.every(isMove) && validMetadata(plan) ? plan : undefined;
+}
+
+function validMetadata(plan: ChangePlan): boolean {
+  if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
+  if (plan.coupled !== undefined && (!Array.isArray(plan.coupled) || !plan.coupled.every((set) => Array.isArray(set) && set.every((name: unknown) => typeof name === "string")))) return false;
+  if (plan.leftOut === undefined) return true;
+  return Array.isArray(plan.leftOut) && plan.leftOut.every((entry) =>
+    entry !== null && typeof entry === "object" && Array.isArray(entry.moves) && entry.moves.every(isMove) &&
+    Array.isArray(entry.problems) && entry.problems.every((problem: unknown) => typeof problem === "string"));
 }
 
 function isMove(move: unknown): move is PlannedMove {

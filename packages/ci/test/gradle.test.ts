@@ -114,12 +114,15 @@ describe("running the Gradle inventory", () => {
     const calls: string[][] = [];
     const inventory = await runGradleInventory(repo, ["."], "worktree", gradlew([".", "tools/conventions"], calls));
     expect(inventory.builds.map((build) => build.build)).toEqual([".", "tools/conventions"]);
-    expect(calls[0]).toEqual(expect.arrayContaining(["-p", ".", "--no-configuration-cache", "supplyChainInventory"]));
+    expect(calls[0]).toEqual(expect.arrayContaining(["-p", ".", "--no-daemon", "--no-configuration-cache", "supplyChainInventory"]));
     await expect(runGradleInventory(repo, ["."], "worktree", gradlew(["."]))).rejects.toThrow(
       "Gradle builds that weren't inventoried (list them in supply-chain.json gradle.builds): tools/conventions",
     );
-    const listed = await runGradleInventory(repo, [".", "tools/conventions"], "worktree", gradlew(["."]));
+    const separateCalls: string[][] = [];
+    const listed = await runGradleInventory(repo, [".", "tools/conventions"], "worktree", gradlew(["."], separateCalls));
     expect(listed.builds.map((build) => build.build)).toEqual([".", "tools/conventions"]);
+    expect(separateCalls).toHaveLength(2);
+    expect(separateCalls.every((args) => args.includes("--no-daemon"))).toBe(true);
     // Only Gradle's model counts: a commented-out includeBuild in the settings file is no build.
     await writeFile(join(repo, "settings.gradle.kts"), `rootProject.name = "x"\n// includeBuild("old-build")\n`);
     expect((await runGradleInventory(repo, ["."], "worktree", gradlew(["."], [], []))).builds.map((build) => build.build)).toEqual(["."]);
@@ -157,6 +160,46 @@ describe("running the Gradle inventory", () => {
     await expect(runGradleInventory(repo, ["nope"], "worktree", gradlew([]))).rejects.toThrow("build nope, which doesn't exist");
     await rm(join(repo, "gradlew"));
     await expect(runGradleInventory(repo, ["."], "worktree", gradlew(["."]))).rejects.toThrow("has no ./gradlew");
+  });
+
+  it("keeps the What went wrong block instead of Gradle's generic footer", async () => {
+    const stderr = [
+      "FAILURE: Build failed with an exception.",
+      "",
+      "* What went wrong:",
+      "Could not open file hash cache.",
+      "> java.io.FileNotFoundException: /worktree/.gradle/fileHashes.lock (Operation not permitted)",
+      "",
+      "* Try:",
+      "> Run with --stacktrace option to get the stack trace.",
+      "> Run with --info or --debug option to get more log output.",
+      "> Run with --scan to get full insights.",
+      "> Get more help at https://help.gradle.org.",
+      "",
+      "BUILD FAILED in 1s",
+    ].join("\n");
+    const failing: RunProcess = async () => ({ code: 1, stdout: "", stderr });
+    await expect(runGradleInventory(repo, ["."], "worktree", failing)).rejects.toThrow(
+      "exit code 1: * What went wrong: / Could not open file hash cache. / > java.io.FileNotFoundException: /worktree/.gradle/fileHashes.lock (Operation not permitted)",
+    );
+  });
+
+  it("keeps the first Caused by when no What went wrong block is present", async () => {
+    const stderr = [
+      "org.gradle.api.GradleException: Could not run the build.",
+      "Caused by: java.io.FileNotFoundException: /worktree/.gradle/fileHashes.lock (Operation not permitted)",
+      "    at java.io.FileOutputStream.open0(Native Method)",
+      "Caused by: a later nested error",
+      "    at gradle.Frame.one(Unknown Source)",
+      "    at gradle.Frame.two(Unknown Source)",
+      "Run with --scan to get full insights.",
+      "Get more help at https://help.gradle.org.",
+      "BUILD FAILED in 1s",
+    ].join("\n");
+    const failing: RunProcess = async () => ({ code: 1, stdout: "", stderr });
+    await expect(runGradleInventory(repo, ["."], "worktree", failing)).rejects.toThrow(
+      "exit code 1: Caused by: java.io.FileNotFoundException: /worktree/.gradle/fileHashes.lock (Operation not permitted)",
+    );
   });
 });
 

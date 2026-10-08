@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/needs/github-client.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `GitHubApiError`'s parameter properties written as fields.
+// Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them.
 import { RuntimeError } from "../errors.ts";
 import type {
   GitHubCheckRun,
@@ -90,23 +90,24 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
     }
   }
 
-  async function latestCheckRuns(repo: string, sha: string): Promise<GitHubCheckRun[]> {
-    const operation = "headChecks";
-    // `filter=latest`: one entry per check name, its most recent run.
-    return paged(operation, `/repos/${repo}/commits/${sha}/check-runs?filter=latest`, "check_runs", (value) => toCheckRun(operation, value));
-  }
-
   /**
    * The head's Actions jobs as check runs, like `filter=latest` does for check runs: every run on
    * the head and the jobs of its latest attempt, then the newest job (highest id — a re-run creates
    * new jobs) per workflow, event and job name. Jobs, not just runs: a `continue-on-error` job can
    * fail inside a successful run. A run counts as itself only while it isn't completed (it may
    * still be scheduling jobs, so it stays pending) or when it has no jobs (e.g. it failed to
-   * start) — never on top of its jobs, so a run whose jobs were all skipped isn't a success.
+   * start) and is the newest run in its workflow/event group — never on top of its jobs, so a run
+   * whose jobs were all skipped isn't a success.
    */
   async function latestWorkflowJobs(repo: string, sha: string): Promise<GitHubCheckRun[]> {
     const operation = "headChecks";
     const runs = await paged(operation, `/repos/${repo}/actions/runs?head_sha=${sha}`, "workflow_runs", (value) => toWorkflowRun(operation, value));
+    const latestRunByGroup = new Map<string, WorkflowRun>();
+    for (const run of runs) {
+      const group = `${run.workflowId}:${run.event}`;
+      const current = latestRunByGroup.get(group);
+      if (current === undefined || run.id > current.id) latestRunByGroup.set(group, run);
+    }
     const newest = new Map<string, IdentifiedRun>();
     const keep = (key: string, entry: IdentifiedRun): void => {
       const current = newest.get(key);
@@ -116,7 +117,7 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
       const group = `${run.workflowId}:${run.event}`;
       const jobs = await paged(operation, `/repos/${repo}/actions/runs/${run.id}/jobs?filter=latest`, "jobs", (value) => toJob(operation, value));
       if (run.status !== "completed") keep(`active run ${run.id}`, run);
-      else if (jobs.length === 0) keep(`jobless run ${group}`, run);
+      else if (jobs.length === 0 && latestRunByGroup.get(group)?.id === run.id) keep(`jobless run ${group}`, run);
       for (const job of jobs) keep(`job ${group}/${job.name}`, job);
     }
     return [...newest.values()].map(({ name, status, conclusion }) => ({ name, status, conclusion }));
@@ -156,17 +157,8 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
       const operation = "headChecks";
       splitRepo(operation, repo);
       if (!SHA_PATTERN.test(sha)) throw new GitHubApiError(operation, "invalid commit sha");
-      let source: GitHubHeadChecks["source"] = "check-runs";
-      let checkRuns: GitHubCheckRun[];
-      try {
-        checkRuns = await latestCheckRuns(repo, sha);
-      } catch (err) {
-        // A token without Checks read (the owner's fine-grained PAT offers none) gets 403 for a
-        // private repo's check runs; its Actions jobs are readable with Actions: read.
-        if (!(err instanceof GitHubApiError) || err.status !== 403) throw err;
-        source = "actions-jobs";
-        checkRuns = await latestWorkflowJobs(repo, sha);
-      }
+      const source = "actions-jobs";
+      const checkRuns = await latestWorkflowJobs(repo, sha);
       // The combined status already keeps only the latest status per context.
       const statuses = await paged(operation, `/repos/${repo}/commits/${sha}/status`, "statuses", (value) => toStatus(operation, value));
       return { source, checkRuns, statuses } satisfies GitHubHeadChecks;
@@ -357,15 +349,6 @@ function toPullRequest(operation: string, value: unknown): GitHubPullRequest {
     headRef: head["ref"],
     headRepo,
   };
-}
-
-function toCheckRun(operation: string, value: unknown): GitHubCheckRun {
-  const run = record(operation, value);
-  const conclusion = run["conclusion"];
-  if (typeof run["name"] !== "string" || typeof run["status"] !== "string" || (conclusion !== null && typeof conclusion !== "string")) {
-    throw new GitHubApiError(operation, "malformed check run");
-  }
-  return { name: run["name"], status: run["status"], conclusion };
 }
 
 interface IdentifiedRun extends GitHubCheckRun {

@@ -83,12 +83,12 @@ export async function runGradleInventory(
     if (collected.has(normalize(build))) continue;
     const out = await mkdtemp(join(tmpdir(), "supply-chain-gradle-"));
     try {
-      const args = ["-p", build, "--init-script", INIT_SCRIPT, `-DsupplyChain.out=${out}`, "--no-configuration-cache", "--quiet", "supplyChainInventory"];
+      // A reused daemon keeps the sandbox it started in. Any daemon needed here must be single-use, CI included.
+      const args = ["-p", build, "--init-script", INIT_SCRIPT, `-DsupplyChain.out=${out}`, "--no-daemon", "--no-configuration-cache", "--quiet", "supplyChainInventory"];
       // The build is the repository's own code: it gets no credentials.
       const result = await run(join(repoRoot, "gradlew"), args, { cwd: repoRoot, env: withoutCredentials(process.env) });
       if (result.code !== 0) {
-        const tail = result.stderr.trim().split("\n").slice(-5).join(" / ");
-        throw new Error(`Gradle inventory of build ${build} failed with exit code ${result.code}: ${tail}`);
+        throw new Error(`Gradle inventory of build ${build} failed with exit code ${result.code}: ${gradleFailureDetails(result.stderr)}`);
       }
       const written = await readRun(out, build);
       if (!written.has(normalize(build))) throw new Error(`Gradle inventory of build ${build} wrote no output for it`);
@@ -109,6 +109,27 @@ export async function runGradleInventory(
     tree,
     builds: [...collected].map(([build, configurations]) => ({ build, configurations })),
   };
+}
+
+/** Keep Gradle's problem description through both the wrapper and the sandboxed CLI's error report. */
+export function gradleFailureDetails(stderr: string): string {
+  const lines = stderr.trim().split(/\r?\n/);
+  const problem = lines.findIndex((line) => line.includes("* What went wrong:"));
+  if (problem !== -1) {
+    const following = lines.slice(problem + 1);
+    const nextSection = following.findIndex((line) => /^\s*(?:\* (?:Try:|Exception is:|Get more help)|BUILD FAILED|[Uu]sage:)/.test(line));
+    const block = lines.slice(problem, nextSection === -1 ? undefined : problem + 1 + nextSection);
+    return block.map((line) => line.trim()).filter((line) => line !== "").join(" / ");
+  }
+  const caused = lines.find((line) => line.includes("Caused by:"));
+  if (caused !== undefined) {
+    return caused.trim();
+  }
+  const reported = lines.find((line) => line.includes("Gradle inventory of build ") && line.includes("failed"));
+  if (reported !== undefined) {
+    return reported.trim();
+  }
+  return lines.slice(-5).join(" / ");
 }
 
 interface BuildOutput {

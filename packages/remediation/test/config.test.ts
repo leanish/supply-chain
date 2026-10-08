@@ -30,6 +30,7 @@ describe("tool config", () => {
       readDeny: ["/Users/dev/dev/private", "/Volumes/vault"],
       modelPrices: undefined,
       staleScanHours: 36,
+      maxNewMajorsPerRun: undefined,
     });
     expect(defaultConfigPath("bump-it", HOME)).toBe("/Users/dev/.config/leanish/bump-it/agent.yaml");
     expect(repoOf(config, "Leanish/SQS-codec").repo).toBe("leanish/sqs-codec");
@@ -51,5 +52,9 @@ describe("tool config", () => {
     for (const [text, message] of failing) expect(() => parseToolConfig("secure-it", text, "agent.yaml", HOME)).toThrow(message);
     expect(() => parseToolConfig("bump-it", `${VALID}staleScanHours: 24\n`, "agent.yaml", HOME)).toThrow("staleScanHours is secure-it's");
     expect(parseToolConfig("bump-it", VALID, "agent.yaml", HOME).staleScanHours).toBeUndefined();
+    expect(() => parseToolConfig("secure-it", `${VALID}maxNewMajorsPerRun: 2\n`, "agent.yaml", HOME)).toThrow("maxNewMajorsPerRun is bump-it's");
+    expect(() => parseToolConfig("bump-it", `${VALID}maxNewMajorsPerRun: -1\n`, "agent.yaml", HOME)).toThrow("non-negative integer");
+    expect(parseToolConfig("bump-it", VALID, "agent.yaml", HOME).maxNewMajorsPerRun).toBe(3);
+    expect(parseToolConfig("bump-it", `${VALID}maxNewMajorsPerRun: 0\n`, "agent.yaml", HOME).maxNewMajorsPerRun).toBe(0);
   });
 });

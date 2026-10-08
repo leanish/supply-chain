@@ -86,7 +86,7 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
       - &tool-install
-        name: Install the gate's one runtime dependency, without lifecycle scripts
+        name: Install the gate's runtime dependencies, without lifecycle scripts
         working-directory: tool
         run: npm ci --ignore-scripts --no-audit --no-fund --omit=dev --workspace packages/ci
       - id: list

@@ -23,7 +23,8 @@ function gitArgs(workingCopy: WorkingCopy, args: ReadonlyArray<string>): string[
   return ["--git-dir", workingCopy.gitDir, "--work-tree", workingCopy.path, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args];
 }
 
-async function git(workingCopy: WorkingCopy, args: ReadonlyArray<string>, run: RunProcess): Promise<{ code: number; stdout: string; stderr: string }> {
+/** A git command over the working copy's own metadata, without system or global config, hooks or fsmonitor. */
+export async function git(workingCopy: WorkingCopy, args: ReadonlyArray<string>, run: RunProcess): Promise<{ code: number; stdout: string; stderr: string }> {
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
   return run("git", gitArgs(workingCopy, args), { cwd: workingCopy.path, env });
 }
