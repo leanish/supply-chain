@@ -21,13 +21,25 @@ permissions:
 
 jobs:
   # The gate on this repository itself, from the code under review: the same reusable workflow adopters call.
-  # Its `supply-chain / supply-chain` check is required by the `main` ruleset.
-  supply-chain:
+  gate:
     uses: ./.github/workflows/supply-chain.yml
+    with:
+      required-check: supply-chain
     permissions:
       contents: read
       pull-requests: read
       statuses: write
+
+  # Keep the existing required check name; the reusable gate decides its result.
+  supply-chain:
+    needs: gate
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a successful supply-chain gate
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: test "$GATE_RESULT" = "success"
 
   check:
     needs: supply-chain
