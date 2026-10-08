@@ -36,6 +36,7 @@ Temporary projects, homes and caches are removed on success or failure. This bou
 - It's pinned to one full commit SHA, and checked out from that same commit.
 - OSV-Scanner is pinned by version and sha256 ([`packages/ci/tools.json`](../packages/ci/tools.json)).
 - Its runtime dependencies (`yaml` and `semver`) install from this repository's lockfile, without lifecycle scripts. A smoke test installs only the CI workspace's production dependencies and loads its CLI.
+- npm registry lookups encode the whole package name and version as separate URL components. Names from lockfiles cannot add path separators, queries or fragments; empty and dot components are refused before fetching.
 - It fails closed on what it needs to judge: an unreachable registry, OSV or GitHub API, data that doesn't parse, or a build that didn't resolve fails the check, never "clean". What it can't read but doesn't need to judge (a source repository's advisories that return 404, a range it can't parse) is a coverage gap: listed in the report, next to a verdict that can pass.
 - In the daily rescan, a PR whose inventories or comparison didn't complete gets a failure status. If the rescan can't plan at all (the GitHub API fails before it lists the PRs), it posts nothing: the PRs keep their last status, and the workflow run fails.
 

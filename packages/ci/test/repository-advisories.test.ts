@@ -102,6 +102,18 @@ describe("source repositories", () => {
     expect(pomRepository(`<project><!-- <scm><url>https://github.com/old/one</url></scm> --></project>`, SNAPPY)).toBeUndefined();
   });
 
+  it("ignores comment contents while preserving text split by comments", () => {
+    const pom = `<project>
+      <!-- <scm><url>https://github.com/not/this</url></scm> -->
+      <!-- <parent><groupId>wrong</groupId><artifactId>wrong</artifactId><version>9</version></parent> -->
+      <scm><url>https://github.com/ac<!-- note -->me/lib</url></scm>
+      <parent><groupId>com.ac<!-- note -->me</groupId><artifactId>parent</artifactId><version>3</version></parent>
+    </project>`;
+
+    expect(pomRepository(pom, SNAPPY)).toBe("acme/lib");
+    expect(pomParent(pom)).toEqual({ ecosystem: "Maven", name: "com.acme:parent", version: "3" });
+  });
+
   it("walks up to the parent POM when a POM names no repository", async () => {
     const child: PackageVersion = { ecosystem: "Maven", name: "com.acme:child", version: "1.0.0" };
     const childPom = `<project><parent><groupId>com.acme</groupId><artifactId>parent</artifactId><version>3</version></parent></project>`;
@@ -115,7 +127,7 @@ describe("source repositories", () => {
 
   it("reads npm manifests, honors overrides, and fails closed on registry errors", async () => {
     const lib: PackageVersion = { ecosystem: "npm", name: "@scope/lib", version: "1.0.0" };
-    const url = "https://registry.npmjs.org/@scope%2Flib/1.0.0";
+    const url = "https://registry.npmjs.org/%40scope%2Flib/1.0.0";
     expect(await sourceRepository(lib, sourceOptions({ [url]: { body: { repository: "github:acme/lib" } } }))).toBe("acme/lib");
     expect(await sourceRepository(lib, sourceOptions({ [url]: { body: {} } }))).toBeUndefined();
     await expect(sourceRepository(lib, sourceOptions({ [url]: { status: 503 } }))).rejects.toThrow("HTTP 503");
