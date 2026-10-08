@@ -1,46 +1,78 @@
 /**
  * The release-age rule, the same for every ecosystem: a version a change adds
- * or changes must be at least `releaseAgeDays` old, unless it's an own
- * package, or a `releaseAge` exception names an advisory that, in the
- * comparison's snapshot, affects a version the change replaces and not this
- * one. Malware advisories can't justify skipping the wait.
+ * or changes must be at least `releaseAgeDays` old, unless
+ *   - it's an own package (own packages skip only this wait), or
+ *   - it's the security fix the version rule picks (`young-fixes.ts`), or
+ *   - a `releaseAge` exception names an advisory that, in the comparison's
+ *     snapshot, affects a version the change replaces and not this one (for
+ *     fixes the proof can't make). Malware advisories can't justify it.
  */
 import { type Config, isOwnPackage } from "./config.ts";
 import type { Exceptions } from "./exceptions.ts";
-import { label, type PackageVersion } from "./package-version.ts";
+import { label, type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
+import type { Ecosystem } from "./versions.ts";
+import { type VersionCatalog, youngFixProblem } from "./young-fixes.ts";
 
 const DAY_MS = 86_400_000;
+
+export interface ChangedVersion {
+  readonly pkg: PackageVersion;
+  readonly published: Date;
+  /** Versions of the package the change replaces. */
+  readonly replaced: ReadonlyArray<string>;
+}
 
 export interface AgeContext {
   readonly snapshot: Snapshot;
   readonly exceptions: Exceptions;
   readonly config: Config;
   readonly now: Date;
+  readonly catalogs: Readonly<Record<Ecosystem, VersionCatalog>>;
+  /** `versionKey` of a young version → replaced version → its candidates, all in the snapshot. */
+  readonly candidates: ReadonlyMap<string, ReadonlyMap<string, ReadonlyArray<string>>>;
 }
 
-/** Why `pkg`, published at `published`, fails the wait, or undefined when it passes. */
-export function releaseAgeProblem(
-  pkg: PackageVersion,
-  published: Date,
-  replaced: ReadonlyArray<string>,
-  context: AgeContext,
-): string | undefined {
-  if (isOwnPackage(context.config.ownPackages, pkg)) return undefined;
-  const ageDays = (context.now.getTime() - published.getTime()) / DAY_MS;
-  const minimum = context.config.releaseAgeDays;
-  if (ageDays >= minimum) return undefined;
+/** Under the wait and not an own package: what the proof or an exception must justify. */
+export function isYoung(change: ChangedVersion, config: Config, now: Date): boolean {
+  if (isOwnPackage(config.ownPackages, change.pkg)) return false;
+  return (now.getTime() - change.published.getTime()) / DAY_MS < config.releaseAgeDays;
+}
+
+export async function releaseAgeProblems(changes: ReadonlyArray<ChangedVersion>, context: AgeContext): Promise<string[]> {
+  const problems: string[] = [];
+  for (const change of changes) {
+    if (!isYoung(change, context.config, context.now)) continue;
+    const problem = await youngProblem(change, context);
+    if (problem !== undefined) problems.push(problem);
+  }
+  return problems;
+}
+
+async function youngProblem(change: ChangedVersion, context: AgeContext): Promise<string | undefined> {
+  const { pkg } = change;
+  const proof = await youngFixProblem(
+    { pkg, replaced: change.replaced },
+    context.candidates.get(versionKey(pkg)) ?? new Map(),
+    context.snapshot,
+    context.catalogs[pkg.ecosystem],
+    context.config,
+    context.now,
+  );
+  if (proof === undefined) return undefined;
   const exception = context.exceptions.releaseAge.find(
-    (entry) =>
-      (entry.ecosystem === undefined || entry.ecosystem === pkg.ecosystem) && entry.package === pkg.name && entry.version === pkg.version,
+    (entry) => (entry.ecosystem === undefined || entry.ecosystem === pkg.ecosystem) && entry.package === pkg.name && entry.version === pkg.version,
   );
   if (exception === undefined) {
-    return `${label(pkg)} was published ${published.toISOString()} (${ageDays.toFixed(1)} days ago, under ${minimum})`;
+    const ageDays = (context.now.getTime() - change.published.getTime()) / DAY_MS;
+    return `${label(pkg)} was published ${change.published.toISOString()} (${ageDays.toFixed(1)} days ago, under ${
+      context.config.releaseAgeDays
+    }), and it isn't the security fix the version rule would take: ${proof}`;
   }
   if (exception.expires < context.now.toISOString().slice(0, 10)) {
     return `${label(pkg)}: its release-age exception expired on ${exception.expires}`;
   }
-  const why = advisoryEvidenceProblem(exception.advisory, pkg, replaced, context.snapshot);
+  const why = advisoryEvidenceProblem(exception.advisory, pkg, change.replaced, context.snapshot);
   return why === undefined ? undefined : `${label(pkg)}: ${why}`;
 }
 

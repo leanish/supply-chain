@@ -9,7 +9,8 @@
  *     "maven": { "repositories": ["https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2"] },
  *     "releaseAgeDays": 7,
  *     "ownPackages": { "npm": { "scopes": ["@acme"] }, "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] } },
- *     "repositories": { "npm:some-package": "owner/repo" }
+ *     "repositories": { "npm:some-package": "owner/repo" },
+ *     "compatibleLines": { "Maven:org.springframework.boot:*": 2 }
  *   }
  */
 import { isObject } from "./json.ts";
@@ -49,6 +50,12 @@ export interface Config {
   readonly ownPackages: OwnPackages;
   /** `packageKey` → `owner/repo`, where the source repository can't be found automatically. */
   readonly repositories: ReadonlyMap<string, string>;
+  /**
+   * `<ecosystem>:<package>` (a trailing `*` matches a prefix) → how many
+   * leading numeric segments make a compatible line, where the ecosystem's
+   * rule (npm's caret range, Maven's first segment) doesn't fit.
+   */
+  readonly compatibleLines: ReadonlyArray<readonly [pattern: string, segments: number]>;
 }
 
 export interface OwnPackages {
@@ -69,6 +76,7 @@ export const DEFAULT_CONFIG: Config = {
   releaseAgeDays: 7,
   ownPackages: { npmScopes: [], mavenGroups: [], pluginIdPrefixes: [] },
   repositories: new Map(),
+  compatibleLines: [],
 };
 
 /** Own packages skip the release-age wait, and only that. */
@@ -81,7 +89,7 @@ export function isOwnPackage(own: OwnPackages, pkg: PackageName): boolean {
 
 export function parseConfig(raw: unknown): Config {
   const where = "supply-chain.json";
-  const root = object(raw, where, ["npm", "gradle", "maven", "releaseAgeDays", "ownPackages", "repositories"]);
+  const root = object(raw, where, ["npm", "gradle", "maven", "releaseAgeDays", "ownPackages", "repositories", "compatibleLines"]);
   const npm = root["npm"] === undefined ? {} : object(root["npm"], `${where}: npm`, ["lockfiles", "registries"]);
   const gradle = root["gradle"] === undefined ? {} : object(root["gradle"], `${where}: gradle`, ["builds", "ignoreConfigurations"]);
   const maven = root["maven"] === undefined ? {} : object(root["maven"], `${where}: maven`, ["repositories"]);
@@ -122,7 +130,23 @@ export function parseConfig(raw: unknown): Config {
       pluginIdPrefixes: strings(ownMaven["pluginIdPrefixes"], `${where}: ownPackages.Maven.pluginIdPrefixes`) ?? [],
     },
     repositories: repositories(root["repositories"], `${where}: repositories`),
+    compatibleLines: compatibleLines(root["compatibleLines"], `${where}: compatibleLines`),
   };
+}
+
+function compatibleLines(value: unknown, where: string): Array<readonly [string, number]> {
+  if (value === undefined) return [];
+  if (!isObject(value)) throw new Error(`${where} must be an object`);
+  return Object.entries(value).map(([pattern, segments]) => {
+    const ecosystem = pattern.slice(0, pattern.indexOf(":")) as Ecosystem;
+    if (!ECOSYSTEMS.includes(ecosystem) || pattern.length <= ecosystem.length + 1) {
+      throw new Error(`${where}: ${pattern} isn't <ecosystem>:<package> (a trailing * matches a prefix)`);
+    }
+    if (typeof segments !== "number" || !Number.isInteger(segments) || segments < 1) {
+      throw new Error(`${where}: ${pattern} must map to a positive number of segments`);
+    }
+    return [pattern, segments] as const;
+  });
 }
 
 function object(value: unknown, where: string, keys: ReadonlyArray<string>): Record<string, unknown> {

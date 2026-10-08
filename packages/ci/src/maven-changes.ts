@@ -1,15 +1,15 @@
 /**
- * The release-age check on Maven versions a change adds or changes (Gradle
- * builds). The publish time is the POM's `Last-Modified` in the first
+ * Maven versions a change adds or changes (Gradle builds), with their publish
+ * times for the release-age rule. The publish time is the POM's `Last-Modified` in the first
  * configured repository that has it: Maven Central and the Gradle Plugin
  * Portal by default, both immutable, so a file's date is its upload. A
  * version none of them has fails: the gate can't tell its age.
  */
-import { isOwnPackage } from "./config.ts";
+import { type Config, isOwnPackage } from "./config.ts";
 import type { Located } from "./findings.ts";
 import type { Fetch } from "./http.ts";
 import { label, type PackageVersion, uniqueVersions } from "./package-version.ts";
-import { type AgeContext, releaseAgeProblem } from "./release-age.ts";
+import type { ChangedVersion } from "./release-age.ts";
 import { pomUrl } from "./source-repos.ts";
 
 /** Publish times from POM `Last-Modified`, each version asked once per run. */
@@ -77,16 +77,23 @@ function replacedAt(pkg: Located, base: ReadonlyArray<Located>, head: ReadonlyAr
   return [...replaced];
 }
 
-/** Release-age problems of the Maven versions `head` has and `base` doesn't. */
-export async function mavenChangeProblems(
+export interface MavenChanges {
+  /** Versions whose age no configured repository can tell. */
+  readonly problems: ReadonlyArray<string>;
+  readonly changes: ReadonlyArray<ChangedVersion>;
+}
+
+/** The Maven versions `head` has and `base` doesn't, with their publish times. */
+export async function mavenChanges(
   base: ReadonlyArray<Located>,
   head: ReadonlyArray<Located>,
-  context: AgeContext & { readonly dates: MavenDates },
-): Promise<string[]> {
+  context: { readonly config: Config; readonly dates: MavenDates },
+): Promise<MavenChanges> {
   const before = new Set(base.filter((pkg) => pkg.ecosystem === "Maven").map((pkg) => `${pkg.name}@${pkg.version}`));
   const kept = new Set(head.filter((pkg) => pkg.ecosystem === "Maven").map((pkg) => `${pkg.name}@${pkg.version}`));
   const changed = uniqueVersions(head.filter((pkg) => pkg.ecosystem === "Maven" && !before.has(`${pkg.name}@${pkg.version}`)));
   const problems: string[] = [];
+  const changes: ChangedVersion[] = [];
   for (const pkg of changed) {
     if (isOwnPackage(context.config.ownPackages, pkg)) continue;
     const published = await context.dates.published(pkg);
@@ -94,8 +101,7 @@ export async function mavenChangeProblems(
       problems.push(`${label(pkg)} isn't in ${context.config.maven.repositories.join(" or ")}, so the gate can't check its release age`);
       continue;
     }
-    const problem = releaseAgeProblem(pkg, published, replacedAt(pkg, base, head, kept), context);
-    if (problem !== undefined) problems.push(problem);
+    changes.push({ pkg: { ecosystem: "Maven", name: pkg.name, version: pkg.version }, published, replaced: replacedAt(pkg, base, head, kept) });
   }
-  return problems;
+  return { problems, changes };
 }

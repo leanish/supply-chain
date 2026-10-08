@@ -57,16 +57,30 @@ A package with no GitHub source repository, an unreadable repository, and a rang
 
 For every version a PR adds or changes:
 
-- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
+- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
 - **Source:** every locked package comes from an allowed registry (`npm.registries`, default the npm registry). The gate checks age and identity only against the npm registry, so a package from another allowed registry fails, unless it's an own package with an unexpired `identity` exception recording that its publish was reviewed (own packages skip only the wait).
 - **Identity:** a version that replaces another fails on a publisher identity break: provenance dropped or from another repository or workflow, provenance from a repository the replaced version doesn't declare, or (without provenance) a publisher who hadn't published the package up to the replaced version. Every provenance statement must name the exact package, version and locked sha512.
 - Bundles the lockfile doesn't fully record fail: every `bundleDependencies` entry, and what it depends on, needs an `inBundle` entry inside the package that ships it.
 
 After a scriptless `npm ci --ignore-scripts`, `npm audit signatures` verifies registry signatures and attestations of what was installed (a workflow step, not this CLI).
 
+## A young security fix (any ecosystem)
+
+A version younger than the wait passes without an exception when it's the fix the version rule picks. For a version V replacing R:
+
+- **Targets:** the advisories that affect R and not V. An upgrade that fixes A and leaves B fixes A; malware isn't a target. No target, no fix.
+- **Candidates:** the registry's versions above R, up to the end of V's line. Prereleases count only if R is one; a Maven version keeps R's flavor (`-jre`). A candidate fixes when no target affects it, and it brings no advisory R doesn't have, malware included.
+- **The rule:**
+  1. Take the first compatible line with a fixing candidate, starting from R's own (npm's caret range; Maven's first numeric segment, or `compatibleLines` in config). A backport 1.9.5 beats a mature 2.0.0.
+  2. In that line, take the lowest fixing candidate at least `releaseAgeDays` old.
+  3. If none is that old, take the lowest fixing candidate, however young.
+- V passes only if it's that version. If an older fix in the line turns 7 days old before CI runs, the check fails on purpose: that one is safer, and secure-it picks it up.
+
+Candidates join the same advisory snapshot as base and head, so the rule and the comparison read the same data. On sqs-codec's snappy-java 1.1.10.8 → 1.1.10.10, three days old, it passes with no exception: 1.1.10.9 leaves two of the seven advisories, and 1.1.10.10 is the lowest that fixes them all.
+
 ## Release age (Maven)
 
-Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix needs a `releaseAge` exception (with `"ecosystem": "Maven"`), checked against the snapshot like npm's. What a version replaces is read per configuration: upgraded at runtime while tests keep the old version, it still replaces the runtime one.
+Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix passes by the rule above, or by a `releaseAge` exception (with `"ecosystem": "Maven"`) checked against the snapshot like npm's. What a version replaces is read per configuration: upgraded at runtime while tests keep the old version, it still replaces the runtime one.
 
 ## Configuration: `.github/supply-chain.json`
 
@@ -82,13 +96,15 @@ Optional; read from head. Unknown fields fail, so a typo can't turn a check off.
     "npm": { "scopes": ["@acme"] },
     "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] }
   },
-  "repositories": { "npm:some-package": "owner/repo", "Maven:group:artifact": "owner/repo" }
+  "repositories": { "npm:some-package": "owner/repo", "Maven:group:artifact": "owner/repo" },
+  "compatibleLines": { "Maven:org.springframework.boot:*": 2 }
 }
 ```
 
 - Without `npm.lockfiles`, the gate reads `package-lock.json` if the tree has one; without `gradle.builds`, the root build if the tree has a `settings.gradle(.kts)` or `build.gradle(.kts)`. So an ecosystem in the repository is never skipped for lack of configuration; `"builds": []` turns Gradle off explicitly.
 - Every listed lockfile must exist in head; one base doesn't have yet reads as empty there.
 - Own Maven packages: exact `groups`, and `pluginIdPrefixes` that only match Gradle plugin markers (`<id>:<id>.gradle.plugin`), so `com.acme.` doesn't exempt every `com.acme.*` group.
+- `compatibleLines`: how many leading numeric segments make a compatible line for a package (a trailing `*` matches a prefix), where the default (npm's caret range, Maven's first segment) doesn't fit.
 
 ## Exceptions: `.github/supply-chain-exceptions.json`
 
@@ -106,4 +122,4 @@ Malware ids can't be excepted.
 
 ## Coming next
 
-GitHub Actions as an ecosystem, the automatic proof that a young security fix may skip the wait, the floors file, and the reusable workflow with its daily rescan of open PRs.
+GitHub Actions as an ecosystem, the floors file, a `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.

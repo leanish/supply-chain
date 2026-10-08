@@ -10,7 +10,7 @@
 import type { Fetch } from "./http.ts";
 import { OsvRecords } from "./osv-records.ts";
 import { scanWithOsvScanner, type OsvRecord, type OsvScannerOptions } from "./osv-scanner.ts";
-import { type PackageVersion, uniqueVersions, versionKey } from "./package-version.ts";
+import { packageKey, type PackageVersion, uniqueVersions, versionKey } from "./package-version.ts";
 import { matchRepositoryAdvisories, type RepositoryAdvisory, type RepositoryAdvisoryOptions } from "./repository-advisories.ts";
 import { type Advisory, isMalware, Snapshot } from "./snapshot.ts";
 import { sourceRepositories, type SourceRepoOptions } from "./source-repos.ts";
@@ -24,11 +24,29 @@ export interface SnapshotOptions {
   readonly now: () => Date;
 }
 
-export async function takeSnapshot(packages: ReadonlyArray<PackageVersion>, options: SnapshotOptions): Promise<Snapshot> {
-  const unique = uniqueVersions(packages);
+/**
+ * `candidates` (young-fix candidates) join the scan; their source repository
+ * is the one of another version of the same package in `packages`, and their
+ * coverage gaps aren't reported again.
+ */
+export async function takeSnapshot(
+  packages: ReadonlyArray<PackageVersion>,
+  options: SnapshotOptions,
+  candidates: ReadonlyArray<PackageVersion> = [],
+): Promise<Snapshot> {
   const takenAt = options.now();
-  const repos = await sourceRepositories(unique, options.sourceRepos);
-  const repository = await matchRepositoryAdvisories(unique, repos, options.repositoryAdvisories);
+  const listed = uniqueVersions(packages);
+  const listedKeys = new Set(listed.map(versionKey));
+  const extra = uniqueVersions(candidates).filter((pkg) => !listedKeys.has(versionKey(pkg)));
+  const repos = await sourceRepositories(listed, options.sourceRepos);
+  const repoOfPackage = new Map<string, string>();
+  for (const pkg of listed) {
+    const repo = repos.get(versionKey(pkg));
+    if (repo !== undefined && !repoOfPackage.has(packageKey(pkg))) repoOfPackage.set(packageKey(pkg), repo);
+  }
+  for (const pkg of extra) repos.set(versionKey(pkg), repoOfPackage.get(packageKey(pkg)));
+  const unique = [...listed, ...extra];
+  const repository = await matchRepositoryAdvisories(unique, repos, options.repositoryAdvisories, new Set(extra.map(versionKey)));
   const records = new OsvRecords(options.fetch);
   const fromRepositories = new Map<string, Advisory[]>();
   for (const pkg of unique) {

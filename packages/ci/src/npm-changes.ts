@@ -1,9 +1,8 @@
 /**
  * Checks on what a change adds or changes in an npm lockfile: the source of
- * every locked package, the release age of each added or changed version,
- * and the publisher identity of each version that replaces another.
- *
- * The wait itself is `release-age.ts`, shared with Maven.
+ * every locked package and the publisher identity of each version that
+ * replaces another. It also lists the changed versions, with their publish
+ * times, for the release-age rule (`release-age.ts`, shared with Maven).
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
  * (commit 9e7d098); the advisory evidence now comes from the shared snapshot.
@@ -13,24 +12,29 @@ import type { Exceptions } from "./exceptions.ts";
 import { changedPackages, fromRegistry, type LockedPackage, NPM_REGISTRY, sourceProblems } from "./npm-lock.ts";
 import { type NpmRegistry, publishTime } from "./npm-registry.ts";
 import { uniqueVersions } from "./package-version.ts";
-import { releaseAgeProblem } from "./release-age.ts";
-import type { Snapshot } from "./snapshot.ts";
+import type { ChangedVersion } from "./release-age.ts";
 
 export interface NpmChangeContext {
   readonly registry: NpmRegistry;
-  readonly snapshot: Snapshot;
   readonly exceptions: Exceptions;
   readonly config: Config;
   readonly now: Date;
 }
 
-/** Problems with the versions `head` adds or changes over `base`; empty means they pass. */
-export async function npmChangeProblems(
+export interface NpmChanges {
+  /** Source and identity problems. */
+  readonly problems: ReadonlyArray<string>;
+  /** Versions from the npm registry the change adds or changes. */
+  readonly changes: ReadonlyArray<ChangedVersion>;
+}
+
+export async function npmChanges(
   base: ReadonlyArray<LockedPackage>,
   head: ReadonlyArray<LockedPackage>,
   context: NpmChangeContext,
-): Promise<string[]> {
+): Promise<NpmChanges> {
   const problems = sourceProblems(head, context.config.npm.registries);
+  const changes: ChangedVersion[] = [];
   const today = context.now.toISOString().slice(0, 10);
   const changed = changedPackages(base, head).filter((pkg) => fromRegistry(pkg, context.config.npm.registries));
   for (const pkg of uniqueVersions(changed.map((locked) => ({ ...locked, ecosystem: "npm" as const })))) {
@@ -39,10 +43,12 @@ export async function npmChangeProblems(
       continue;
     }
     problems.push(...(await context.registry.identityProblems(pkg, identityBaseline(pkg.name, base, head), context.exceptions, today)));
-    const age = await ageProblem(pkg, replacedVersions(pkg.name, base, head), context);
-    if (age !== undefined) problems.push(age);
+    // Own packages skip only the wait: their identity is checked, their publish time isn't needed.
+    if (isOwnPackage(context.config.ownPackages, pkg)) continue;
+    const published = publishTime(await context.registry.packument(pkg.name), pkg.name, pkg.version);
+    changes.push({ pkg: { ecosystem: "npm", name: pkg.name, version: pkg.version }, published, replaced: replacedVersions(pkg.name, base, head) });
   }
-  return problems;
+  return { problems, changes };
 }
 
 /**
@@ -61,13 +67,6 @@ function otherRegistryProblems(pkg: LockedPackage, context: NpmChangeContext, to
   return reviewed === undefined
     ? [`${label} comes from ${pkg.resolved}, where the gate can't check its publisher identity; an identity exception records the review`]
     : [];
-}
-
-async function ageProblem(pkg: LockedPackage, replaced: ReadonlyArray<string>, context: NpmChangeContext): Promise<string | undefined> {
-  const npmPkg = { ecosystem: "npm" as const, name: pkg.name, version: pkg.version };
-  if (isOwnPackage(context.config.ownPackages, npmPkg)) return undefined;
-  const published = publishTime(await context.registry.packument(pkg.name), pkg.name, pkg.version);
-  return releaseAgeProblem(npmPkg, published, replaced, context);
 }
 
 /**

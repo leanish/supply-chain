@@ -13,15 +13,19 @@ import { compareFindings, findingsOf } from "./findings.ts";
 import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
 import { type Inventory, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
-import { MavenDates, mavenChangeProblems } from "./maven-changes.ts";
-import { npmChangeProblems } from "./npm-changes.ts";
+import { MavenCatalog, NpmCatalog } from "./catalogs.ts";
+import { MavenDates, mavenChanges } from "./maven-changes.ts";
+import { npmChanges } from "./npm-changes.ts";
 import { sourceProblems } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { osvScannerVersion } from "./osv-scanner.ts";
+import { versionKey } from "./package-version.ts";
 import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
+import { type ChangedVersion, isYoung, releaseAgeProblems } from "./release-age.ts";
 import { takeSnapshot } from "./take-snapshot.ts";
 import type { Tree } from "./tree.ts";
+import { gatherCandidates } from "./young-fixes.ts";
 
 export const CONFIG_PATH = ".github/supply-chain.json";
 export const EXCEPTIONS_PATH = ".github/supply-chain-exceptions.json";
@@ -118,32 +122,55 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const baseInventory = await readInventory(base, await baseSources(base, sources), { missingLockfilesAreEmpty: true, gradle: gradle.base });
   const baseLocated = located(baseInventory);
   const headLocated = located(headInventory);
-  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env));
   const now = env.now();
   const today = now.toISOString().slice(0, 10);
-  const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
-  const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
+
+  // What head adds or changes, with publish times, before the snapshot: young versions' candidates join it.
   const registry = new NpmRegistry(env.fetch);
-  const changeProblems: string[] = [
+  const dates = new MavenDates(env.fetch, config.maven.repositories);
+  const catalogs = { npm: new NpmCatalog(registry), Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates) };
+  const problems: string[] = [
     ...bundleFailures(headInventory),
     ...resolutionFailures(baseInventory, config, "base"),
     ...resolutionFailures(headInventory, config, undefined),
   ];
+  const changes: ChangedVersion[] = [];
   for (const lockfile of headInventory.npm) {
     const before = baseInventory.npm.find((candidate) => candidate.path === lockfile.path)?.packages ?? [];
-    const problems = await npmChangeProblems(before, lockfile.packages, { registry, snapshot, exceptions, config, now });
-    changeProblems.push(...problems.map((problem) => prefixed(headInventory, lockfile.path, problem)));
+    const npm = await npmChanges(before, lockfile.packages, { registry, exceptions, config, now });
+    problems.push(...npm.problems.map((problem) => prefixed(headInventory, lockfile.path, problem)));
+    changes.push(...npm.changes);
   }
-  const dates = new MavenDates(env.fetch, config.maven.repositories);
-  changeProblems.push(...(await mavenChangeProblems(baseLocated, headLocated, { snapshot, exceptions, config, now, dates })));
+  const maven = await mavenChanges(baseLocated, headLocated, { config, dates });
+  problems.push(...maven.problems);
+  changes.push(...maven.changes);
+  const merged = mergeChanges(changes);
+  const young = merged.filter((change) => isYoung(change, config, now));
+  const candidates = await gatherCandidates(young, catalogs, config);
+
+  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env), [...candidates.versions]);
+  const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
+  const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
+  problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange })));
   return {
-    failures: [...verdict.failures, ...changeProblems],
+    failures: [...verdict.failures, ...problems],
     warnings: verdict.warnings,
     notes: verdict.notes,
     gaps: snapshot.gaps,
     osvScannerVersion: version,
     configText,
   };
+}
+
+/** One entry per version, with every version it replaces in any lockfile. */
+function mergeChanges(changes: ReadonlyArray<ChangedVersion>): ChangedVersion[] {
+  const merged = new Map<string, ChangedVersion>();
+  for (const change of changes) {
+    const key = versionKey(change.pkg);
+    const earlier = merged.get(key);
+    merged.set(key, earlier === undefined ? change : { ...earlier, replaced: [...new Set([...earlier.replaced, ...change.replaced])] });
+  }
+  return [...merged.values()];
 }
 
 export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<GateOutcome> {

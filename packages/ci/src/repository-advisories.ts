@@ -53,6 +53,8 @@ export async function matchRepositoryAdvisories(
   packages: ReadonlyArray<PackageVersion>,
   repos: ReadonlyMap<string, string | undefined>,
   options: RepositoryAdvisoryOptions,
+  /** `versionKey`s whose gaps aren't reported (young-fix candidates: their package is reported already). */
+  quiet: ReadonlySet<string> = new Set(),
 ): Promise<RepositoryAdvisoryMatch> {
   const gaps: string[] = [];
   const wanted = [...new Set(packages.flatMap((pkg) => repos.get(versionKey(pkg)) ?? []))].sort();
@@ -61,19 +63,22 @@ export async function matchRepositoryAdvisories(
   const affecting = new Map<string, RepositoryAdvisory[]>();
   for (const pkg of packages) {
     const repo = repos.get(versionKey(pkg));
+    const report = (gap: string) => {
+      if (!quiet.has(versionKey(pkg))) gaps.push(gap);
+    };
     if (repo === undefined) {
-      gaps.push(`${pkg.ecosystem} ${label(pkg)}: no GitHub source repository found, so its repository advisories aren't read`);
+      report(`${pkg.ecosystem} ${label(pkg)}: no GitHub source repository found, so its repository advisories aren't read`);
       continue;
     }
     const advisories = byRepo.get(repo);
     if (advisories === undefined) {
-      gaps.push(`${pkg.ecosystem} ${label(pkg)}: source repository ${repo} isn't readable (renamed, deleted or private)`);
+      report(`${pkg.ecosystem} ${label(pkg)}: source repository ${repo} isn't readable (renamed, deleted or private)`);
       continue;
     }
     const hits: RepositoryAdvisory[] = [];
     for (const advisory of advisories) {
       const verdict = affects(advisory, pkg);
-      if (verdict === undefined) gaps.push(`${advisory.ghsaId} (${repo}) has a range the gate can't read for ${label(pkg)}`);
+      if (verdict === undefined) report(`${advisory.ghsaId} (${repo}) has a range the gate can't read for ${label(pkg)}`);
       else if (verdict) hits.push(advisory);
     }
     affecting.set(versionKey(pkg), hits);

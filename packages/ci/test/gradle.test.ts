@@ -6,8 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { isOwnPackage, parseConfig } from "../src/config.ts";
 import { gradleLocated, gradleResolutionProblems, parseGradleInventory, runGradleInventory } from "../src/gradle.ts";
-import { MavenDates, mavenChangeProblems } from "../src/maven-changes.ts";
-import { parseExceptions, NO_EXCEPTIONS } from "../src/exceptions.ts";
+import { MavenCatalog } from "../src/catalogs.ts";
+import { type Config } from "../src/config.ts";
+import { MavenDates, mavenChanges } from "../src/maven-changes.ts";
+import { isYoung, releaseAgeProblems } from "../src/release-age.ts";
+import { gatherCandidates } from "../src/young-fixes.ts";
+import { type Exceptions, parseExceptions, NO_EXCEPTIONS } from "../src/exceptions.ts";
 import type { Located } from "../src/findings.ts";
 import type { RunProcess } from "../src/process.ts";
 import { type Advisory, Snapshot } from "../src/snapshot.ts";
@@ -158,16 +162,37 @@ describe("running the Gradle inventory", () => {
 
 describe("Maven release age", () => {
   const maven = (name: string, version: string, locations = [":runtimeClasspath"]): Located => ({ ecosystem: "Maven", name, version, locations });
-  const snapshot = (affecting: Record<string, Advisory[]>, packages: Located[]) => {
-    const map = new Map<string, Advisory[]>(packages.map((pkg) => [`Maven|${pkg.name}|${pkg.version}`, []]));
-    for (const [key, advisories] of Object.entries(affecting)) map.set(key, advisories);
-    return new Snapshot(map, [], NOW);
-  };
   const central = (name: string, version: string) => {
     const [group, artifact] = name.split(":");
     return `https://repo1.maven.org/maven2/${group!.replaceAll(".", "/")}/${artifact}/${version}/${artifact}-${version}.pom`;
   };
   const portal = (name: string, version: string) => central(name, version).replace("https://repo1.maven.org/maven2", "https://plugins.gradle.org/m2");
+  const snappyMetadata = (versions: string[]) => ({
+    "https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/maven-metadata.xml": {
+      text: `<metadata><versioning><versions>${versions.map((version) => `<version>${version}</version>`).join("")}</versions></versioning></metadata>`,
+    },
+  });
+
+  /** The Maven half of `compare`: changes, then the release-age rule over one snapshot that includes candidates. */
+  async function age(
+    base: Located[],
+    head: Located[],
+    fetch: ReturnType<typeof fakeFetch>,
+    options: { config?: Config; exceptions?: Exceptions; affecting?: Record<string, Advisory[]> } = {},
+  ) {
+    const config = options.config ?? parseConfig({});
+    const exceptions = options.exceptions ?? NO_EXCEPTIONS;
+    const dates = new MavenDates(fetch, config.maven.repositories);
+    const found = await mavenChanges(base, head, { config, dates });
+    const young = found.changes.filter((change) => isYoung(change, config, NOW));
+    const catalog = new MavenCatalog(fetch, config.maven.repositories, dates);
+    const catalogs = { npm: catalog, Maven: catalog };
+    const candidates = await gatherCandidates(young, catalogs, config);
+    const map = new Map<string, Advisory[]>([...base, ...head, ...candidates.versions].map((pkg) => [`Maven|${pkg.name}|${pkg.version}`, []]));
+    for (const [key, advisories] of Object.entries(options.affecting ?? {})) map.set(key, advisories);
+    const snapshot = new Snapshot(map, [], NOW);
+    return [...found.problems, ...(await releaseAgeProblems(young, { snapshot, exceptions, config, now: NOW, catalogs, candidates: candidates.byChange }))];
+  }
 
   it("checks versions head adds by their POM's Last-Modified in Central, then the Plugin Portal", async () => {
     const base = [maven("org.xerial.snappy:snappy-java", "1.1.10.8")];
@@ -180,62 +205,78 @@ describe("Maven release age", () => {
       [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } },
       [portal("com.diffplug.spotless:spotless-plugin-gradle", "8.10.3")]: { headers: { "last-modified": "Fri, 25 Sep 2026 20:13:27 GMT" } },
       [central("com.acme:old", "1.0")]: { headers: { "last-modified": "Mon, 01 Jan 2024 00:00:00 GMT" } },
+      ...snappyMetadata(["1.1.10.8", "1.1.10.10"]),
     });
-    const config = parseConfig({});
-    const problems = await mavenChangeProblems(base, head, {
-      snapshot: snapshot({}, [...base, ...head]),
-      exceptions: NO_EXCEPTIONS,
-      config,
-      now: NOW,
-      dates: new MavenDates(fetch, config.maven.repositories),
-    });
-    expect(problems).toEqual(["org.xerial.snappy:snappy-java@1.1.10.10 was published 2026-10-03T16:51:02.000Z (2.8 days ago, under 7)"]);
+    expect(await age(base, head, fetch)).toEqual([
+      "org.xerial.snappy:snappy-java@1.1.10.10 was published 2026-10-03T16:51:02.000Z (2.8 days ago, under 7), and it isn't the security fix the version rule would take: it fixes no advisory affecting 1.1.10.8",
+    ]);
   });
 
-  it("accepts a young fix with a releaseAge exception whose advisory the snapshot shows on the replaced version", async () => {
+  it("accepts snappy-java 1.1.10.10: young, but the lowest version fixing every advisory 1.1.10.8 has", async () => {
+    const advisory = (id: string): Advisory => ({ id, ids: [id], source: "repository", malicious: false, summary: undefined, severity: "HIGH" });
+    // snappy-java's repository advisories: 1.1.10.9 fixes CVE-2026-90559, only 1.1.10.10 also fixes GHSA-6gp7-6wmv-gxqw.
+    const affecting = {
+      "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory("GHSA-wmgv-28fv-894x"), advisory("GHSA-6gp7-6wmv-gxqw")],
+      "Maven|org.xerial.snappy:snappy-java|1.1.10.9": [advisory("GHSA-6gp7-6wmv-gxqw")],
+    };
+    const metadata = `<metadata><versioning><versions>${["1.1.10.7", "1.1.10.8", "1.1.10.9", "1.1.10.10", "1.1.10.11", "1.2.0-RC1"]
+      .map((version) => `<version>${version}</version>`)
+      .join("")}</versions></versioning></metadata>`;
+    const pomDates = (dates: Record<string, string>) =>
+      Object.fromEntries(Object.entries(dates).map(([version, date]) => [central("org.xerial.snappy:snappy-java", version), { headers: { "last-modified": date } }]));
+    const routes = (dates: Record<string, string>) =>
+      fakeFetch({ "https://repo1.maven.org/maven2/org/xerial/snappy/snappy-java/maven-metadata.xml": { text: metadata }, ...pomDates(dates) });
+    const base = [maven("org.xerial.snappy:snappy-java", "1.1.10.8")];
+    const young = { "1.1.10.9": "Sat, 03 Oct 2026 10:00:00 GMT", "1.1.10.10": "Sat, 03 Oct 2026 16:51:02 GMT", "1.1.10.11": "Mon, 05 Oct 2026 00:00:00 GMT" };
+    expect(await age(base, [maven("org.xerial.snappy:snappy-java", "1.1.10.10")], routes(young), { affecting })).toEqual([]);
+    // 1.1.10.11 fixes everything too, but it isn't the lowest.
+    expect(await age(base, [maven("org.xerial.snappy:snappy-java", "1.1.10.11")], routes(young), { affecting })).toEqual([
+      "org.xerial.snappy:snappy-java@1.1.10.11 was published 2026-10-05T00:00:00.000Z (1.5 days ago, under 7), and it isn't the security fix the version rule would take: the lowest version fixing GHSA-wmgv-28fv-894x, GHSA-6gp7-6wmv-gxqw above 1.1.10.8 is 1.1.10.10 (line 1)",
+    ]);
+  });
+
+  it("accepts a young fix by a releaseAge exception when the proof can't make it", async () => {
     const base = [maven("org.xerial.snappy:snappy-java", "1.1.10.8")];
     const head = [maven("org.xerial.snappy:snappy-java", "1.1.10.10")];
     const fetch = fakeFetch({ [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } } });
     const advisory: Advisory = { id: "GHSA-wmgv-28fv-894x", ids: ["GHSA-wmgv-28fv-894x", "CVE-2026-90559"], source: "repository", malicious: false, summary: undefined, severity: "HIGH" };
-    const config = parseConfig({});
+    // The fix also adds an advisory 1.1.10.8 didn't have, so it isn't a candidate the rule takes.
+    const added: Advisory = { ...advisory, id: "GHSA-new", ids: ["GHSA-new"] };
+    const affecting = { "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory], "Maven|org.xerial.snappy:snappy-java|1.1.10.10": [added] };
+    expect(await age(base, head, fetch, { affecting })).toHaveLength(1);
     const exceptions = parseExceptions({
       releaseAge: [
         { ecosystem: "Maven", package: "org.xerial.snappy:snappy-java", version: "1.1.10.10", advisory: "CVE-2026-90559", reason: "fix", expires: "2026-10-20" },
       ],
     });
-    const problems = await mavenChangeProblems(base, head, {
-      snapshot: snapshot({ "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory] }, [...base, ...head]),
-      exceptions,
-      config,
-      now: NOW,
-      dates: new MavenDates(fetch, config.maven.repositories),
-    });
-    expect(problems).toEqual([]);
+    expect(await age(base, head, fetch, { affecting, exceptions })).toEqual([]);
   });
 
-  it("binds a young fix's advisory to the configuration it replaces a version in, though another keeps the old one", async () => {
+  it("binds a young fix to the configuration it replaces a version in, though another keeps the old one", async () => {
     // Upgraded at runtime, still the old version in tests: runtime's 1.1.10.8 is what 1.1.10.10 replaces.
     const base = [maven("org.xerial.snappy:snappy-java", "1.1.10.8", [":runtimeClasspath", ":testRuntimeClasspath"])];
     const head = [
       maven("org.xerial.snappy:snappy-java", "1.1.10.10", [":runtimeClasspath"]),
       maven("org.xerial.snappy:snappy-java", "1.1.10.8", [":testRuntimeClasspath"]),
     ];
-    const fetch = fakeFetch({ [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } } });
+    const fetch = fakeFetch({
+      [central("org.xerial.snappy:snappy-java", "1.1.10.10")]: { headers: { "last-modified": "Sat, 03 Oct 2026 16:51:02 GMT" } },
+      ...snappyMetadata(["1.1.10.8", "1.1.10.10"]),
+    });
     const advisory: Advisory = { id: "GHSA-wmgv-28fv-894x", ids: ["GHSA-wmgv-28fv-894x"], source: "repository", malicious: false, summary: undefined, severity: "HIGH" };
-    const config = parseConfig({});
-    const exceptions = parseExceptions({
-      releaseAge: [
-        { ecosystem: "Maven", package: "org.xerial.snappy:snappy-java", version: "1.1.10.10", advisory: "GHSA-wmgv-28fv-894x", reason: "fix", expires: "2026-10-20" },
-      ],
+    expect(await age(base, head, fetch, { affecting: { "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory] } })).toEqual([]);
+  });
+
+  it("lists Maven versions from every configured repository, and none when no repository has the package", async () => {
+    const metadata = (versions: string[]) => ({ text: `<metadata><versioning><versions>${versions.map((v) => `<version>${v}</version>`).join("")}</versions></versioning></metadata>` });
+    const config = parseConfig({ maven: { repositories: ["https://repo1.maven.org/maven2", "https://repo.acme.dev/maven"] } });
+    const fetch = fakeFetch({
+      "https://repo1.maven.org/maven2/com/acme/lib/maven-metadata.xml": metadata(["1.0.0", "1.0.1"]),
+      "https://repo.acme.dev/maven/com/acme/lib/maven-metadata.xml": metadata(["1.0.1", "1.0.2-backport"]),
     });
-    const problems = await mavenChangeProblems(base, head, {
-      snapshot: snapshot({ "Maven|org.xerial.snappy:snappy-java|1.1.10.8": [advisory] }, [...base, ...head]),
-      exceptions,
-      config,
-      now: NOW,
-      dates: new MavenDates(fetch, config.maven.repositories),
-    });
-    expect(problems).toEqual([]);
+    const catalog = new MavenCatalog(fetch, config.maven.repositories, new MavenDates(fetch, config.maven.repositories));
+    expect([...(await catalog.versions({ ecosystem: "Maven", name: "com.acme:lib" }))!].sort()).toEqual(["1.0.0", "1.0.1", "1.0.2-backport"]);
+    expect(await catalog.versions({ ecosystem: "Maven", name: "com.acme:gone" })).toBeUndefined();
   });
 
   it("fails a version no configured repository has, skips own packages, and fails closed on a missing header", async () => {
@@ -245,20 +286,13 @@ describe("Maven release age", () => {
       maven("io.github.leanish:java-conventions", "0.6.3"),
       maven("io.github.leanish.java-conventions:io.github.leanish.java-conventions.gradle.plugin", "0.6.3"),
     ];
-    const context = (fetch: ReturnType<typeof fakeFetch>) => ({
-      snapshot: snapshot({}, head),
-      exceptions: NO_EXCEPTIONS,
-      config,
-      now: NOW,
-      dates: new MavenDates(fetch, config.maven.repositories),
-    });
-    expect(await mavenChangeProblems([], head, context(fakeFetch({})))).toEqual([
+    expect(await age([], head, fakeFetch({}), { config })).toEqual([
       "com.acme:internal@1.0 isn't in https://repo1.maven.org/maven2 or https://plugins.gradle.org/m2, so the gate can't check its release age",
     ]);
     const noHeader = fakeFetch({ [central("com.acme:internal", "1.0")]: { headers: {} } });
-    await expect(mavenChangeProblems([], head, context(noHeader))).rejects.toThrow("has no valid Last-Modified header");
+    await expect(age([], head, noHeader, { config })).rejects.toThrow("has no valid Last-Modified header");
     const down = fakeFetch({ [central("com.acme:internal", "1.0")]: { status: 503 } });
-    await expect(mavenChangeProblems([], head, context(down))).rejects.toThrow("HTTP 503");
+    await expect(age([], head, down, { config })).rejects.toThrow("HTTP 503");
   });
 
   it("matches own Maven packages by exact group, and plugin-id prefixes only on marker coordinates", () => {
