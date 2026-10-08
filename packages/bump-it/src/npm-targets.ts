@@ -1,6 +1,7 @@
 /** Code selects each npm copy on one advisory snapshot; repository pins and unresolved copies are reported. */
 import semver from "semver";
 
+import { type NodeRuntime, nodeTypeVersions } from "../../ci/src/node-runtime.ts";
 import type { PackageVersion } from "../../ci/src/package-version.ts";
 import type { Snapshot } from "../../ci/src/snapshot.ts";
 import { groupsOf } from "../../ci/src/young-fixes.ts";
@@ -27,6 +28,7 @@ export interface TargetSources {
 
 export interface TargetInputs {
   readonly graph: NpmGraph;
+  readonly nodeRuntime: NodeRuntime;
   /** The lockfile's base graph (empty for a new lockfile). */
   readonly base: NpmGraph | undefined;
   /** Every version of each package anywhere in the base (all lockfiles): what `compare` counts as inherited. */
@@ -42,9 +44,9 @@ export type Decision =
   | { readonly copy: Copy; readonly kind: "unresolved"; readonly target: string | undefined; readonly why: string };
 
 /** The target of every copy that can move on its own (bundled ones ride with their parent). */
-export async function decideTargets(inputs: TargetInputs, sources: TargetSources): Promise<Decision[]> {
+export async function decideTargets(inputs: TargetInputs, sources: TargetSources, select: (copy: Copy) => boolean = () => true): Promise<Decision[]> {
   const { graph, overrides, direct } = inputs;
-  const copies = graph.copies().filter((copy) => !copy.bundled);
+  const copies = graph.copies().filter((copy) => !copy.bundled && select(copy));
   const pending: Array<{ copy: Copy; baseVersion: string | undefined; candidates: string[] }> = [];
   const decisions: Decision[] = [];
   for (const copy of copies) {
@@ -141,6 +143,11 @@ async function candidatesOf(
   }
   if (listed === undefined) {
     return { baseVersion, why: `the registry doesn't list ${copy.name}'s versions completely` };
+  }
+  if (copy.name === "@types/node") {
+    const previous = baseVersion ?? baseVersionOf(copy, inputs, () => true);
+    listed = previous === undefined && inputs.nodeRuntime.major === undefined
+      ? [] : nodeTypeVersions(previous ?? copy.version, listed, inputs.nodeRuntime);
   }
   const prerelease = semver.prerelease(copy.version) !== null;
   const inRange = listed

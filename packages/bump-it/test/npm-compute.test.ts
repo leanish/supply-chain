@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { versionKey } from "../../ci/src/package-version.ts";
-import { Snapshot } from "../../ci/src/snapshot.ts";
+import { type Advisory, Snapshot } from "../../ci/src/snapshot.ts";
 import { computeNpm, MAX_PASSES, type NpmCommand, type NpmInputs } from "../src/npm-compute.ts";
 import { requireNpmExcludes } from "../src/npm-runtime.ts";
 
@@ -29,6 +29,130 @@ async function fixture(script?: (dir: string, args: ReadonlyArray<string>, n: nu
   return { dir, inputs, calls };
 }
 describe("exact npm computation", () => {
+  async function nodeTypesFixture(options: { kind: "routine" | "major"; runtime?: number; base?: string; range?: string; induced?: string; alias?: boolean; workspaceRuntime?: number }) {
+    const h = await fixture();
+    const key = options.alias ? "node-types" : "@types/node";
+    const path = `node_modules/${key}`;
+    const root = {
+      ...manifest,
+      ...(options.runtime === undefined ? {} : { engines: { node: `>=${options.runtime} <${options.runtime + 1}` } }),
+      ...(options.workspaceRuntime === undefined ? {} : { workspaces: ["ws"] }),
+    };
+    const graph = (version: string | undefined, parent: string, manifest: unknown) => ({
+      packages: {
+        "": manifest,
+        "node_modules/parent": { version: parent, dependencies: { [key]: options.alias ? "npm:@types/node@*" : options.range ?? "*" } },
+        "node_modules/frozen": { version: "1.0.0" },
+        ...(version === undefined ? {} : { [path]: { name: "@types/node", version } }),
+        ...(options.workspaceRuntime === undefined ? {} : { ws: { engines: { node: `>=${options.workspaceRuntime}` } } }),
+      },
+    });
+    const base = graph(options.base, "1.0.0", root);
+    await writeFile(join(h.dir, "package.json"), json(root));
+    await writeFile(join(h.dir, "package-lock.json"), json(base));
+    if (options.workspaceRuntime !== undefined) {
+      await mkdir(join(h.dir, "ws"));
+      await writeFile(join(h.dir, "ws/package.json"), json({ engines: { node: `>=${options.workspaceRuntime}` } }));
+    }
+    let selected = options.induced ?? "26.6.3";
+    const npm: NpmCommand = async (dir, args) => {
+      if (args[0] === "--version") {
+        return { code: 0, stdout: "11.20.0", stderr: "" };
+      }
+      h.calls.push([...args]);
+      const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      const pin = manifest.overrides?.[`${key}@${selected}`];
+      if (typeof pin === "string") {
+        selected = pin.startsWith("npm:") ? pin.slice(pin.lastIndexOf("@") + 1) : pin;
+      }
+      await writeFile(join(dir, "package-lock.json"), json(graph(selected, options.kind === "major" ? "2.0.0" : "1.0.0", manifest)));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const inputs: NpmInputs = {
+      ...h.inputs,
+      kind: options.kind,
+      baseLocks: new Map([["package-lock.json", base]]),
+      moves: options.kind === "major" ? h.inputs.moves.map((move) => ({ ...move, to: "2.0.0" })) : [],
+      npm,
+      sources: { ...h.inputs.sources, versions: async () => ["22.6.0", "24.19.0", "24.20.0", "26.6.3"] },
+    };
+    return { ...h, inputs, path };
+  }
+
+  it.each(["routine", "major"] as const)("caps %s transitive Node types through npm computation and exact pinning", async (kind) => {
+    const h = await nodeTypesFixture({ kind, runtime: 24, base: "24.19.0" });
+    const result = await computeNpm(h.inputs);
+    const computed = JSON.parse(result.files.get("package-lock.json")!);
+    expect(computed.packages[h.path].version).toBe("24.20.0");
+    expect(result.changes).toContainEqual(expect.objectContaining({ name: "@types/node", from: "24.19.0", to: "24.20.0" }));
+    expect(result.notes).toContainEqual(expect.stringContaining("lowest supported Node major (24"));
+    expect(h.calls.map((call) => call[0])).toEqual(kind === "routine" ? ["install", "update", "install", "install"] : ["install", "install", "install"]);
+    expect(JSON.parse(await readFile(join(h.dir, "package.json"), "utf8")).overrides).toBeUndefined();
+  });
+
+  it.each(["age", "advisory", "identity"])("keeps major-induced type selection subject to %s checks", async (check) => {
+    const h = await nodeTypesFixture({ kind: "major", runtime: 24, base: "24.19.0" });
+    const advisory: Advisory = { id: "GHSA-new", ids: ["GHSA-new"], malicious: false, source: "osv", summary: undefined, severity: undefined };
+    const result = await computeNpm({
+      ...h.inputs,
+      sources: {
+        ...h.inputs.sources,
+        published: async (_name, version) => new Date(check === "age" && version === "24.20.0" ? "2026-10-06" : "2026-09-01"),
+        identity: async (_name, _from, to) => check === "identity" && to === "24.20.0" ? ["publisher changed"] : [],
+        snapshot: async (base, candidates) => new Snapshot(new Map([...base, ...candidates].map((pkg) =>
+          [versionKey(pkg), check === "advisory" && pkg.version === "24.20.0" ? [advisory] : []],
+        )), [], h.inputs.sources.now),
+      },
+    });
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("24.19.0");
+  });
+
+  it("does not refresh a type major already above the supported runtime", async () => {
+    const h = await nodeTypesFixture({ kind: "routine", runtime: 24, base: "26.6.2" });
+    const result = await computeNpm(h.inputs);
+    expect(JSON.parse(await readFile(join(h.dir, "package-lock.json"), "utf8")).packages[h.path].version).toBe("26.6.2");
+    expect(result.files.size).toBe(0);
+    expect(result.changes.filter((change) => change.name === "@types/node")).toEqual([]);
+  });
+
+  it("does not refresh already compatible types in a major unit", async () => {
+    const h = await nodeTypesFixture({ kind: "major", runtime: 24, base: "24.19.0", induced: "24.19.0" });
+    const versions = vi.fn(h.inputs.sources.versions);
+    const result = await computeNpm({ ...h.inputs, sources: { ...h.inputs.sources, versions } });
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("24.19.0");
+    expect(versions).not.toHaveBeenCalled();
+    expect(h.calls.map((call) => call[0])).toEqual(["install"]);
+  });
+
+  it("caps aliased transitive types in a major-induced graph", async () => {
+    const h = await nodeTypesFixture({ kind: "major", runtime: 24, base: "24.19.0", alias: true });
+    const result = await computeNpm(h.inputs);
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("24.20.0");
+  });
+
+  it("includes a lower workspace runtime even when Node types are only transitive", async () => {
+    const h = await nodeTypesFixture({ kind: "routine", runtime: 24, workspaceRuntime: 22, base: "22.5.0" });
+    const result = await computeNpm(h.inputs);
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("22.6.0");
+  });
+
+  it("retains the base type major without runtime evidence, instead of accepting npm's higher major", async () => {
+    const h = await nodeTypesFixture({ kind: "major", base: "24.19.0" });
+    const result = await computeNpm(h.inputs);
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("24.20.0");
+    expect(result.notes).toContainEqual(expect.stringContaining("cannot read a supported Node major"));
+  });
+
+  it("refuses a new induced type copy without runtime evidence", async () => {
+    const h = await nodeTypesFixture({ kind: "major" });
+    await expect(computeNpm(h.inputs)).rejects.toThrow("no eligible target");
+  });
+
+  it("refuses a major whose parent requires a Node-type major above the runtime", async () => {
+    const h = await nodeTypesFixture({ kind: "major", runtime: 24, base: "24.19.0", range: "^26" });
+    await expect(computeNpm(h.inputs)).rejects.toThrow("no eligible target");
+  });
+
   it("runs install/update/pin/install/restore/install with every release-age flag, returning only changed files", async () => {
     const h = await fixture(async (dir, args, n) => {
       const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));

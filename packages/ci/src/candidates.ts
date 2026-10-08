@@ -39,6 +39,7 @@ import { gradleLocation } from "./gradle.ts";
 import type { NpmLockfile } from "./inventory.ts";
 import { directDependencies, type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
+import { nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "./node-runtime.ts";
 import { type NpmPeerPlanner, prepareNpmPeers } from "./npm-peers.ts";
 import { type PackageName, type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
@@ -337,7 +338,9 @@ interface Pending {
  * Direct means: npm dependencies the root and the workspaces of every checked
  * lockfile declare (aliases included); Gradle dependencies declared with a
  * version, recorded floors aside (bump-it doesn't raise floors); and every
- * `uses:` pinned to a release. Gradle transitives are never bumped.
+ * `uses:` pinned to a release. Gradle transitives are never bumped. Node API
+ * types are capped at the lowest declared runtime major; unreadable runtime
+ * metadata permits only moves within the current type major.
  */
 export async function bumpCandidates(head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<BumpCandidates> {
   const state = await readScanState(head, env, gradle);
@@ -362,7 +365,9 @@ export async function bumpCandidates(head: Tree, env: GateEnvironment, gradle: G
       problems.get(versionKey(pkg))!.push(`the registry doesn't list ${pkg.name}'s versions completely`);
       continue;
     }
-    const newer = movesFrom(pkg, pkg.version, listed);
+    const allowed = pkg.ecosystem === "npm" && pkg.name === "@types/node"
+      ? await nodeVersionsFor(head, pkg, listed, problems.get(versionKey(pkg))!) : listed;
+    const newer = movesFrom(pkg, pkg.version, allowed);
     newerOf.set(versionKey(pkg), newer);
     const line = (version: string) => compatibleLine(config, pkg, version);
     const own = line(pkg.version);
@@ -427,6 +432,13 @@ export async function bumpCandidates(head: Tree, env: GateEnvironment, gradle: G
     gaps: [...state.snapshot.gaps, ...snapshots.flatMap((snapshot) => snapshot.gaps), ...(peerSnapshot?.gaps ?? []), ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
   };
+}
+
+async function nodeVersionsFor(head: Tree, pkg: Direct, listed: ReadonlyArray<string>, problems: string[]): Promise<ReadonlyArray<string>> {
+  const runtime = await nodeRuntime(head, pkg.declarations);
+  const allowed = nodeTypeVersions(pkg.version, listed, runtime);
+  if (runtime.major === undefined || allowed.length !== listed.length) problems.push(nodeTypeProblem(runtime));
+  return allowed;
 }
 
 async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry, catalog: VersionCatalog, seeds: ReadonlyArray<PackageVersion>, identity: IdentityCheck, now: Date) {
