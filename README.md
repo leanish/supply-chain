@@ -8,6 +8,11 @@ Dependency security and freshness for npm and Gradle repositories:
 
 Work in progress: the pieces land through pull requests. Licensed under Apache-2.0.
 
+- [Why this, and not just Dependabot, OSV-Scanner or Renovate](docs/why.md)
+- [Adopting the gate](packages/ci/README.md#adopting-the-gate), and everything it checks: [`packages/ci/README.md`](packages/ci/README.md)
+- [Security model](docs/security-model.md): what runs where, and which token it can reach
+- [Coverage gaps](docs/coverage-gaps.md)
+
 ## Development
 
 ```bash
