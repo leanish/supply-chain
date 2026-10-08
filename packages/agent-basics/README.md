@@ -12,8 +12,9 @@ What secure-it and bump-it need to run a coding agent, without leanish-developme
 - **Git and GitHub:** a workspace whose git metadata the agent can't write, publishing with lease checks
   (`working-copy/`), and a narrow GitHub client (`github/github-client.ts`).
 - **Isolation:** the agent's commands get no credentials but the read-only token they're handed, can't read the
-  sensitive home paths or the configured private ones, use the tool's commit identity, npm without lifecycle scripts and
-  with the repository's release age, and the `gh`/`git` guards first on their PATH (`isolation.ts`, `guard/`). The
+  sensitive home paths, configured private paths, or the resolved file-backed Codex login (including its symlink target),
+  use the tool's commit identity, npm without lifecycle scripts and with the repository's release age, and the `gh`/`git`
+  guards first on their PATH (`isolation.ts`, `guard/`). The
   guards are guard rails, not a boundary; the boundaries are the read-only token, the read-only git metadata and the
   credential scrub.
 - **Secrets:** `SecretStore`, with macOS Keychain as its one implementation for now (`secret-store.ts`).
