@@ -6,6 +6,7 @@ import { type Floor, FLOORS_PATH, overrideAt, parseFloors } from "../../ci/src/f
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 
+import { floorIdentity } from "./floor-removal.ts";
 import type { ChangePlan, PlannedMove } from "./plan.ts";
 
 export async function preservedFloors(plan: ChangePlan, base: Tree, head: Tree, gradle: { base?: GradleInventory; head?: GradleInventory }): Promise<string[]> {
@@ -15,6 +16,10 @@ export async function preservedFloors(plan: ChangePlan, base: Tree, head: Tree, 
   for (const floor of before) {
     const next = after.find((candidate) => floorKey(candidate) === floorKey(floor));
     const label = `${floor.purpose} floor ${floor.package} in ${floor.declaredIn}`;
+    if (next === undefined && plan.kind === "floor-removal" && floor.purpose === "security" && plan.floorRemoval?.floors.some((removed) => floorIdentity(removed) === floorIdentity(floor))) {
+      problems.push(...await removedDeclaration(floor, plan.floorRemoval!.floors, head, gradle));
+      continue;
+    }
     if (next === undefined) {
       problems.push(`${label} was removed or its selector changed`);
       continue;
@@ -26,6 +31,13 @@ export async function preservedFloors(plan: ChangePlan, base: Tree, head: Tree, 
       problems.push(`${label} or its declaration changed outside an explicit security-floor move`);
     }
   }
+  for (const removed of plan.floorRemoval?.floors ?? []) {
+    if (plan.kind !== "floor-removal" || removed.purpose !== "security" || !before.some((floor) => floorIdentity(floor) === floorIdentity(removed))) {
+      problems.push(`${removed.package}: removal must name a base security floor exactly`);
+    } else if (after.some((floor) => floorKey(floor) === floorKey(removed))) {
+      problems.push(`${removed.package}: planned floor record was not removed`);
+    }
+  }
   for (const floor of after.filter((candidate) => !before.some((old) => floorKey(old) === floorKey(candidate)))) {
     const moves = matchingMoves(plan, floor, true);
     if (floor.purpose !== "security" || moves.length === 0 || !floor.advisories.every((id) => moves.some((move) => move.advisories.includes(id)))) {
@@ -33,6 +45,47 @@ export async function preservedFloors(plan: ChangePlan, base: Tree, head: Tree, 
     }
   }
   return problems;
+}
+
+async function removedDeclaration(floor: Floor, removed: ReadonlyArray<Floor>, head: Tree, gradle: { base?: GradleInventory; head?: GradleInventory }): Promise<string[]> {
+  if (floor.ecosystem === "npm") {
+    const overrides = JSON.parse(await head.read(floor.declaredIn) ?? "{}").overrides as unknown;
+    return floor.overridePaths.filter((path) => overrideAt(overrides, path) !== undefined)
+      .map((path) => `${floor.package}: planned override ${path.join(" > ")} was not removed`);
+  }
+  const problems: string[] = [];
+  const configurations = (inventory: GradleInventory | undefined, location: string) => inventory?.builds
+    .flatMap((build) => build.configurations.map((config) => ({ location: gradleLocation(build.build, config.id), config })))
+    .find((candidate) => candidate.location === location)?.config;
+  for (const location of floor.locations) {
+    const before = configurations(gradle.base, location);
+    const after = configurations(gradle.head, location);
+    if (before === undefined || after === undefined) {
+      problems.push(`${floor.package}: removal needs both configuration inventories at ${location}`);
+      continue;
+    }
+    if (!before.declared.some((entry) => matchesFloor(entry, floor))) {
+      problems.push(`${floor.package}: no exact advisory floor declaration at ${location}`);
+    }
+    // Every other declaration here, including this package's parents and constraints, stays.
+    const expected = before.declared.filter((entry) => !removed.some((other) =>
+      other.ecosystem === "Maven" && other.locations.includes(location) && matchesFloor(entry, other)));
+    if (!isDeepStrictEqual(declarationSignatures(expected), declarationSignatures(after.declared))) {
+      problems.push(`${floor.package}: ${location} did not remove exactly the planned floor declarations`);
+    }
+  }
+  return problems;
+}
+
+type DeclaredDependency = GradleInventory["builds"][number]["configurations"][number]["declared"][number];
+
+function matchesFloor(dependency: DeclaredDependency, floor: Floor): boolean {
+  return `${dependency.group}:${dependency.name}` === floor.package && dependency.version === floor.version &&
+    floor.advisories.every((id) => dependency.reason?.toUpperCase().includes(id.toUpperCase()));
+}
+
+function declarationSignatures(entries: ReadonlyArray<DeclaredDependency>): string[] {
+  return entries.map((entry) => JSON.stringify(entry)).sort();
 }
 
 async function floorsOf(tree: Tree): Promise<Floor[]> {

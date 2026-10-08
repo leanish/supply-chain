@@ -1,6 +1,7 @@
 /**
  * Security plans decided without a model: one batch of non-major packages,
- * each package needing a major apart, or all malware together. Every package's
+ * each package needing a major apart, all malware together, or an exact
+ * security-floor removal proved without locks. Every package's
  * failing copies stay together; a blocked copy leaves that package out.
  *
  *   - **how**, per version and location: npm — a direct dependency changes its
@@ -12,7 +13,8 @@
  *     (`gradle-floor`). Actions — the `uses:` is pinned to the tag's commit
  *     (`action-pin`).
  *
- * The agent applies the plan; the tool then verifies it landed (verify.ts).
+ * The agent applies version moves and Gradle floor removals; the tool writes
+ * proved npm floor removals and verifies every edit (verify.ts).
  */
 import { dirname } from "node:path";
 
@@ -22,6 +24,8 @@ import { type SecurityFix, severityRank } from "../../ci/src/candidates.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
 import type { Ecosystem } from "../../ci/src/versions.ts";
+
+import type { FloorRemoval } from "./floor-removal.ts";
 
 export type Mechanism = "npm-direct" | "npm-lock" | "npm-override" | "gradle-declared" | "gradle-floor" | "action-pin";
 
@@ -43,7 +47,7 @@ export interface PlannedMove {
   readonly declaredAs: string | undefined;
 }
 
-export type PlanKind = "routine" | "major" | "malware";
+export type PlanKind = "routine" | "major" | "malware" | "floor-removal";
 
 export interface OmittedMoves {
   readonly moves: ReadonlyArray<PlannedMove>;
@@ -51,12 +55,13 @@ export interface OmittedMoves {
 }
 
 export interface ChangePlan {
+  readonly floorRemoval?: FloorRemoval;
   /** Absent in plans published before batching; those PRs retain per-package reviews. */
   readonly kind?: PlanKind;
-  /** For the branch name: `security`, `<package>-major`, or `malware`. */
+  /** For the branch name: `security`, `<package>-major`, `malware`, or `floor-removal`. */
   readonly topic: string;
   readonly malware: boolean;
-  /** `ecosystem|name` of every package the plan moves. */
+  /** `ecosystem|name` of every package the plan moves or removes a floor for. */
   readonly packages: ReadonlyArray<string>;
   readonly moves: ReadonlyArray<PlannedMove>;
   readonly severity: string | undefined;

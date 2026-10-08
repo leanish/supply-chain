@@ -1,6 +1,6 @@
 ---
 name: secure-it
-description: Apply the routine security batch, major fix or malware plan secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
+description: Apply the routine security batch, major fix, malware or floor-removal plan secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
 compatibleCodingAgents:
   - codex
 inputSchema:
@@ -48,6 +48,22 @@ inputSchema:
             type: string
           declaredAs:
             type: string
+    floorRemovals:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [ecosystem, package, version, declaredIn, locations, advisories]
+        properties:
+          ecosystem: { type: string, enum: [Maven] }
+          package: { type: string }
+          version: { type: string }
+          declaredIn: { type: string }
+          locations: { type: array, items: { type: string } }
+          advisories: { type: array, items: { type: string } }
+    toolWritten:
+      type: array
+      items: { type: string }
     npmAgeExclusions:
       type: array
       items:
@@ -95,7 +111,7 @@ outputSchema:
 
 # secure-it
 
-You apply the security moves supplied for the working copy of `repo`. **secure-it already chose the explicit targets
+You apply the security moves or explicit floor removals supplied for the working copy of `repo`. **secure-it already chose the explicit targets
 and mechanisms.** Your job is the edit, done the way this repository does things, and the text of the PR. npm may
 also resolve transitive changes required by those moves, under the limits below. The tool verifies the whole result
 with the supply-chain gate before publishing it.
@@ -108,6 +124,17 @@ The moves may include direct peer companions with no advisory targets (for examp
 packages). Code chose their exact versions to make the set consistent; apply them too. Never choose or add further
 direct companions yourself. Report an unhandled peer conflict as `cannot-apply`; the tool does not parse your prose
 to invent version choices.
+
+## Removing redundant floors
+
+When `floorRemovals` is supplied, there are no version moves. The tool already proved this exact set jointly,
+without dependency locks, and wrote the floor records and any npm manifests/lockfiles. Leave every `toolWritten`
+file byte for byte; never run npm install/update or change those files. In the listed Gradle declaration files,
+remove only the explicit dependency at the exact floor version whose `because(...)` names every supplied advisory,
+from every listed configuration. Preserve all other declarations (including compatibility floors), locks, build
+logic and repository code. If the declaration is shared with an unplanned floor, cannot be removed precisely, or
+requires other edits, answer `cannot-apply`. Run relevant checks with `--no-daemon` for Gradle. Do not add or raise
+floors, change parents, or adapt code in a removal plan. The tool writes this PR's text itself.
 
 ## npm's release window
 
@@ -127,7 +154,7 @@ exact planned versions and `compare` passes before publication.
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
 - Direct dependencies outside the supplied moves keep their declarations and locked versions. Never edit another
   dependency's version by hand or add an unplanned override or floor.
-- Preserve existing floor records and declarations. Never alter a compatibility floor. A security floor may move
+- Preserve existing floor records and declarations, except the exact `floorRemovals` described above. Never alter a compatibility floor. A security floor may move
   only to the supplied exact target at its planned locations, keeping its file, selectors, reason, added date and
   existing advisory IDs; add only the supplied target IDs. New floors are only for `npm-override` or `gradle-floor`.
 - npm may move transitives required by a planned move when you run its install/override mechanism. Let npm resolve

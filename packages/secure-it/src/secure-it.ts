@@ -1,12 +1,12 @@
-/** Routine security fixes together, each major apart, or all malware first; every publication verifies. */
-import { writeFile } from "node:fs/promises";
+/** Security fixes and a separate proved floor-removal unit; malware first, every publication verified. */
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
+import type { Floor } from "../../ci/src/floors.ts";
 import { type SecurityCandidates, type SecurityFix, securityCandidates } from "../../ci/src/candidates.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
@@ -16,6 +16,7 @@ import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
 import { failingCheckNames } from "../../remediation/src/ci-state.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
+import { writeLocalFile } from "../../remediation/src/local-files.ts";
 import { changedSince } from "../../remediation/src/git-copies.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
@@ -27,6 +28,8 @@ import { revertToBase } from "../../remediation/src/reconcile.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate, recoverPublication } from "../../remediation/src/publication.ts";
 import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
+import { probeOnBase } from "./floor-probe.ts";
+import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
 import { type ChangePlan, coupledWork, packageKey, planFor, type SecurityUnit } from "./plan.ts";
@@ -46,6 +49,7 @@ interface SkillAnswer {
 
 /** What secure-it reaches outside its own logic; tests replace them. */
 export interface SecureItDeps {
+  readonly floorProbe: (context: ToolRunContext, base: Tree, floors: ReadonlyArray<Floor>, env: GateEnvironment) => Promise<RemovalProbe>;
   readonly gate: (context: ToolRunContext) => Promise<GateEnvironment>;
   readonly gradle: (context: ToolRunContext) => GradleInventories;
   readonly trees: { readonly commit: (workingCopy: WorkingCopy, sha: string) => Promise<Tree>; readonly working: (workingCopy: WorkingCopy) => Tree };
@@ -64,6 +68,7 @@ export interface SecureItDeps {
 
 export function defaultDeps(): SecureItDeps {
   return {
+    floorProbe: probeOnBase,
     gate: async (context) => {
       // Outside everything sandboxed commands can write, and checked right before each run.
       const writable = [context.config.dirs.cache, context.workingCopy.path, tmpdir(), "/tmp", ...(context.isolation.buildCacheRoot === undefined ? [] : [context.isolation.buildCacheRoot])];
@@ -78,7 +83,7 @@ export function defaultDeps(): SecureItDeps {
     staleScan: (context) => staleScanStatus(context.repo.repo, context.base, context.readToken, context.now, context.config.staleScanHours ?? 36),
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
     journal: (context) => new FileJournal(context.config.dirs.state),
-    writeFile: (workingCopy, path, content) => writeFile(join(workingCopy.path, path), content),
+    writeFile: (workingCopy, path, content) => writeLocalFile(workingCopy.path, path, content),
     revert: (workingCopy, baseSha) => revertToBase(workingCopy, baseSha),
   };
 }
@@ -122,6 +127,12 @@ function skillInput(context: ToolRunContext, plan: ChangePlan, npmAgeExclusions:
       ...(move.commitSha === undefined ? {} : { commitSha: move.commitSha }),
       ...(move.declaredAs === undefined ? {} : { declaredAs: move.declaredAs }),
     })),
+    ...(plan.floorRemoval === undefined ? {} : {
+      floorRemovals: plan.floorRemoval.floors.filter((floor) => floor.ecosystem === "Maven").map((floor) => ({
+        ecosystem: floor.ecosystem, package: floor.package, version: floor.version, declaredIn: floor.declaredIn, locations: floor.locations, advisories: floor.advisories,
+      })),
+      toolWritten: plan.floorRemoval.files.map((file) => file.path),
+    }),
     floorsFile: FLOORS_FILE,
     npmAgeExclusions: [...npmAgeExclusions],
     ...(extra.failingChecks === undefined ? {} : { failingChecks: extra.failingChecks }),
@@ -176,7 +187,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
   const selection = await coupledWork(found.fixes, found.npmPeers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
-  if (selection.units.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
+
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps) };
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
   const results: Readonly<Record<string, unknown>>[] = [];
@@ -189,7 +200,54 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
       results.push({ topic: unit.topic, outcome: "failed", detail });
     }
   }
+  if (!found.fixes.some((fix) => fix.malicious) && (await floorsOf(tree)).some((floor) => floor.purpose === "security")) {
+    try {
+      const removal = await computeRemoval(execution, base);
+      results.push(removal.plan === undefined
+        ? { topic: "floor-removal", outcome: "nothing-to-remove", notes: removal.notes }
+        : await runRemoval(execution, removal, base, own));
+    } catch (err) {
+      results.push({ topic: "floor-removal", outcome: "failed", detail: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  if (results.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
   return { ...report, ...(results.length === 1 ? results[0]! : { outcome: "completed" }), waiting, blocked: selection.blocked, units: results };
+}
+
+async function computeRemoval(execution: Execution, base: PlanBase): Promise<ComputedRemoval> {
+  return selectRemovals(await floorsOf(base.tree), (floors) => execution.deps.floorProbe(execution.context, base.tree, floors, execution.env),
+    (text) => createHash("sha256").update(text).digest("hex"));
+}
+
+async function applyRemoval(execution: Execution, removal: ComputedRemoval): Promise<Content> {
+  const plan = removal.plan!;
+  for (const [path, content] of removal.files) await execution.deps.writeFile(execution.context.workingCopy, path, content);
+  const content = { title: "removing redundant security floors", body: planSection(plan), commitMessage: "removing redundant security floors" };
+  if (!plan.floorRemoval!.floors.some((floor) => floor.ecosystem === "Maven")) return content;
+  const answer = await execution.context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
+    entrypoint: "secure-it", input: skillInput(execution.context, plan, [], "apply"), effort: execution.context.config.agent.effort,
+  });
+  if (answer.outcome !== "applied") throw new Error(`the agent couldn't remove the planned Gradle declarations: ${answer.summary}`);
+  return content;
+}
+
+async function runRemoval(execution: Execution, removal: ComputedRemoval, base: PlanBase, own: ReadonlyArray<GitHubPullRequest>): Promise<Readonly<Record<string, unknown>>> {
+  const plan = removal.plan!;
+  const owned = await recognisedPlans(execution.context, execution.publication, own, plan);
+  const already = owned.find((pr) => stateOf(pr.body)?.head === pr.headSha && planDigest(planOf(pr.body)!) === planDigest(plan));
+  const report = { topic: plan.topic, packages: plan.packages, notes: removal.notes };
+  if (already !== undefined) return { ...report, outcome: "already-open", pullRequest: already.url };
+  const reusable = owned[0];
+  const prepared = await preparePlan(execution.context, execution.deps, plan, reusable, own, base.tree.id);
+  const content = await applyRemoval(execution, removal);
+  const problems = await verifyEdit(execution.context, execution.deps, plan, execution.env, execution.inventories, base.tree, base.gradle);
+  if (problems.length > 0) return { ...report, outcome: "verification-failed", problems };
+  if (reusable !== undefined) {
+    const { pr } = await publishUpdate(execution.publication, prepared, reusable.number, content, 0);
+    return { ...report, outcome: "updated", pullRequest: pr.url };
+  }
+  const pr = await publishNew(execution.publication, prepared, content);
+  return { ...report, outcome: pr === undefined ? "nothing-changed" : "published", ...(pr === undefined ? {} : { pullRequest: pr.url }) };
 }
 
 async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
@@ -341,6 +399,23 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const baseGradle = await inventories.ofCommit(base);
       const found = await deps.candidates(base, env, { head: baseGradle });
       if (found.incomplete.length > 0) throw new Error(`the new base's inventory is incomplete: ${found.incomplete.join("; ")}`);
+      if (previous.kind === "floor-removal") {
+        if (found.fixes.some((fix) => fix.malicious)) throw new Error("malware on base must be fixed before removing floors");
+        const removal = await computeRemoval(execution, { tree: base, gradle: baseGradle });
+        notes.push({ number: pr.number, notes: removal.notes });
+        if (removal.plan === undefined) {
+          if (removal.notes.length > 0) throw new Error(`floor-removal recomputation is blocked; keeping the PR: ${removal.notes.join("; ")}`);
+          await closeAndDelete(publication, pr.number, pr.headSha, "The default branch no longer has removable security floors.");
+          return "retired";
+        }
+        // Recompute unlocked on every changed base; dependency conflicts are resolved by reverting the old plan.
+        await deps.revert(context.workingCopy, baseSha);
+        const content = await applyRemoval(execution, removal);
+        const problems = await verifyEdit(context, deps, removal.plan, env, inventories, base, baseGradle);
+        if (problems.length > 0) throw new Error(`floor removal after merging base: ${problems.join("; ")}`);
+        await publishUpdate(publication, merge.prepared, pr.number, content);
+        return "rebased";
+      }
       const { unit, blocked } = await reviewUnit(previous, found.fixes, found.npmPeers);
       if (blocked.length > 0) notes.push({ number: pr.number, blocked });
       if (unit === undefined) {
@@ -386,6 +461,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
     },
     async adapt(pr, prepared, _context, attempt) {
       const plan = planFrom(pr);
+      if (plan.kind === "floor-removal") {
+        context.logger.warn("secure-it: floor-removal CI failure cannot be adapted", { number: pr.number, detail: "the proved removal cannot legitimately be edited" });
+        return false;
+      }
       const checks = await context.github.headChecks({ repo: context.repo.repo, sha: pr.headSha });
       const failingChecks = failingCheckNames(checks);
       const base = await deps.trees.commit(context.workingCopy, prepared.baseSha);

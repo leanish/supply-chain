@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { ConsoleLogger } from "../../agent-basics/src/logger/console-logger.ts";
@@ -6,6 +7,8 @@ import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import { InMemoryWorkspace } from "../../agent-basics/src/working-copy/in-memory-workspace.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { SecurityFix } from "../../ci/src/candidates.ts";
+import { FLOORS_PATH, parseFloors } from "../../ci/src/floors.ts";
+import { selectRemovals, withoutFloorRecords } from "../src/floor-removal.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import type { ToolRunContext } from "../../remediation/src/command.ts";
 import { parseToolConfig } from "../../remediation/src/config.ts";
@@ -68,7 +71,7 @@ interface Harness {
   readonly journal: MemoryJournal;
 }
 
-function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; answer?: unknown; problems?: string[]; baseSha?: string } = {}): Harness {
+function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; answer?: unknown; problems?: string[]; baseSha?: string; files?: Record<string, string> } = {}): Harness {
   const github = new FakeGitHub(...(options.prs ?? []));
   const workspace = new InMemoryWorkspace();
   const workingCopy: WorkingCopy = { projectId: REPO, path: "/synthetic/leanish/widget", branch: "main", headSha: options.baseSha ?? BASE_SHA, gitDir: "/synthetic/.git" };
@@ -95,9 +98,10 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     }) as ToolRunContext["agent"],
   };
   const deps: SecureItDeps = {
+    floorProbe: async () => ({ files: new Map(), findings: [], problems: [] }),
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
     gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => undefined }),
-    trees: { commit: async (_wc, sha) => tree(sha), working: () => tree("worktree") },
+    trees: { commit: async (_wc, sha) => tree(sha, options.files), working: () => tree("worktree", options.files) },
     npm: async () => ({ code: 0, stdout: "11.20.0\n", stderr: "" }),
     candidates: async () => ({ fixes: options.fixes ?? [vite()], incomplete: [], gaps: [], osvScannerVersion: "2.6.0" }),
     verify: async () => options.problems ?? [],
@@ -524,5 +528,118 @@ describe("secure-it review", () => {
     failing.github.checks = RED;
     expect(await secureIt(failing.deps).review(failing.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "error", detail: expect.stringContaining("doesn't verify") }] });
     expect(stateOf(failing.github.prs.get(7)!.body)?.adaptations).toBe(1);
+  });
+});
+
+const FLOOR_RAW = { ecosystem: "npm", package: "left-pad", version: "1.0.0", declaredIn: "package.json", selector: ["left-pad"], purpose: "security", advisories: ["CVE-2026-12345"], reason: "fixed", added: "2026-10-01" };
+function removalFixture(ecosystem = "npm") {
+  const raw = ecosystem === "npm" ? FLOOR_RAW : { ...FLOOR_RAW, ecosystem: "Maven", package: "g:lib", version: "1.0", declaredIn: "build.gradle.kts", selector: [":runtimeClasspath"] };
+  const record = JSON.stringify({ floors: [raw] });
+  const selected = parseFloors(JSON.parse(record));
+  const files = new Map([[FLOORS_PATH, withoutFloorRecords(record, selected)]]);
+  if (ecosystem === "npm") {
+    files.set("package.json", "{}");
+    files.set("package-lock.json", LOCK);
+  }
+  const base = { "package-lock.json": LOCK, [FLOORS_PATH]: record, [raw.declaredIn]: ecosystem === "npm" ? '{"overrides":{"left-pad":"1.0.0"}}' : "dependencies {}" };
+  const probe = async () => ({ files, findings: [], problems: [] });
+  const computed = () => selectRemovals(selected, probe, (text) => createHash("sha256").update(text).digest("hex"));
+  return { base, files, probe, computed };
+}
+
+async function removalPr(f: ReturnType<typeof removalFixture>, overrides: Partial<GitHubPullRequest> = {}): Promise<GitHubPullRequest> {
+  const { plan } = await f.computed();
+  return ownPr({ headRef: "secure-it/2026-10-05-floor-removal", labels: [RULES.label],
+    body: withMarker(RULES, planSection(plan!), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }), ...overrides });
+}
+
+describe("secure-it floor-removal units", () => {
+  it("opens an independent tool-written npm removal PR when there are no findings, without a model", async () => {
+    const f = removalFixture();
+    const h = harness({ fixes: [], files: f.base });
+    let proofs = 0;
+    const result = await secureIt({ ...h.deps, floorProbe: async () => { proofs++; return f.probe(); } }).run(h.context);
+    expect(result).toMatchObject({ outcome: "published", topic: "floor-removal", units: [{ outcome: "published" }] });
+    expect(proofs).toBe(2);
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toHaveLength(1);
+    expect(h.written).toEqual(expect.arrayContaining([...f.files].map(([path, content]) => `${path}=${content}`)));
+    const pr = [...h.github.prs.values()][0]!;
+    expect(pr.headRef).toBe("secure-it/2026-10-07-floor-removal");
+    expect(planOf(pr.body)?.kind).toBe("floor-removal");
+  });
+  it("runs alongside the ordinary security batch and cannot be blocked by its open PR", async () => {
+    const f = removalFixture();
+    const h = harness({ files: f.base });
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).run(h.context)).toMatchObject({ outcome: "completed", units: [{ topic: "security", outcome: "published" }, { topic: "floor-removal", outcome: "published" }] });
+    expect(h.agentCalls).toHaveLength(1);
+    expect(h.workspace.publications).toHaveLength(2);
+  });
+  it("keeps malware priority and never probes removals while any malicious package remains", async () => {
+    const f = removalFixture();
+    const h = harness({ files: f.base, fixes: [vite({ malicious: true, to: undefined, problem: "no clean version" })] });
+    const floorProbe = async () => { throw new Error("must not probe floors"); };
+    expect(await secureIt({ ...h.deps, floorProbe }).run(h.context)).toMatchObject({ outcome: "nothing-to-fix", units: [] });
+    expect(h.workspace.publications).toEqual([]);
+  });
+  it("suppresses a recognised identical removal and updates a changed plan by reverting", async () => {
+    const f = removalFixture();
+    const pr = await removalPr(f);
+    const h = harness({ fixes: [], files: f.base, prs: [pr] });
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).run(h.context)).toMatchObject({ outcome: "already-open" });
+    expect(h.workspace.publications).toEqual([]);
+    const changed = harness({ fixes: [], files: f.base, prs: [pr] });
+    const newFiles = new Map(f.files);
+    newFiles.set("package-lock.json", "new exact bytes");
+    expect(await secureIt({ ...changed.deps, floorProbe: async () => ({ files: newFiles, findings: [], problems: [] }) }).run(changed.context)).toMatchObject({ outcome: "updated" });
+    expect(changed.reverted).toEqual([BASE_SHA]);
+    expect(changed.agentCalls).toEqual([]);
+  });
+  it("leaves a human-pushed removal PR alone and opens a separate suffixed branch", async () => {
+    const f = removalFixture();
+    const pr = await removalPr(f, { headRef: "secure-it/2026-10-07-floor-removal", headSha: PUSHED_SHA });
+    const h = harness({ fixes: [], files: f.base, prs: [pr] });
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.workspace.publications[0]?.prepared.branch).toBe("secure-it/2026-10-07-floor-removal-2");
+    expect(h.github.prs.get(pr.number)?.headSha).toBe(PUSHED_SHA);
+  });
+  it("uses the agent only for the selected Gradle declarations and never publishes a failed verification", async () => {
+    const f = removalFixture("Maven");
+    const h = harness({ fixes: [], files: f.base });
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.agentCalls).toMatchObject([{ input: { moves: [], floorRemovals: [{ package: "g:lib", version: "1.0", declaredIn: "build.gradle.kts", locations: [":runtimeClasspath"] }], toolWritten: [FLOORS_PATH] } }]);
+    const failed = harness({ fixes: [], files: f.base, problems: ["floor declaration remains"] });
+    expect(await secureIt({ ...failed.deps, floorProbe: f.probe }).run(failed.context)).toMatchObject({ outcome: "verification-failed", problems: ["floor declaration remains"] });
+    expect(failed.workspace.publications).toEqual([]);
+    expect(failed.agentCalls).toHaveLength(1);
+  });
+  it("reports unavailable proofs instead of publishing or losing an existing PR during review", async () => {
+    const f = removalFixture();
+    const blocked = async () => { throw new Error("unlocked resolution unavailable"); };
+    const h = harness({ fixes: [], files: f.base });
+    expect(await secureIt({ ...h.deps, floorProbe: blocked }).run(h.context)).toMatchObject({ outcome: "nothing-to-remove", notes: [expect.stringContaining("unlocked resolution unavailable")] });
+    const pr = await removalPr(f);
+    const moved = harness({ fixes: [], files: f.base, prs: [pr], baseSha: "f".repeat(40) });
+    expect(await secureIt({ ...moved.deps, floorProbe: blocked }).review(moved.context)).toMatchObject({ reviewed: [{ outcome: "error", detail: expect.stringContaining("keeping the PR") }] });
+    expect(moved.github.prs.get(pr.number)?.state).toBe("open");
+    expect(moved.workspace.publications).toEqual([]);
+  });
+  it("recomputes jointly and republishes on a new base; retires only when the floors already disappeared", async () => {
+    const f = removalFixture();
+    const pr = await removalPr(f);
+    const h = harness({ fixes: [], files: f.base, prs: [pr], baseSha: "f".repeat(40) });
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).review(h.context)).toMatchObject({ reviewed: [{ outcome: "rebased" }] });
+    expect(h.reverted).toEqual(["f".repeat(40)]);
+    expect(h.agentCalls).toEqual([]);
+    const retired = harness({ fixes: [], prs: [pr], files: { ...f.base, [FLOORS_PATH]: '{"floors":[]}' }, baseSha: "f".repeat(40) });
+    expect(await secureIt({ ...retired.deps, floorProbe: f.probe }).review(retired.context)).toMatchObject({ reviewed: [{ outcome: "retired" }] });
+  });
+  it("does not let failed CI adapt the proof or invoke an agent", async () => {
+    const f = removalFixture();
+    const h = harness({ fixes: [], files: f.base, prs: [await removalPr(f)] });
+    h.github.checks = RED;
+    expect(await secureIt({ ...h.deps, floorProbe: f.probe }).review(h.context)).toMatchObject({ reviewed: [{ outcome: "adaptation-unchanged" }] });
+    expect(h.agentCalls).toEqual([]);
+    expect(h.workspace.publications).toEqual([]);
   });
 });

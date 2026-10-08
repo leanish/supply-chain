@@ -1,0 +1,181 @@
+// Removes only the selected security-floor declarations before the inventory script inspects them.
+// The tool writes JSON metadata separately and checks its bytes again after the build.
+
+import groovy.json.JsonSlurper
+import org.gradle.api.artifacts.ExternalModuleDependency
+
+def metadataPath = System.getProperty("supplyChain.removeFloors.file")
+if (metadataPath == null || metadataPath.isEmpty()) {
+    throw new GradleException("secure-it Gradle floor removal: pass -DsupplyChain.removeFloors.file=<file>")
+}
+def metadataFile = new File(metadataPath)
+if (!metadataFile.isFile()) {
+    throw new GradleException("secure-it Gradle floor removal: metadata file does not exist")
+}
+def metadata = new JsonSlurper().parse(metadataFile)
+if (!(metadata instanceof Map) || !(metadata.repositoryRoot instanceof String) || !(metadata.floors instanceof List)) {
+    throw new GradleException("secure-it Gradle floor removal: malformed metadata file")
+}
+def repositoryRoot = new File(metadata.repositoryRoot).canonicalFile.toPath()
+def removalsByLocation = [:]
+metadata.floors.each { floor ->
+    if (!(floor instanceof Map) || !(floor["package"] instanceof String) || !(floor.version instanceof String) ||
+        !(floor.advisories instanceof List) || floor.advisories.isEmpty() || !(floor.locations instanceof List) || floor.locations.isEmpty()) {
+        throw new GradleException("secure-it Gradle floor removal: malformed floor metadata")
+    }
+    floor.locations.each { location ->
+        if (!(location instanceof String) || location.isEmpty()) {
+            throw new GradleException("secure-it Gradle floor removal: malformed configuration location")
+        }
+        removalsByLocation.putIfAbsent(location, [])
+        removalsByLocation[location] << floor
+    }
+}
+def settingsLocations = [] as Set
+
+def buildLabel = { File rootDir ->
+    def relative = repositoryRoot.relativize(rootDir.canonicalFile.toPath()).toString()
+    relative.isEmpty() ? "." : relative.replace(File.separatorChar, '/' as char)
+}
+def location = { String build, String configuration -> build == "." ? configuration : "${build}/${configuration}" }
+def projectPrefix = { String projectPath -> projectPath == ":" ? ":" : "${projectPath}:" }
+
+def declaredVersion = { ExternalModuleDependency dependency ->
+    def constraint = dependency.versionConstraint
+    dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null
+}
+def matches = { dependency, floor ->
+    if (!(dependency instanceof ExternalModuleDependency)) return false
+    def coordinates = floor["package"].split(":", 2)
+    if (coordinates.length != 2 || coordinates.any { it.isEmpty() }) {
+        throw new GradleException("secure-it Gradle floor removal: package must be group:name")
+    }
+    if (dependency.group != coordinates[0] || dependency.name != coordinates[1] || declaredVersion(dependency) != floor.version) return false
+    def reason = dependency.reason ?: ""
+    floor.advisories.every { advisory -> reason.toUpperCase(Locale.ROOT).contains(advisory.toUpperCase(Locale.ROOT)) }
+}
+def matchesAny = { dependency, floors -> floors.any { floor -> matches(dependency, floor) } }
+def appliedConfigurations = Collections.newSetFromMap(new IdentityHashMap())
+def configuredConfigurations = Collections.newSetFromMap(new IdentityHashMap())
+def unlock = { configuration ->
+    // A classpath may already have resolved during plugin application; its strategy is then immutable.
+    if (configuration.state.toString() == "UNRESOLVED") {
+        configuration.resolutionStrategy.deactivateDependencyLocking()
+    }
+}
+def removeFloors = { configuration, String configLocation ->
+    def floors = removalsByLocation.containsKey(configLocation) ? removalsByLocation[configLocation] : []
+    if (floors.isEmpty()) return
+    if (appliedConfigurations.contains(configuration)) {
+        if (configuration.allDependencies.any { dependency -> matchesAny(dependency, floors) }) {
+            throw new GradleException("secure-it Gradle floor removal: selected floor remains in ${configLocation}")
+        }
+        return
+    }
+
+    def missing = floors.findAll { floor -> !configuration.allDependencies.any { dependency -> matches(dependency, floor) } }
+    if (!missing.isEmpty()) {
+        def names = missing.collect { "${it['package']}:${it.version}" }.unique().join(", ")
+        throw new GradleException("secure-it Gradle floor removal: ${configLocation} does not declare selected floor(s) ${names}")
+    }
+    if (configuration.state.toString() != "UNRESOLVED") {
+        throw new GradleException("secure-it Gradle floor removal: ${configLocation} was already resolved before its selected floor could be removed")
+    }
+
+    // allDependencies is read-only. Copy the selected resolvable configuration, which also copies
+    // inherited constraints, excludes, attributes, artifacts, and resolution rules. Reparent only
+    // this configuration to that filtered copy, leaving shared parent configurations untouched.
+    def unforced = configuration.copyRecursive { dependency -> !matchesAny(dependency, floors) }
+    unforced.resolutionStrategy.deactivateDependencyLocking()
+    configuration.setExtendsFrom([unforced])
+    configuration.dependencies.clear()
+    configuration.dependencyConstraints.clear()
+
+    def remains = configuration.allDependencies.findAll { dependency -> matchesAny(dependency, floors) }
+    if (!remains.isEmpty()) {
+        throw new GradleException("secure-it Gradle floor removal: could not remove selected floor(s) from ${configLocation}")
+    }
+    appliedConfigurations.add(configuration)
+}
+
+def configureConfiguration = { configuration, String configLocation ->
+    if (!configuredConfigurations.add(configuration)) return
+    unlock(configuration)
+    configuration.incoming.beforeResolve {
+        unlock(configuration)
+        removeFloors(configuration, configLocation)
+    }
+    configuration.withDependencies {
+        unlock(configuration)
+    }
+}
+
+gradle.beforeSettings { settings ->
+    def build = buildLabel(settings.rootDir)
+    settings.buildscript.configurations.configureEach { configuration ->
+        configureConfiguration(configuration, location(build, "settings.${configuration.name}"))
+    }
+}
+
+settingsEvaluated { settings ->
+    def build = buildLabel(settings.rootDir)
+    def classpath = settings.buildscript.configurations.findByName("classpath")
+    def classpathLocation = location(build, "settings.classpath")
+    if (removalsByLocation.containsKey(classpathLocation)) {
+        if (classpath == null || !classpath.canBeResolved) {
+            throw new GradleException("secure-it Gradle floor removal: selected configuration ${classpathLocation} is not resolvable")
+        }
+        configureConfiguration(classpath, classpathLocation)
+        removeFloors(classpath, classpathLocation)
+    }
+    if (classpath != null) settingsLocations << classpathLocation
+}
+
+gradle.beforeProject { project ->
+    def build = buildLabel(project.rootProject.projectDir)
+    def prefix = projectPrefix(project.path)
+    project.configurations.configureEach { configuration ->
+        configureConfiguration(configuration, location(build, "${prefix}${configuration.name}"))
+    }
+    project.buildscript.configurations.configureEach { configuration ->
+        configureConfiguration(configuration, location(build, "${prefix}buildscript.${configuration.name}"))
+    }
+}
+
+gradle.projectsEvaluated { evaluated ->
+    def build = buildLabel(evaluated.rootProject.projectDir)
+    def seenLocations = new LinkedHashSet(settingsLocations)
+    evaluated.rootProject.allprojects.each { project ->
+        def prefix = projectPrefix(project.path)
+        project.buildscript.configurations.each { configuration ->
+            def configLocation = location(build, "${prefix}buildscript.${configuration.name}")
+            unlock(configuration)
+            seenLocations << configLocation
+            if (removalsByLocation.containsKey(configLocation)) {
+                if (!configuration.canBeResolved) {
+                    throw new GradleException("secure-it Gradle floor removal: selected configuration ${configLocation} is not resolvable")
+                }
+                removeFloors(configuration, configLocation)
+            }
+        }
+        project.configurations.each { configuration ->
+            def configLocation = location(build, "${prefix}${configuration.name}")
+            unlock(configuration)
+            seenLocations << configLocation
+            if (removalsByLocation.containsKey(configLocation)) {
+                if (!configuration.canBeResolved) {
+                    throw new GradleException("secure-it Gradle floor removal: selected configuration ${configLocation} is not resolvable")
+                }
+                removeFloors(configuration, configLocation)
+            }
+        }
+    }
+
+    def expectedHere = removalsByLocation.keySet().findAll { configLocation ->
+        build == "." ? configLocation.startsWith(":") || configLocation.startsWith("settings.") : configLocation.startsWith("${build}/")
+    }
+    def missing = expectedHere.findAll { !seenLocations.contains(it) }
+    if (!missing.isEmpty()) {
+        throw new GradleException("secure-it Gradle floor removal: selected configuration(s) are missing from ${build}: ${missing.sort().join(", ")}")
+    }
+}

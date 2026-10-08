@@ -51,7 +51,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    PR's target; that PR doesn't constrain resolution. A failed comparison prevents publishing that edit rather than silently
    choosing a coupled target. The PR description lists required transitive changes too.
 7. **Verifies before publishing** (`verify.ts`):
-   - existing floor records and declarations are preserved before comparison: compatibility floors never change; security-floor updates match exact planned moves and retain their scope and history; only planned security floors may be added;
+   - existing floor records and declarations are preserved before comparison: compatibility floors never change; security-floor updates match exact planned moves and retain their scope and history; only planned security floors may be added or removed in an explicit floor-removal plan;
    - the gate's own policy (its config, its exceptions, workflows and actions outside planned pins) is untouched, major or not;
    - `compare` against the base passes;
    - every move landed at exactly `to` at every planned location (Gradle: declared at exactly `to`);
@@ -73,6 +73,42 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    move table and hidden plan for later runs. Multi-unit reports use `units`; a single unit keeps its outcome at the
    top level too.
 
+## Removing redundant security floors
+
+A run also considers a separate **`floor-removal`** unit, after the security-fix units, unless malware remains on
+base. Its draft PR uses `secure-it/<date>-floor-removal`. It never removes compatibility floors or mixes floor
+removal with version fixes, and an open fix PR does not prevent this unit from running.
+
+Each security floor first qualifies alone. The tool then resolves the whole candidate removal set **together,
+without dependency locks**, and checks that every advisory recorded by every removed floor stays absent from all
+resolved copies of that package. A failing joint result drops one implicated floor (or the last floor in deterministic
+order for a resolution-wide error) and resolves the remainder again. Retained floors and their reasons appear in the
+run report and the PR's plan notes. Incomplete inventories or advisory coverage cannot prove a removal.
+
+- **npm:** an exported scratch copy loses the selected override versions and both adjacent lock formats
+  (`package-lock.json` and `npm-shrinkwrap.json`). Sandboxed `npm install --package-lock-only --ignore-scripts`
+  resolves under the configured release-age window and own-scope exclusions. Locked young base versions receive no
+  special exemption in this unlocked proof. The tool writes the successful joint result's exact manifest and
+  lockfile bytes; npm-only removal uses no agent.
+- **Gradle:** a trusted init script removes only the selected exact advisory-bearing declarations from the selected
+  configurations and disables dependency locking. Shared parent configurations stay intact. The inventory runs
+  sandboxed with `--no-daemon` and configuration caching disabled. A declaration already used in resolution cannot
+  be safely removed by this probe, so that floor is retained with a reason. After proof, the agent removes only the
+  named declarations from the real build files; it cannot edit the tool-written floor/npm files or adapt code.
+
+Before publication, verification requires exactly the planned records and declarations to disappear, preserves
+all others and repository policy, and checks the recorded npm hashes. Unrelated direct versions and declarations
+stay at base: if fresh npm resolution updates a direct parent, this unit fails verification rather than including
+an unplanned parent bump. `compare` judges every induced version, and its head findings must still contain none of
+the removed floors' advisories. No removal is published on a failed proof or verification.
+
+Review recomputes the unlocked proof on a moved base and reconciles by reverting the old plan before applying the
+new one. An unavailable or unsafe proof retains the PR and reports why; no floors remaining on base retires it.
+Failed CI is reported without agent adaptation: the exact proved edit cannot be changed legitimately. The shared
+review attempt budget still applies. An unchanged recognised plan reports `already-open`; a human-pushed PR is left
+alone and any needed removal goes on a separate branch. Hidden plans record complete floor identities and file
+hashes, never npm file contents.
+
 ## What a review does
 
 The tick from [`packages/remediation`](../remediation), with secure-it's steps:
@@ -86,7 +122,7 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - A different plan on the new base: the PR is reconciled as in a run (reverted to the base, conflicts included, then the new plan applied), with the agent's new title and description.
   - The same plan: conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
   - Either way the result is verified like a run (including the one routine retry and visible omissions) and pushed, with the plan in the PR. Fixes remained on the new base, so an edit that leaves the base as it was fails verification; it doesn't retire the PR.
-- **CI failed:** the agent adapts, at most twice, and the result is verified before it's pushed. CI and failing names come from the head SHA's Actions runs/jobs plus commit statuses; no Checks permission is needed.
+- **CI failed (version-fix units):** the agent adapts, at most twice, and the result is verified before it's pushed. CI and failing names come from the head SHA's Actions runs/jobs plus commit statuses; no Checks permission is needed.
 
 ## Isolation
 
