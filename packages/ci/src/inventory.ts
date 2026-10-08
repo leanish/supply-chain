@@ -12,6 +12,7 @@
  */
 import { dirname } from "node:path";
 
+import { type ActionsInventory, readActionsInventory } from "./actions-inventory.ts";
 import type { Config } from "./config.ts";
 import type { Located } from "./findings.ts";
 import { type GradleInventory, gradleLocated } from "./gradle.ts";
@@ -30,6 +31,8 @@ export interface Inventory {
   readonly tree: string;
   readonly npm: ReadonlyArray<NpmLockfile>;
   readonly gradle: GradleInventory | undefined;
+  /** Every `uses:` in the tree's workflows and actions; resolved to versions by the gate. */
+  readonly actions: ActionsInventory;
 }
 
 export interface Sources {
@@ -39,19 +42,13 @@ export interface Sources {
 
 const GRADLE_ROOT_FILES = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle"];
 
-/**
- * The lockfiles and Gradle builds `tree` has under `config`. A tree with
- * neither fails, unless `allowEmpty` (a base that predates them).
- */
-export async function sourcesOf(tree: Tree, config: Config, allowEmpty = false): Promise<Sources> {
+/** The lockfiles and Gradle builds `tree` has under `config` (workflows are always read). */
+export async function sourcesOf(tree: Tree, config: Config): Promise<Sources> {
   const lockfiles = config.npm.lockfiles ?? ((await tree.read("package-lock.json")) === undefined ? [] : ["package-lock.json"]);
   let gradleBuilds = config.gradle.builds;
   if (gradleBuilds === undefined) {
     const found = await Promise.all(GRADLE_ROOT_FILES.map(async (file) => (await tree.read(file)) !== undefined));
     gradleBuilds = found.some(Boolean) ? ["."] : [];
-  }
-  if (lockfiles.length === 0 && gradleBuilds.length === 0 && !allowEmpty) {
-    throw new Error(`${tree.id} has no package-lock.json or Gradle build, and supply-chain.json lists none`);
   }
   return { lockfiles, gradleBuilds };
 }
@@ -83,7 +80,7 @@ export async function readInventory(tree: Tree, sources: Sources, options: ReadO
   if (sources.gradleBuilds.length > 0 && options.gradle === undefined) {
     throw new Error(`${tree.id} has Gradle builds (${sources.gradleBuilds.join(", ")}), but no Gradle inventory was given for it`);
   }
-  return { tree: tree.id, npm, gradle: sources.gradleBuilds.length > 0 ? options.gradle : undefined };
+  return { tree: tree.id, npm, gradle: sources.gradleBuilds.length > 0 ? options.gradle : undefined, actions: await readActionsInventory(tree) };
 }
 
 /** Lockfile paths as locations: `node_modules/x` for the root lockfile, `tools/cli/node_modules/x` for one in `tools/cli`. */
@@ -92,7 +89,12 @@ export function npmLocation(lockfile: string, path: string): string {
   return dir === "." ? path : `${dir}/${path}`;
 }
 
-/** Every package version in the inventory, with all its locations. */
+/** Whether the inventory has anything for the gate to check. */
+export function isEmpty(inventory: Inventory): boolean {
+  return inventory.npm.length === 0 && inventory.gradle === undefined && inventory.actions.files.length === 0;
+}
+
+/** Every npm and Maven package version in the inventory, with all its locations (actions come resolved from the gate). */
 export function located(inventory: Inventory): Located[] {
   const byVersion = new Map<string, { name: string; version: string; locations: string[] }>();
   for (const lockfile of inventory.npm) {

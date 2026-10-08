@@ -120,7 +120,7 @@ async function changes(
   const registry = new NpmRegistry(fetch);
   const npm = await npmChanges(base, head, { registry, exceptions, config, now: NOW });
   const young = npm.changes.filter((change) => isYoung(change, config, NOW));
-  const catalogs = { npm: new NpmCatalog(registry), Maven: new NpmCatalog(registry) };
+  const catalogs = { npm: new NpmCatalog(registry), Maven: new NpmCatalog(registry), "GitHub Actions": new NpmCatalog(registry) };
   const candidates = await gatherCandidates(young, catalogs, config);
   const snap = snapshot(options.affecting ?? {}, [...base, ...head, ...candidates.versions]);
   const age = await releaseAgeProblems(young, { snapshot: snap, exceptions, config, now: NOW, catalogs, candidates: candidates.byChange });

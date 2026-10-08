@@ -1,11 +1,11 @@
 # supply-chain CLI
 
-The CI gate. It reads what a repository installs (npm lockfiles, and what Gradle builds really resolve), looks every package version up against **one advisory snapshot**, and:
+The CI gate. It reads what a repository installs (npm lockfiles, what Gradle builds really resolve, and the actions its workflows use), looks every package version up against **one advisory snapshot**, and:
 
 - on a **pull request** (`compare`), fails only on what the PR makes worse: a finding head has and base doesn't, malware anywhere in head, or an added or changed version that fails the release-age, source or identity checks;
 - on the **default branch** (`scan`), fails on every finding without a valid exception, so a dependency flagged after it merged turns `main` red.
 
-It runs with plain Node 24 (type stripping) and reads files from git objects or the working tree. The only thing that runs code from the checked repository is `gradle-inventory`, which runs its Gradle build to learn what it resolves; in CI that happens in a job of its own, and the comparison only reads the JSON it wrote.
+It runs with Node 24 (type stripping), with one dependency (`yaml`, which keeps the comments where actions name their versions), and reads files from git objects or the working tree. The only thing that runs code from the checked repository is `gradle-inventory`, which runs its Gradle build to learn what it resolves; in CI that happens in a job of its own, and the comparison only reads the JSON it wrote.
 
 ```bash
 node packages/ci/src/cli.ts compare --base HEAD^1 --head HEAD --report report.json
@@ -40,6 +40,8 @@ One snapshot per run, shared by base and head:
 - **[OSV-Scanner](https://github.com/google/osv-scanner)**, run once over the union of every package version on both sides, from an empty directory with an empty config, so no `osv-scanner.toml` in the checked repository can ignore anything. Every requested package must come back in its output.
 - **Repository security advisories** of each dependency's own GitHub repository (npm: the version manifest's `repository`; Maven: the POM's `scm`, walking up to 5 parents). A repository can publish an advisory days before GitHub reviews it into its database and OSV imports it. The gate reads them, and asks OSV for its record of each, before OSV-Scanner runs: when OSV already has the advisory for that package, OSV's verdict on the version stands; the repository's own range only covers what OSV doesn't have yet. A repository advisory marked as malware is always kept. Ranges are read as maintainers write them (`< 1.1.21, >= 2.0.0 < 2.1.7`, `6.x <6.1.2`, `4.0.0 - 5.0.7`); a range without an upper bound stops at its patched version.
 
+- **GitHub's advisory database** for GitHub Actions: OSV holds their advisories but doesn't match versions against them; GitHub's `affects=` filter does (reviewed advisories and malware, asked once per action version).
+
 A package with no GitHub source repository, an unreadable repository, and a range the gate can't read are **coverage gaps**: listed in the report, never a pass in disguise.
 
 ## Gradle builds
@@ -52,6 +54,15 @@ A package with no GitHub source repository, an unreadable repository, and a rang
 - Base and head each have their own sources: a PR can add a repository's first Gradle build (base needs no inventory) or remove its last one (base's inventory still counts, and what it had shows as fixed).
 - A plugin's injected dependencies show up in its consumers' builds, which run this gate themselves (for example, java-conventions' checkstyle and errorprone dependencies in sqs-codec).
 - Gradle runs the build's own code, so a malicious build script or plugin can alter its own inventory; keeping that job apart keeps it from touching the comparison and its credentials, not from lying about itself.
+
+## GitHub Actions
+
+Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, in a root `action.yml`, and in every local `./` action a workflow uses, is an action version, located in the file that uses it. Files are parsed as YAML (comments kept, aliases followed, a file that doesn't parse fails), and every `uses:` key counts.
+
+- A use resolves to a version when it's pinned to a full commit SHA and its comment names a full release tag (`# v7.0.1`, `# tag=v7.0.1`; a floating `# v7` doesn't say what's pinned) that GitHub says points at that commit, annotated tags dereferenced.
+- **A new or changed `uses:`** must resolve: a tag or branch ref, a missing comment, or a comment whose tag points elsewhere fails. Each occurrence is judged on its own: same file, action, ref and comment as in base, or it's a change (so dropping a comment, or copying an unpinned ref into another workflow, counts). Its age is its GitHub release's publish time (a tag's own date is whatever its author wrote); no published release fails, own actions aside (`ownPackages["GitHub Actions"].owners`).
+- An unchanged `uses:` that doesn't resolve, `docker://` uses, and a local action without an `action.yml` are coverage gaps: the PR didn't make them worse.
+- A young action version can pass by the young-fix rule like any other, its candidates being the repository's releases (every page; past 2,000 releases the listing is incomplete and the rule can't be checked).
 
 ## Release age, source and identity (npm)
 
@@ -94,14 +105,15 @@ Optional; read from head. Unknown fields fail, so a typo can't turn a check off.
   "releaseAgeDays": 7,
   "ownPackages": {
     "npm": { "scopes": ["@acme"] },
-    "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] }
+    "Maven": { "groups": ["com.acme"], "pluginIdPrefixes": ["com.acme."] },
+    "GitHub Actions": { "owners": ["acme"] }
   },
   "repositories": { "npm:some-package": "owner/repo", "Maven:group:artifact": "owner/repo" },
   "compatibleLines": { "Maven:org.springframework.boot:*": 2 }
 }
 ```
 
-- Without `npm.lockfiles`, the gate reads `package-lock.json` if the tree has one; without `gradle.builds`, the root build if the tree has a `settings.gradle(.kts)` or `build.gradle(.kts)`. So an ecosystem in the repository is never skipped for lack of configuration; `"builds": []` turns Gradle off explicitly.
+- Without `npm.lockfiles`, the gate reads `package-lock.json` if the tree has one; without `gradle.builds`, the root build if the tree has a `settings.gradle(.kts)` or `build.gradle(.kts)`. So an ecosystem in the repository is never skipped for lack of configuration; `"builds": []` turns Gradle off explicitly. Workflows are always read. A tree with none of these fails.
 - Every listed lockfile must exist in head; one base doesn't have yet reads as empty there.
 - Own Maven packages: exact `groups`, and `pluginIdPrefixes` that only match Gradle plugin markers (`<id>:<id>.gradle.plugin`), so `com.acme.` doesn't exempt every `com.acme.*` group.
 - `compatibleLines`: how many leading numeric segments make a compatible line for a package (a trailing `*` matches a prefix), where the default (npm's caret range, Maven's first segment) doesn't fit.
@@ -122,4 +134,4 @@ Malware ids can't be excepted.
 
 ## Coming next
 
-GitHub Actions as an ecosystem, the floors file, a `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.
+The floors file, a `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.

@@ -1,6 +1,7 @@
 /**
- * Version ordering per ecosystem: npm follows SemVer 2.0 precedence, Maven
- * follows Maven's `ComparableVersion` (numbers, then the
+ * Version ordering per ecosystem: npm follows SemVer 2.0 precedence, GitHub
+ * Actions too on their tags (`v7.0.1`; `v4` reads as 4.0.0), Maven follows
+ * Maven's `ComparableVersion` (numbers, then the
  * qualifiers alpha < beta < milestone < rc < snapshot < release < sp, unknown
  * qualifiers after those, lexically).
  *
@@ -10,9 +11,9 @@
  * Guava's `-jre`, which candidates must keep).
  */
 
-export type Ecosystem = "npm" | "Maven";
+export type Ecosystem = "npm" | "Maven" | "GitHub Actions";
 
-export const ECOSYSTEMS: ReadonlyArray<Ecosystem> = ["npm", "Maven"];
+export const ECOSYSTEMS: ReadonlyArray<Ecosystem> = ["npm", "Maven", "GitHub Actions"];
 
 export interface VersionScheme {
   /** Negative, zero or positive, like a sort comparator. */
@@ -25,7 +26,7 @@ export interface VersionScheme {
 }
 
 export function versionScheme(ecosystem: Ecosystem): VersionScheme {
-  return ecosystem === "npm" ? SEMVER : MAVEN;
+  return ecosystem === "npm" ? SEMVER : ecosystem === "Maven" ? MAVEN : ACTIONS;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,23 @@ const SEMVER: VersionScheme = {
     return `0.0.${patch}`;
   },
   isPrerelease: (version) => parseSemVer(version).prerelease.length > 0,
+  flavor: () => "",
+};
+
+// ---------------------------------------------------------------------------
+// GitHub Actions: SemVer on tags, without the `v`, partial tags padded
+
+/** `v7.0.1` → `7.0.1`, `v4` → `4.0.0`, `4.1` → `4.1.0`; anything else is left as is (and won't parse). */
+export function actionTagToSemVer(tag: string): string {
+  const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?([-+].*)?$/.exec(tag);
+  if (match === null) return tag;
+  return `${match[1]}.${match[2] ?? "0"}.${match[3] ?? "0"}${match[4] ?? ""}`;
+}
+
+const ACTIONS: VersionScheme = {
+  compare: (a, b) => SEMVER.compare(actionTagToSemVer(a), actionTagToSemVer(b)),
+  line: (version) => SEMVER.line(actionTagToSemVer(version)),
+  isPrerelease: (version) => SEMVER.isPrerelease(actionTagToSemVer(version)),
   flavor: () => "",
 };
 

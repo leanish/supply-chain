@@ -5,14 +5,17 @@
  *   - `scan` (the default branch, on push and daily): every finding in one
  *     tree fails unless excepted.
  * Config and exceptions come from head: they're part of what would land.
- * Gradle inventories come in as data, made by whoever ran the build.
+ * Gradle inventories come in as data, made by whoever ran the build; actions
+ * are read from the workflows and resolved with GitHub.
  */
 import { type Config, DEFAULT_CONFIG, parseConfig } from "./config.ts";
 import { type Exceptions, NO_EXCEPTIONS, parseExceptions } from "./exceptions.ts";
 import { compareFindings, findingsOf } from "./findings.ts";
 import { type GradleInventory, gradleResolutionProblems } from "./gradle.ts";
 import type { Fetch } from "./http.ts";
-import { type Inventory, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
+import { type Inventory, isEmpty, located, readInventory, type Sources, sourcesOf } from "./inventory.ts";
+import { ActionsCatalog, actionChanges, actionGaps, actionsLocated, resolveUses } from "./actions-changes.ts";
+import { ActionsGitHub } from "./actions-github.ts";
 import { MavenCatalog, NpmCatalog } from "./catalogs.ts";
 import { MavenDates, mavenChanges } from "./maven-changes.ts";
 import { npmChanges } from "./npm-changes.ts";
@@ -88,7 +91,7 @@ export async function lenientSources(tree: Tree): Promise<Sources> {
   } catch {
     config = DEFAULT_CONFIG;
   }
-  return sourcesOf(tree, config, true);
+  return sourcesOf(tree, config);
 }
 
 function parseJson(text: string, path: string): unknown {
@@ -99,12 +102,13 @@ function parseJson(text: string, path: string): unknown {
   }
 }
 
-function snapshotOptions(config: Config, env: GateEnvironment) {
+function snapshotOptions(config: Config, env: GateEnvironment, actions: ActionsGitHub) {
   return {
     osv: { binary: env.osvScanner, run: env.run },
     sourceRepos: { fetch: env.fetch, overrides: config.repositories, mavenRepositories: config.maven.repositories },
     repositoryAdvisories: { fetch: env.fetch, token: env.githubToken },
     fetch: env.fetch,
+    actions,
     now: env.now,
   };
 }
@@ -119,16 +123,23 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const { config, configText, exceptions } = await readSettings(head);
   const sources = await sourcesOf(head, config);
   const headInventory = await readInventory(head, sources, { gradle: gradle.head });
+  if (isEmpty(headInventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
   const baseInventory = await readInventory(base, await baseSources(base, sources), { missingLockfilesAreEmpty: true, gradle: gradle.base });
-  const baseLocated = located(baseInventory);
-  const headLocated = located(headInventory);
+  const github = new ActionsGitHub(env.fetch, env.githubToken);
+  const resolutions = await resolveUses([baseInventory.actions, headInventory.actions], github);
+  const baseLocated = [...located(baseInventory), ...actionsLocated(baseInventory.actions, resolutions)];
+  const headLocated = [...located(headInventory), ...actionsLocated(headInventory.actions, resolutions)];
   const now = env.now();
   const today = now.toISOString().slice(0, 10);
 
   // What head adds or changes, with publish times, before the snapshot: young versions' candidates join it.
   const registry = new NpmRegistry(env.fetch);
   const dates = new MavenDates(env.fetch, config.maven.repositories);
-  const catalogs = { npm: new NpmCatalog(registry), Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates) };
+  const catalogs = {
+    npm: new NpmCatalog(registry),
+    Maven: new MavenCatalog(env.fetch, config.maven.repositories, dates),
+    "GitHub Actions": new ActionsCatalog(github),
+  };
   const problems: string[] = [
     ...bundleFailures(headInventory),
     ...resolutionFailures(baseInventory, config, "base"),
@@ -144,11 +155,14 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const maven = await mavenChanges(baseLocated, headLocated, { config, dates });
   problems.push(...maven.problems);
   changes.push(...maven.changes);
+  const actions = await actionChanges(baseInventory.actions, headInventory.actions, resolutions, github, config);
+  problems.push(...actions.problems);
+  changes.push(...actions.changes);
   const merged = mergeChanges(changes);
   const young = merged.filter((change) => isYoung(change, config, now));
   const candidates = await gatherCandidates(young, catalogs, config);
 
-  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env), [...candidates.versions]);
+  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env, github), [...candidates.versions]);
   const comparison = compareFindings(findingsOf(baseLocated, snapshot), findingsOf(headLocated, snapshot));
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange })));
@@ -156,7 +170,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
     failures: [...verdict.failures, ...problems],
     warnings: verdict.warnings,
     notes: verdict.notes,
-    gaps: snapshot.gaps,
+    gaps: [...snapshot.gaps, ...actions.gaps],
     osvScannerVersion: version,
     configText,
   };
@@ -178,8 +192,11 @@ export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleIn
   const { config, configText, exceptions } = await readSettings(head);
   const sources = await sourcesOf(head, config);
   const inventory = await readInventory(head, sources, { gradle: gradle.head });
-  const packages = located(inventory);
-  const snapshot = await takeSnapshot(packages, snapshotOptions(config, env));
+  if (isEmpty(inventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
+  const github = new ActionsGitHub(env.fetch, env.githubToken);
+  const resolutions = await resolveUses([inventory.actions], github);
+  const packages = [...located(inventory), ...actionsLocated(inventory.actions, resolutions)];
+  const snapshot = await takeSnapshot(packages, snapshotOptions(config, env, github));
   const verdict = scanVerdict(findingsOf(packages, snapshot), exceptions, snapshot, env.now().toISOString().slice(0, 10));
   const npmSources = inventory.npm.flatMap((lockfile) =>
     sourceProblems(lockfile.packages, config.npm.registries).map((problem) => prefixed(inventory, lockfile.path, problem)),
@@ -188,7 +205,7 @@ export async function runScan(head: Tree, env: GateEnvironment, gradle: GradleIn
     failures: [...verdict.failures, ...bundleFailures(inventory), ...npmSources, ...resolutionFailures(inventory, config, undefined)],
     warnings: [],
     notes: verdict.notes,
-    gaps: snapshot.gaps,
+    gaps: [...snapshot.gaps, ...actionGaps(inventory.actions, resolutions)],
     osvScannerVersion: version,
     configText,
   };

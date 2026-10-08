@@ -1,13 +1,15 @@
 /**
  * Takes the advisory snapshot for a set of package versions: OSV-Scanner
- * over all of them in one run, plus the published advisories of each one's
+ * over all npm and Maven ones in one run, GitHub's advisory database for
+ * GitHub Actions (OSV can't match their versions), plus the published advisories of each one's
  * source repository that OSV didn't cover yet. Repository advisories and
  * OSV's records for them are read first, the scanner runs after, so OSV
  * "covering" an advisory always means the scan saw it: then OSV-Scanner's
  * verdict on the version stands. A repository advisory marked as malware is
  * always kept: OSV might not classify it the same way.
  */
-import type { Fetch } from "./http.ts";
+import type { ActionsGitHub } from "./actions-github.ts";
+import { type Fetch, mapLimited } from "./http.ts";
 import { OsvRecords } from "./osv-records.ts";
 import { scanWithOsvScanner, type OsvRecord, type OsvScannerOptions } from "./osv-scanner.ts";
 import { packageKey, type PackageVersion, uniqueVersions, versionKey } from "./package-version.ts";
@@ -21,6 +23,8 @@ export interface SnapshotOptions {
   readonly repositoryAdvisories: RepositoryAdvisoryOptions;
   /** For OSV record lookups. */
   readonly fetch: Fetch;
+  /** GitHub's advisory database, for GitHub Actions. */
+  readonly actions: ActionsGitHub;
   readonly now: () => Date;
 }
 
@@ -48,22 +52,27 @@ export async function takeSnapshot(
   const unique = [...listed, ...extra];
   const repository = await matchRepositoryAdvisories(unique, repos, options.repositoryAdvisories, new Set(extra.map(versionKey)));
   const records = new OsvRecords(options.fetch);
+  const covers = (id: string, pkg: PackageVersion) =>
+    pkg.ecosystem === "GitHub Actions" ? options.actions.globalCovers(id, pkg.name) : records.covers(id, pkg);
   const fromRepositories = new Map<string, Advisory[]>();
   for (const pkg of unique) {
     const kept: Advisory[] = [];
     for (const advisory of repository.affecting.get(versionKey(pkg)) ?? []) {
       const converted = fromRepository(advisory);
-      const covered = converted.malicious ? [] : await Promise.all(converted.ids.map((id) => records.covers(id, pkg)));
+      const covered = converted.malicious ? [] : await Promise.all(converted.ids.map((id) => covers(id, pkg)));
       if (!covered.some(Boolean)) kept.push(converted);
     }
     fromRepositories.set(versionKey(pkg), kept);
   }
-  // After the coverage lookups, never before: see the file header.
-  const osv = await scanWithOsvScanner(unique, options.osv);
+  // After the coverage lookups, never before: see the file header. OSV can't match Actions versions; GitHub can.
+  const osv = await scanWithOsvScanner(unique.filter((pkg) => pkg.ecosystem !== "GitHub Actions"), options.osv);
+  const actions = unique.filter((pkg) => pkg.ecosystem === "GitHub Actions");
+  const fromGitHub = await mapLimited(actions, 8, (pkg) => options.actions.advisories(pkg.name, pkg.version));
+  const github = new Map(actions.map((pkg, i) => [versionKey(pkg), fromGitHub[i]!]));
   const affecting = new Map<string, Advisory[]>();
   for (const pkg of unique) {
     const key = versionKey(pkg);
-    affecting.set(key, [...(osv.get(key) ?? []).map(fromOsv), ...(fromRepositories.get(key) ?? [])]);
+    affecting.set(key, [...(osv.get(key) ?? []).map(fromOsv), ...(github.get(key) ?? []), ...(fromRepositories.get(key) ?? [])]);
   }
   return new Snapshot(affecting, repository.gaps, takenAt);
 }

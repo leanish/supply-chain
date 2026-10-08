@@ -186,7 +186,7 @@ describe("Maven release age", () => {
     const found = await mavenChanges(base, head, { config, dates });
     const young = found.changes.filter((change) => isYoung(change, config, NOW));
     const catalog = new MavenCatalog(fetch, config.maven.repositories, dates);
-    const catalogs = { npm: catalog, Maven: catalog };
+    const catalogs = { npm: catalog, Maven: catalog, "GitHub Actions": catalog };
     const candidates = await gatherCandidates(young, catalogs, config);
     const map = new Map<string, Advisory[]>([...base, ...head, ...candidates.versions].map((pkg) => [`Maven|${pkg.name}|${pkg.version}`, []]));
     for (const [key, advisories] of Object.entries(options.affecting ?? {})) map.set(key, advisories);
