@@ -1,7 +1,8 @@
 // Adapted from leanish/leanish-development agents/bump-it/src/publication.ts at e4f8a1e: parametrised by the tool's
 // own-PR rules; a repository can have several open PRs of a tool (one per topic); the workspace and logger are passed
 // in instead of bump-it's runtime; Dependabot closing is left out; the PR body records the published state;
-// the pre-push journal stores the matching title, body, plan and adaptation count for recovery.
+// the pre-push journal stores the matching title, body, plan and adaptation count for recovery;
+// adds the current label when publishing, restoring a body, recording state or marking a PR ready.
 import { GitHubApiError } from "../../agent-basics/src/github/github-client.ts";
 import type { GitHubClient, GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
 import type { Logger } from "../../agent-basics/src/types/logger.ts";
@@ -116,9 +117,9 @@ export async function publishUpdate(
   const head = pushed.kind === "pushed" ? pushed.sha : remoteHead;
   const body = bodyAt(head);
   const updated = await github.updatePullRequest({ repo, number: current.number, title: content.title, body });
+  await ensureLabel(context, updated);
   // Nothing new reached the branch: the PR stays as ready as it was.
   if (pushed.kind === "unchanged" && !current.isDraft) await markReady(context, current.number, remoteHead);
-  await ensureLabel(context, updated);
   return { pr: updated, pushed: pushed.kind === "pushed" };
 }
 
@@ -134,7 +135,9 @@ export async function recoverPublication(context: PublicationContext, pr: GitHub
     throw new Error(`${pr.url}: the journal has no matching publication content; rerun the tool to recompute before reviewing`);
   }
   await reReadOwn(context, pr.number, pr.headSha);
-  return context.github.updatePullRequest({ repo: context.repo, number: pr.number, title: saved.title, body: saved.body });
+  const updated = await context.github.updatePullRequest({ repo: context.repo, number: pr.number, title: saved.title, body: saved.body });
+  await ensureLabel(context, updated);
+  return updated;
 }
 
 /**
@@ -144,13 +147,16 @@ export async function recoverPublication(context: PublicationContext, pr: GitHub
  */
 export async function recordState(context: PublicationContext, number: number, expectedHead: string, state: PullRequestState): Promise<GitHubPullRequest> {
   const current = await reReadOwn(context, number, expectedHead);
-  return context.github.updatePullRequest({ repo: context.repo, number, title: current.title, body: withMarker(context.rules, current.body, state) });
+  const updated = await context.github.updatePullRequest({ repo: context.repo, number, title: current.title, body: withMarker(context.rules, current.body, state) });
+  await ensureLabel(context, updated);
+  return updated;
 }
 
 /** Mark the PR ready, once it's still the tool's draft at `expectedHead`. */
 export async function markReady(context: PublicationContext, number: number, expectedHead: string): Promise<void> {
   const current = await reReadOwn(context, number, expectedHead);
   if (current.isDraft) await context.github.markReadyForReview({ nodeId: current.nodeId });
+  await ensureLabel(context, current);
 }
 
 /**

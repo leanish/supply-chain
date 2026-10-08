@@ -4,6 +4,19 @@ import { branchFor, isOwnPullRequest, ownPullRequests, stateOf, topicOf, withMar
 import { BASE_SHA, HEAD_SHA, ownPr, RULES } from "./fake-github.ts";
 
 describe("own PRs", () => {
+  it.each(["secure-it", "bump-it"] as const)("publishes %s's new label and recognises its legacy label even without a marker", (tool) => {
+    const rules = ownPullRequests(tool);
+    const pr = ownPr({ headRef: `${tool}/2026-10-05-security`, body: "No marker.", labels: [`leanish:agent=${tool}`] });
+    expect(rules.label).toBe(`leanish:${tool}`);
+    expect(rules.marker).toBe(`<!-- leanish:agent=${tool} -->`);
+    expect(isOwnPullRequest(rules, pr, "leanish/widget", "main")).toBe(true);
+    expect(isOwnPullRequest(rules, { ...pr, labels: [`leanish:${tool}`] }, "leanish/widget", "main")).toBe(true);
+    const other = tool === "secure-it" ? "bump-it" : "secure-it";
+    expect(isOwnPullRequest(rules, { ...pr, labels: [`leanish:agent=${other}`, `leanish:${other}`] }, "leanish/widget", "main")).toBe(false);
+    expect(isOwnPullRequest(rules, { ...pr, headRepo: "someone/widget" }, "leanish/widget", "main")).toBe(false);
+    expect(isOwnPullRequest(rules, { ...pr, state: "closed" }, "leanish/widget", "main")).toBe(false);
+  });
+
   it("names a branch by tool, UTC date and a branch-safe topic", () => {
     const now = new Date("2026-10-07T23:30:00Z");
     expect(branchFor(RULES, now, "org.xerial.snappy:snappy-java")).toBe("secure-it/2026-10-07-org.xerial.snappy-snappy-java");

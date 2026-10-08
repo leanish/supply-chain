@@ -1,0 +1,22 @@
+# Copy to ~/.config/leanish/secure-it/agent.yaml and replace the example identity/repo.
+repos:
+  - repo: acme/widget
+    branch: main
+agent:
+  codingAgent: codex
+  model: sol
+  effort: medium
+  majorEffort: high
+# Default Keychain services: leanish-secure-it-write and leanish-secure-it-read.
+# Optional overrides; both tools may use the same write/read pair:
+# secrets: { write: shared-write, read: shared-read }
+commitIdentity:
+  name: dependency-bot
+  email: dependency-bot@users.noreply.github.com
+dirs:
+  state: ~/.local/share/leanish/secure-it
+  cache: ~/.cache/leanish/secure-it
+# Add private folders that must not reach the model, e.g. ~/Documents/private.
+readDeny: []
+staleScanHours: 36
+# Optional, after creating a price table: modelPrices: ~/.config/leanish/model-prices.json

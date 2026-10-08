@@ -103,33 +103,14 @@ whenever the final age-exclusion list is non-empty**: own npm scopes or young/un
 and required and detected versions, before editing npm files or publishing. Without exclusions,
 use npm with min-release-age support. No npm installation or registry requests are needed for the unit tests.
 
-Two separate Keychain tokens: the tool alone receives the write token; the agent receives only the read token. npm,
-Gradle inventories and agent checks run under the agent's sandbox, with protected home paths and git metadata, and
+Two separate Keychain tokens, default services `leanish-bump-it-write` and `leanish-bump-it-read`: the tool alone
+receives the write token; the agent receives only the read token. Optional `secrets` overrides may share a pair with
+secure-it; every opted-in repo uses this pair, and write/read values must differ. PAT mode remains an alternative
+when GitHub App mode lands. npm, Gradle inventories and agent checks run under the agent's sandbox,
+with protected home paths and git metadata, and
 writes restricted to the working copy, temp and build cache. The pinned OSV-Scanner stays in protected tool state,
 verified immediately before running. See [the security model](../../docs/security-model.md).
 
-For launchd, save one plist for `run` and another for `review`, using absolute executable and worktree paths. Example
-weekly run (Monday 08:00); replace the schedule with `StartInterval` 14400 for a review every four hours:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>leanish.bump-it.widget.run</string>
-  <key>ProgramArguments</key><array>
-    <string>/absolute/supply-chain/packages/remediation/run.sh</string>
-    <string>bump-it</string><string>run</string><string>leanish/widget</string>
-  </array>
-  <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-  </dict>
-  <key>StartCalendarInterval</key><dict>
-    <key>Weekday</key><integer>1</integer><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer>
-  </dict>
-  <key>StandardOutPath</key><string>/absolute/logs/bump-it-widget-run.log</string>
-  <key>StandardErrorPath</key><string>/absolute/logs/bump-it-widget-run.log</string>
-</dict></plist>
-```
-
-The review plist uses its own Label/log and `review` instead of `run`. `run.sh`'s per-repository lock serializes both
-commands, and its handshake ensures a final report even when startup or the command fails. Nothing merges itself.
+See [Adopting the tools](../../docs/adopting-tools.md) for the read-only candidate preview, first live run,
+Keychain permissions, and four complete launchd examples (weekly bump-it run, review every four hours).
+The [config reference](../../docs/tool-configuration.md) covers every agent.yaml field. Nothing merges itself.

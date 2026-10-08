@@ -137,10 +137,15 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
 
 ## Setup
 
-- **Config:** `~/.config/leanish/secure-it/agent.yaml`. See [`packages/remediation`](../remediation) for its fields.
-- **Tokens:** two fine-grained tokens in the Keychain:
+See [Adopting the tools](../../docs/adopting-tools.md) for the first candidate preview, live run, Keychain
+permissions and launchd schedules, and the [config reference](../../docs/tool-configuration.md) for every field.
+
+- **Config:** `~/.config/leanish/secure-it/agent.yaml`. See the [config reference](../../docs/tool-configuration.md) for its fields.
+- **Tokens:** two fine-grained tokens in the Keychain, default services `leanish-secure-it-write` and `leanish-secure-it-read`:
   - one that writes (Contents, Pull requests and Workflows: write; Actions, Commit statuses and Metadata: read);
   - a read-only one for the agent.
+
+  Optional `secrets` overrides may share a pair with bump-it; every opted-in repo uses this pair, and write/read values must differ. PAT mode remains an alternative when GitHub App mode lands.
 - **Tools:** Node 24, git, `gh`, and Codex, logged in; npm >= 11.17.0 when a planned npm fix or an own scope needs a release-age exclusion.
 - **OSV-Scanner:** the version pinned in [`packages/ci/tools.json`](../ci/tools.json), installed into the tool's state directory (out of reach of sandboxed commands) and verified by sha256 before every run.
 - **Schedule:** launchd or cron calls `run.sh`.

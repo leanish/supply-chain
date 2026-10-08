@@ -1,7 +1,7 @@
 {
   "name": "leanish-supply-chain",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0-SNAPSHOT",
   "description": "Dependency security and freshness for npm and Gradle repos: a CI gate that blocks only what a PR makes worse, plus the secure-it and bump-it remediation tools.",
   "license": "Apache-2.0",
   "type": "module",

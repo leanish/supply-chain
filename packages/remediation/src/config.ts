@@ -12,9 +12,9 @@
  *     model: sol
  *     effort: medium
  *     majorEffort: high          # majors and their reviews
- *   secrets:                     # macOS Keychain service names
- *     write: leanish-secure-it-github       # the tool's own token
- *     read: leanish-secure-it-github-read   # the agent's, read-only
+ *   secrets:                     # optional macOS Keychain service overrides
+ *     write: leanish-secure-it-write       # default: leanish-<tool>-write
+ *     read: leanish-secure-it-read         # default: leanish-<tool>-read
  *   commitIdentity: { name: leanish, email: 5417585+leanish@users.noreply.github.com }
  *   dirs: { state: ~/.local/share/leanish/secure-it, cache: ~/.cache/leanish/secure-it }  # optional
  *   readDeny: [~/dev/private]    # optional: paths the agent's commands can't read
@@ -45,6 +45,7 @@ export interface ToolConfig {
   readonly tool: ToolName;
   readonly repos: ReadonlyArray<ToolRepo>;
   readonly agent: { readonly codingAgent: "codex"; readonly model: string; readonly effort: string; readonly majorEffort: string };
+  /** Resolved Keychain service names: per-tool defaults with optional per-field overrides. */
   readonly secrets: { readonly write: string; readonly read: string };
   readonly commitIdentity: GitIdentity;
   readonly dirs: { readonly state: string; readonly cache: string };
@@ -90,9 +91,9 @@ export function parseToolConfig(tool: ToolName, text: string, where: string, hom
   const codingAgent = string(agent["codingAgent"], `${where}: agent.codingAgent`);
   // Claude Code's runner refuses write access, and both tools write.
   if (codingAgent !== "codex") throw new Error(`${where}: agent.codingAgent must be codex (the only runner that can edit a working copy); got '${codingAgent}'`);
-  const secrets = object(root["secrets"], `${where}: secrets`, ["write", "read"]);
-  const write = string(secrets["write"], `${where}: secrets.write`);
-  const read = string(secrets["read"], `${where}: secrets.read`);
+  const secrets = root["secrets"] === undefined ? {} : object(root["secrets"], `${where}: secrets`, ["write", "read"]);
+  const write = secrets["write"] === undefined ? `leanish-${tool}-write` : string(secrets["write"], `${where}: secrets.write`);
+  const read = secrets["read"] === undefined ? `leanish-${tool}-read` : string(secrets["read"], `${where}: secrets.read`);
   if (write === read) throw new Error(`${where}: secrets.write and secrets.read must be different items: the agent only gets the read-only one`);
   const identity = object(root["commitIdentity"], `${where}: commitIdentity`, ["name", "email"]);
   const dirs = root["dirs"] === undefined ? {} : object(root["dirs"], `${where}: dirs`, ["state", "cache"]);

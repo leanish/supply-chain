@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>leanish.secure-it.widget.run</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/YOUR_USER/dev/supply-chain/packages/remediation/run.sh</string>
+		<string>secure-it</string>
+		<string>run</string>
+		<string>acme/widget</string>
+		<string>--config</string>
+		<string>/Users/YOUR_USER/.config/leanish/secure-it/agent.yaml</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/YOUR_USER/dev/supply-chain</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/YOUR_USER</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>7</integer>
+		<key>Minute</key>
+		<integer>17</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/YOUR_USER/Library/Logs/leanish/secure-it.widget.run.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/YOUR_USER/Library/Logs/leanish/secure-it.widget.run.err.log</string>
+</dict>
+</plist>

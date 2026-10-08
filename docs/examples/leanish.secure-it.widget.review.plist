@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>leanish.secure-it.widget.review</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/YOUR_USER/dev/supply-chain/packages/remediation/run.sh</string>
+		<string>secure-it</string>
+		<string>review</string>
+		<string>acme/widget</string>
+		<string>--config</string>
+		<string>/Users/YOUR_USER/.config/leanish/secure-it/agent.yaml</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/YOUR_USER/dev/supply-chain</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/YOUR_USER</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>14400</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/YOUR_USER/Library/Logs/leanish/secure-it.widget.review.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/YOUR_USER/Library/Logs/leanish/secure-it.widget.review.err.log</string>
+</dict>
+</plist>

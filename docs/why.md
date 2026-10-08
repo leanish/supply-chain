@@ -19,11 +19,11 @@ Those tools are good, and this repository uses two of them: [OSV-Scanner](https:
 
 - **Transitive fixes at any depth.** A vulnerable package four levels down gets the smallest change that fixes it: a lockfile update, an override, or a Gradle floor recorded with its `because(...)`. Dependabot's security updates only see GitHub-reviewed advisories, don't write Gradle floors, and can be blocked by another open PR touching the same lockfile.
 - **One rule per job.** secure-it takes the smallest fix (lowest version, compatible line first), batching non-majors across ecosystems and keeping each major apart; bump-it takes the highest version at least 7 days old that adds no finding, minors and patches together, each major apart, with a model that can adapt code to a major.
-- **Floors come off when they're no longer needed** (being built): secure-it will resolve without them, together and without the lockfile's influence, and remove the ones that turned redundant.
+- **Floors come off when they're no longer needed:** secure-it resolves without them, together and without the lockfile's influence, and removes only the security floors that prove redundant. Compatibility floors stay.
 
 ## What each alternative does better
 
-- **Dependabot** alerts and security updates are a switch in the repository settings, cover ecosystems this gate doesn't, and the alerts are free; keep them on. Version updates need a `dependabot.yml`, and then cost nothing to run.
+- **Dependabot** alerts and security updates are a switch in the repository settings, cover ecosystems this gate doesn't, and the alerts are free; keep alerts on. Disable security-update PR production when secure-it is the repository's security-fix producer. Version updates need a `dependabot.yml`, and then cost nothing to run.
 - **OSV-Scanner** alone is enough for a full scan of one tree, and has call analysis for Go and Rust.
 - **Renovate** has far more managers, grouping and scheduling options, and auto-merge, and runs as a hosted app.
 - **None of them** compares base and head against the same data, reads repository advisories, or proves a young fix; that's the niche.
