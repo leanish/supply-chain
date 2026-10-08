@@ -2,10 +2,10 @@
 // `SENSITIVE_HOME_PATHS`) at e4f8a1e; see PROVENANCE.md.
 // Local changes: every input is explicit (the tool's config) instead of `AGENT_RUNTIME_*` variables; the agent's
 // commands get the configured commit identity instead of the developer's global git identity; the release age is
-// the repository's, not a fixed 7.
-import { existsSync } from "node:fs";
+// the repository's, not a fixed 7; the resolved login source and its canonical path (when present) stay unreadable.
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import type { CodexRunnerOptions } from "./skill/codex-runner.ts";
 
@@ -49,7 +49,7 @@ export interface GitIdentity {
 export interface IsolationSettings {
   /** Who the tool's commits are by; the agent's commands get the same identity (they never see the developer's). */
   readonly commitIdentity: GitIdentity;
-  /** Absolute paths the agent's commands may not read, on top of the sensitive home paths (private data folders). */
+  /** Absolute paths the agent's commands may not read, on top of sensitive home paths and the Codex login source. */
   readonly readDeny: ReadonlyArray<string>;
   /** Absolute directories put first on the PATH of the agent's commands (the guards), and only theirs. */
   readonly commandPath: ReadonlyArray<string>;
@@ -64,14 +64,16 @@ export interface Machine {
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly home: string;
   readonly exists: (path: string) => boolean;
+  readonly realpath: (path: string) => string;
 }
 
 /**
  * Codex runs for a tool:
  *   - reuse the developer's file-backed `codex login` (`$CODEX_HOME`, else
  *     `~/.codex`) — the CLI reads it, sandboxed commands can't;
- *   - deny sandboxed commands the sensitive home paths above that exist, plus
- *     `readDeny`: anything they read reaches the model provider, and a write
+ *   - deny sandboxed commands the resolved login `auth.json` path (and its
+ *     canonical path when present), the sensitive home paths above that exist,
+ *     and `readDeny`: anything they read reaches the model provider, and a write
  *     run has the network. Codex shows the denied paths to the model, so their
  *     names (never their contents) are visible to it; the rest of the home
  *     stays readable, and so do toolchains and working copies under it;
@@ -85,18 +87,25 @@ export interface Machine {
  *     whose init scripts every later build would run.
  */
 export function codexIsolation(settings: IsolationSettings, machine: Partial<Machine> = {}): CodexRunnerOptions {
-  const { env = process.env, home = homedir(), exists = existsSync } = machine;
+  const { env = process.env, home = homedir(), exists = existsSync, realpath = realpathSync } = machine;
   const relative = [...settings.commandPath, ...settings.readDeny, settings.buildCacheRoot].filter((path) => !isAbsolute(path));
   if (relative.length > 0) throw new Error(`isolation paths must be absolute; got '${relative.join("', '")}'`);
   if (!Number.isInteger(settings.releaseAgeDays) || settings.releaseAgeDays < 0) {
     throw new Error(`releaseAgeDays must be a non-negative integer; got ${settings.releaseAgeDays}`);
   }
-  const readDenied = [...SENSITIVE_HOME_PATHS.map((path) => join(home, path)).filter(exists), ...settings.readDeny];
+  const loginHome = nonEmpty(env["CODEX_HOME"]) ?? join(home, ".codex");
+  const loginPath = resolve(loginHome, "auth.json");
+  const readDenied = [
+    ...SENSITIVE_HOME_PATHS.map((path) => join(home, path)).filter(exists),
+    ...settings.readDeny,
+    loginPath,
+    ...(exists(loginPath) ? [realpath(loginPath)] : []),
+  ];
   const path = nonEmpty(env["PATH"]);
   const commandPath = settings.commandPath.join(":");
   const { name, email } = settings.commitIdentity;
   return {
-    loginHome: nonEmpty(env["CODEX_HOME"]) ?? join(home, ".codex"),
+    loginHome,
     buildCacheRoot: settings.buildCacheRoot,
     readDenied: [...new Set(readDenied)],
     env: {

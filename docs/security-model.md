@@ -33,4 +33,5 @@ What they're designed to do:
 
 - Each tool will hold two GitHub credentials: one that writes (branches, PRs, comments) for the tool's own process, one read-only for the coding agent. With a GitHub App, the tool mints both from the App's key, which the agent never sees; with personal access tokens, two fine-grained tokens.
 - Secrets will live in the operating system's store (macOS Keychain first), not in files the agent can read.
+- When a tool reuses a file-backed Codex login, Codex reads the resolved source `auth.json`; the agent sandbox denies that path and its canonical target when it is a symlink, including with a custom `CODEX_HOME`.
 - The agent edits a clone; the tool decides versions, verifies the result with this gate, and publishes. Nothing merges by itself.
