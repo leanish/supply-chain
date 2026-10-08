@@ -112,6 +112,10 @@ describe("runToolCommand", () => {
     expect(code).toBe(0);
     expect(seen?.base).toBe("trunk");
     expect(seen?.releaseAgeDays).toBe(7);
+    expect(seen?.readToken).toBe("read-token");
+    expect(seen?.isolation.env?.["npm_config_min_release_age"]).toBe("7");
+    expect(seen?.isolation.env?.["PATH"]).toContain("agent-basics/guard");
+    expect(JSON.stringify({ ...seen, github: undefined, workspace: undefined, agent: undefined })).not.toContain("write-token");
     expect(requested).toEqual([expect.stringContaining("https://api.github.com/repos/leanish/widget")]);
     expect(requested[0]).toContain("Bearer write-token");
     expect(invocations[0]).toMatchObject({ access: "write", model: "sol", effort: "medium", env: { GH_TOKEN: "read-token" } });

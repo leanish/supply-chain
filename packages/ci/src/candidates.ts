@@ -74,6 +74,8 @@ export interface SecurityFix {
   /** Targets no listed version fixes: `to` leaves them. */
   readonly unfixable: ReadonlyArray<string>;
   readonly malicious: boolean;
+  /** The highest severity among its failing advisories, as they state it (`CRITICAL`, `HIGH`, …); undefined when none does. */
+  readonly severity: string | undefined;
   readonly to: SecurityMove | undefined;
   /** Why there's no `to`. */
   readonly problem: string | undefined;
@@ -121,7 +123,8 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
     const current = unexcused([pkg], snapshot, exceptions, today);
     const malicious = current.some((finding) => finding.malicious);
     const targets = targetsOf(snapshot, pkg, new Set(current.map((finding) => finding.advisory)));
-    const base = { ecosystem: pkg.ecosystem, name: pkg.name, from: pkg.version, locations: pkg.locations, targets, malicious };
+    const severity = highestSeverity(current.map((finding) => finding.severity));
+    const base = { ecosystem: pkg.ecosystem, name: pkg.name, from: pkg.version, locations: pkg.locations, targets, malicious, severity };
     const moves = listings.get(versionKey(pkg));
     const problem = (why: string): SecurityFix => ({ ...base, unfixable: [], to: undefined, problem: why });
     if (moves === undefined) {
@@ -138,6 +141,17 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
     gaps: [...state.snapshot.gaps, ...snapshot.gaps, ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
   };
+}
+
+const SEVERITY_RANK: Readonly<Record<string, number>> = { CRITICAL: 4, HIGH: 3, MODERATE: 2, MEDIUM: 2, LOW: 1 };
+
+/** How severe a severity is, for ordering: CRITICAL 4, HIGH 3, MODERATE or MEDIUM 2, LOW 1, anything else 0. */
+export function severityRank(severity: string | undefined): number {
+  return severity === undefined ? 0 : (SEVERITY_RANK[severity.toUpperCase()] ?? 0);
+}
+
+function highestSeverity(severities: ReadonlyArray<string | undefined>): string | undefined {
+  return severities.reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
 }
 
 /** Findings on `packages` that fail: no valid exception covers them (malware never has one). */

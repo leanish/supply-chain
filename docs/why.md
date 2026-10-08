@@ -15,11 +15,11 @@ Those tools are good, and this repository uses two of them: [OSV-Scanner](https:
 - **Remote actions are dependencies too.** A new or changed remote action or reusable workflow must be pinned to a commit whose comment names a tag pointing at it; GitHub's database and the action's own repository advisories are checked like any package's. Local actions are followed to their `action.yml`; `docker://` actions are a reported gap.
 - **Open PRs are rescanned daily**, merged onto their base's current tip, and the verdict lands as a status GitHub requires next to the PR's own check.
 
-## What secure-it and bump-it will add (planned; not in this tree yet)
+## What secure-it and bump-it add (secure-it is in this tree; bump-it is being built)
 
 - **Transitive fixes at any depth.** A vulnerable package four levels down gets the smallest change that fixes it: a lockfile update, an override, or a Gradle floor recorded with its `because(...)`. Dependabot's security updates only see GitHub-reviewed advisories, don't write Gradle floors, and can be blocked by another open PR touching the same lockfile.
 - **One rule per job.** secure-it takes the smallest fix (lowest version, compatible line first); bump-it takes the highest version at least 7 days old that adds no finding, minors and patches together, each major apart, with a model that can adapt code to a major.
-- **Floors come off when they're no longer needed**: secure-it resolves without them (and without the lockfile's influence) and removes the ones that turned redundant.
+- **Floors come off when they're no longer needed** (being built): secure-it will resolve without them, together and without the lockfile's influence, and remove the ones that turned redundant.
 
 ## What each alternative does better
 

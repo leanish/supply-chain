@@ -52,9 +52,16 @@ function environment(affected: Record<string, string[]>, registry: Registry, sca
     scans.push(requested.map((pkg) => `${pkg.name}@${pkg.version}`).sort());
     const packages = requested.map((pkg) => ({
       package: pkg,
+      // An entry is an id, optionally `!SEVERITY`, optionally `=ALIAS,ALIAS`.
       vulnerabilities: (affected[`${pkg.name}@${pkg.version}`] ?? []).map((entry) => {
-        const [id, aliases] = entry.split("=");
-        return { id, summary: `${id} summary`, ...(aliases === undefined ? {} : { aliases: aliases.split(",") }) };
+        const [named, aliases] = entry.split("=");
+        const [id, severity] = named!.split("!");
+        return {
+          id,
+          summary: `${id} summary`,
+          ...(aliases === undefined ? {} : { aliases: aliases.split(",") }),
+          ...(severity === undefined ? {} : { database_specific: { severity } }),
+        };
       }),
     }));
     return { code: 1, stdout: JSON.stringify({ results: [{ packages }] }), stderr: "" };
@@ -92,6 +99,7 @@ describe("securityCandidates", () => {
         targets: ["GHSA-a"],
         unfixable: [],
         malicious: false,
+        severity: undefined,
         to: { version: "1.0.2", line: "1", aged: true, major: false, blockers: [] },
         problem: undefined,
       },
@@ -183,6 +191,12 @@ describe("securityCandidates, regressions", () => {
     const registry = { lib: { "1.0.0": OLD, "1.0.1": OLD, "1.0.2": OLD } };
     const found = await securityCandidates(await tree({ lib: "1.0.0" }), environment(affected, registry));
     expect(found.fixes[0]).toMatchObject({ targets: ["GHSA-a"], to: { version: "1.0.2" } });
+  });
+
+  it("reports the highest severity among a version's failing advisories", async () => {
+    const affected = { "lib@1.0.0": ["GHSA-a!MODERATE", "GHSA-b!CRITICAL", "GHSA-c"] };
+    const found = await securityCandidates(await tree({ lib: "1.0.0" }), environment(affected, { lib: { "1.0.0": OLD, "1.0.1": OLD } }));
+    expect(found.fixes[0]?.severity).toBe("CRITICAL");
   });
 
   it("lets an own package leave malware for a clean version however young", async () => {

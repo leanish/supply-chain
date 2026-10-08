@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { branchFor, isOwnPullRequest, ownPullRequests, stateOf, withMarker } from "../src/own-pr.ts";
+import { branchFor, isOwnPullRequest, ownPullRequests, stateOf, topicOf, withMarker } from "../src/own-pr.ts";
 import { BASE_SHA, HEAD_SHA, ownPr, RULES } from "./fake-github.ts";
 
 describe("own PRs", () => {
@@ -9,6 +9,9 @@ describe("own PRs", () => {
     expect(branchFor(RULES, now, "org.xerial.snappy:snappy-java")).toBe("secure-it/2026-10-07-org.xerial.snappy-snappy-java");
     expect(branchFor(ownPullRequests("bump-it"), now, "@types/node 26")).toBe("bump-it/2026-10-07-types-node-26");
     expect(() => branchFor(RULES, now, "@@@")).toThrow("needs a topic");
+    expect(topicOf(RULES, branchFor(RULES, now, "vite"))).toBe("vite");
+    expect(topicOf(RULES, "secure-it/2026-01-02-vite")).toBe("vite");
+    expect(topicOf(RULES, "bump-it/2026-01-02-vite")).toBeUndefined();
   });
 
   it("recognises the tool's open PRs from its own branches and repo, by marker or label", () => {

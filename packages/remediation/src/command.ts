@@ -16,6 +16,7 @@ import { parseArgs } from "node:util";
 
 import { createGitHubClient } from "../../agent-basics/src/github/github-client.ts";
 import { codexIsolation } from "../../agent-basics/src/isolation.ts";
+import type { CodexRunnerOptions } from "../../agent-basics/src/skill/codex-runner.ts";
 import { ConsoleLogger } from "../../agent-basics/src/logger/console-logger.ts";
 import { reportOnTerminationSignals, RunReport, writeFinalLine } from "../../agent-basics/src/report/run-report.ts";
 import { CodexRunner } from "../../agent-basics/src/skill/codex-runner.ts";
@@ -52,6 +53,10 @@ export interface ToolRunContext {
   readonly now: Date;
   /** The repository's release age, from its `.github/supply-chain.json`. */
   readonly releaseAgeDays: number;
+  /** The agent's read-only token: for the gate's own GitHub reads (advisories, actions), never for writes. */
+  readonly readToken: string;
+  /** How the agent is isolated; `runSandboxed` runs repository code the same way. */
+  readonly isolation: CodexRunnerOptions;
   /** Runs one of the tool's skills on the working copy, with write access and the read-only token. */
   readonly agent: <TInput, TOutput>(call: { readonly entrypoint: string; readonly input: TInput; readonly effort?: string }) => Promise<TOutput>;
 }
@@ -72,7 +77,7 @@ export interface Machine {
   readonly now: () => Date;
   readonly readText: (path: string) => Promise<string>;
   readonly workspace: (root: string, token: string, config: ToolConfig) => Workspace;
-  readonly runner: (config: ToolConfig, releaseAgeDays: number) => CodingAgentRunner;
+  readonly runner: (isolation: CodexRunnerOptions) => CodingAgentRunner;
   /** run.sh's marker file (`TOOL_REPORT_MARKER`): written once the final line is out, so run.sh doesn't write one too. */
   readonly reportMarker: string | undefined;
 }
@@ -124,7 +129,14 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
     const synced = await workspace.sync([{ id: repo.repo, source: { url: `https://github.com/${repo.repo}.git`, branch: base } }]);
     const workingCopy = synced.workingCopies[0]!;
     const { config: repoConfig } = await readSettings(workingTree(workingCopy.path));
-    const runner = m.runner(config, repoConfig.releaseAgeDays);
+    const isolation = codexIsolation({
+      commitIdentity: config.commitIdentity,
+      readDeny: config.readDeny,
+      commandPath: [GUARD_DIR],
+      releaseAgeDays: repoConfig.releaseAgeDays,
+      buildCacheRoot: config.dirs.cache,
+    });
+    const runner = m.runner(isolation);
     const prices = config.modelPrices === undefined ? undefined : parseModelPrices(JSON.parse(await m.readText(config.modelPrices)), config.modelPrices);
     const skillContext = {
       entrypoints: handlers.skills.entrypoints,
@@ -149,6 +161,8 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
       logger,
       now: m.now(),
       releaseAgeDays: repoConfig.releaseAgeDays,
+      readToken: read,
+      isolation,
       agent: (call) =>
         runSkill(skillContext, {
           entrypoint: call.entrypoint,
@@ -215,15 +229,6 @@ function defaultMachine(): Machine {
     readText: (path) => readFile(path, "utf8"),
     reportMarker: process.env["TOOL_REPORT_MARKER"],
     workspace: (root, token, config) => new LocalGitWorkspace({ workspaceRoot: root, gitAuth: gitCloneAuth(token), commitIdentity: config.commitIdentity }),
-    runner: (config, releaseAgeDays) =>
-      new CodexRunner(
-        codexIsolation({
-          commitIdentity: config.commitIdentity,
-          readDeny: config.readDeny,
-          commandPath: [GUARD_DIR],
-          releaseAgeDays,
-          buildCacheRoot: config.dirs.cache,
-        }),
-      ),
+    runner: (isolation) => new CodexRunner(isolation),
   };
 }

@@ -4,7 +4,7 @@
  *
  *   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
- *   supply-chain gradle-inventory --out <file> [--repo <dir>]
+ *   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
  *   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
  *
  * `compare` (pull requests) fails on findings head adds, on malware anywhere
@@ -45,7 +45,7 @@ const USAGE = `usage:
   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
-  supply-chain gradle-inventory --out <file> [--repo <dir>]
+  supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
   supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --started-at <iso> [--repo <dir>] [--reports <dir>] [--target-url <url>]`;
@@ -100,7 +100,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     return 2;
   }
   const repo = resolve(values.repo ?? process.cwd());
-  if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out);
+  if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out, values.head);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
   if (command === "candidates") return candidatesCommand(values, env, repo);
   if (command === "rescan-plan" || command === "rescan") return rescanCommand(command, values, env, repo);
@@ -228,13 +228,17 @@ async function gradleInput(
   throw new Error(`${tree.id} has Gradle builds: make its inventory with \`gradle-inventory\` on a checkout and pass it with --${side}-gradle`);
 }
 
-/** Runs the Gradle inventory on the checkout at `repo` (clean, at its HEAD commit) and writes it to `out`. */
-async function gradleInventoryCommand(repo: string, out: string): Promise<number> {
+/** Runs the Gradle inventory on the checkout at `repo` (clean, at its HEAD commit, or its working tree) and writes it to `out`. */
+async function gradleInventoryCommand(repo: string, out: string, which: string | undefined): Promise<number> {
   try {
-    const head = await gitTree(repo, "HEAD", runProcess);
-    const dirty = await runProcess("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: repo });
-    if (dirty.code !== 0 || dirty.stdout.trim() !== "") {
-      throw new Error("the checkout has changes to tracked files: the inventory wouldn't describe its commit");
+    if (which !== undefined && which !== "worktree") throw new Error(`gradle-inventory inventories HEAD or, with --head worktree, the working tree; got --head ${which}`);
+    // The working tree as it is (an edit not committed yet, for secure-it and bump-it), or the checkout's clean HEAD.
+    const head = which === "worktree" ? workingTree(repo) : await gitTree(repo, "HEAD", runProcess);
+    if (which === undefined) {
+      const dirty = await runProcess("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: repo });
+      if (dirty.code !== 0 || dirty.stdout.trim() !== "") {
+        throw new Error("the checkout has changes to tracked files: the inventory wouldn't describe its commit");
+      }
     }
     const builds = (await lenientSources(head)).gradleBuilds;
     if (builds.length === 0) {

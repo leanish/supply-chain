@@ -43,6 +43,11 @@ export function branchFor(rules: OwnPullRequests, now: Date, topic: string): str
   return `${rules.tool}/${now.toISOString().slice(0, 10)}-${slug}`;
 }
 
+/** The topic of one of the tool's branches (`secure-it/2026-10-07-vite` → `vite`), whatever its date; undefined for another branch. */
+export function topicOf(rules: OwnPullRequests, branch: string): string | undefined {
+  return new RegExp(`^${rules.tool}/\\d{4}-\\d{2}-\\d{2}-([a-z0-9._-]+)$`).exec(branch)?.[1];
+}
+
 function isOwnBranch(rules: OwnPullRequests, branch: string): boolean {
   return new RegExp(`^${rules.tool}/\\d{4}-\\d{2}-\\d{2}-[a-z0-9._-]+$`).test(branch);
 }
