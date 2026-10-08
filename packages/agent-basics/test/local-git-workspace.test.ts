@@ -1,5 +1,6 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/local-git-workspace.test.ts at e4f8a1e; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; new `remote-merging` and `beforePush` tests;
+// new stale-tracking-ref and git-stderr tests;
 // imports this package's modules from `../src/` instead of `../../src/`.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -193,6 +194,26 @@ describe.skipIf(!hasGit)("LocalGitWorkspace (real git)", () => {
     expect(err?.message).toMatch(/extraheader=<redacted>/);
     expect(err?.message).not.toContain(TOKEN);
     expect(err?.message).not.toContain(Buffer.from(`x-access-token:${TOKEN}`).toString("base64"));
+  });
+
+  it("quotes git's stderr in a failure, credentials masked", async () => {
+    const basic = Buffer.from(`x-access-token:${TOKEN}`).toString("base64");
+    const dir = mkdtempSync(join(tmpdir(), "lgw-fakegit-"));
+    tmpDirs.push(dir);
+    const bin = join(dir, "git");
+    writeFileSync(
+      bin,
+      `#!/bin/sh\nprintf 'fatal: unable to access https://x-access-token:${TOKEN}@github.com/acme/widget.git\\nAuthorization: Basic ${basic}\\n' >&2\nexit 128\n`,
+      { mode: 0o755 },
+    );
+    const ws = new LocalGitWorkspace({ workspaceRoot: makeRoot(), gitBin: bin, gitAuth: { host: "github.com", token: TOKEN } });
+
+    const err = await ws.sync([project("https://github.com/acme/widget.git")]).then(() => null, (e: unknown) => e as Error);
+
+    expect(err?.message).toMatch(/exited with code 128; .*stderr: fatal: unable to access https:\/\/<redacted>@github\.com/s);
+    expect(err?.message).toContain("Authorization: <redacted>");
+    expect(err?.message).not.toContain(TOKEN);
+    expect(err?.message).not.toContain(basic);
   });
 });
 
@@ -399,6 +420,89 @@ describe.skipIf(!hasGit)("LocalGitWorkspace branch publication (real git)", () =
     expect(spawnSync("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${BRANCH}`], { cwd: origin }).status).not.toBe(0);
 
     expect(await ws.deleteRemoteBranch(wc, { branch: BRANCH, expectedSha: moved })).toEqual({ kind: "moved", found: null });
+  });
+
+  describe("stale remote-tracking refs (a deleted branch's ref blocking another's path)", () => {
+    function trackingRefs(wc: WorkingCopy): string[] {
+      return gitOut(wc.path, [`--git-dir=${wc.gitDir!}`, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/"]).split("\n");
+    }
+
+    function plantPacked(wc: WorkingCopy, refs: ReadonlyArray<string>): void {
+      const sha = gitOut(wc.path, [`--git-dir=${wc.gitDir!}`, "rev-parse", "HEAD"]);
+      for (const ref of refs) git(wc.path, [`--git-dir=${wc.gitDir!}`, "update-ref", ref, sha]);
+      git(wc.path, [`--git-dir=${wc.gitDir!}`, "pack-refs", "--all"]);
+    }
+
+    it("fetches a branch whose parent path a packed stale ref holds, keeping similar and unrelated refs", async () => {
+      const { origin, scratch } = makeOrigin();
+      const { ws, wc } = await synced(origin);
+      // Left by an earlier run, before origin's `bump-it` was deleted and `bump-it/routine` pushed.
+      plantPacked(wc, ["refs/remotes/origin/bump-it", "refs/remotes/origin/bump-itx", "refs/remotes/origin/other/bump-it"]);
+      git(scratch, ["checkout", "-q", "-b", "bump-it/routine"]);
+      commitIn(scratch, "deps.txt", "a=1\n", "routine refresh");
+      git(scratch, ["push", "-q", "origin", "bump-it/routine"]);
+
+      const prep = await ws.prepareBranch(wc, { branch: "bump-it/routine", start: "remote" });
+
+      if (prep.kind !== "prepared") throw new Error("expected a prepared branch");
+      expect(prep.prepared.remoteHeadSha).toBe(gitOut(scratch, ["rev-parse", "HEAD"]));
+      expect(trackingRefs(wc)).not.toContain("refs/remotes/origin/bump-it");
+      expect(trackingRefs(wc)).toEqual(
+        expect.arrayContaining(["refs/remotes/origin/bump-it/routine", "refs/remotes/origin/bump-itx", "refs/remotes/origin/other/bump-it"]),
+      );
+    });
+
+    it("fetches a branch whose path stale refs under it hold", async () => {
+      const { origin, scratch } = makeOrigin();
+      const { ws, wc } = await synced(origin);
+      plantPacked(wc, ["refs/remotes/origin/release/old", "refs/remotes/origin/release/older/one"]);
+      git(scratch, ["checkout", "-q", "-b", "release"]);
+      commitIn(scratch, "notes.txt", "r1\n", "release");
+      git(scratch, ["push", "-q", "origin", "release"]);
+
+      const prep = await ws.prepareBranch(wc, { branch: "release", start: "remote" });
+
+      expect(prep.kind).toBe("prepared");
+      expect(trackingRefs(wc).filter((ref) => ref.startsWith("refs/remotes/origin/release"))).toEqual(["refs/remotes/origin/release"]);
+    });
+
+    it("still fails, saying why, when the branch is gone from origin too", async () => {
+      const { origin } = makeOrigin();
+      const { ws, wc } = await synced(origin);
+      plantPacked(wc, ["refs/remotes/origin/bump-it"]);
+
+      const err = await ws.prepareBranch(wc, { branch: "bump-it/missing", start: "remote" }).then(() => null, (e: unknown) => e as Error);
+
+      expect(err?.message).toMatch(/git fetch exited with code \d+; .*stderr: .*couldn't find remote ref refs\/heads\/bump-it\/missing/s);
+    });
+
+    it("publishes a new branch whose parent path a stale ref holds, and tracks it", async () => {
+      const { origin } = makeOrigin();
+      const { ws, wc } = await synced(origin);
+      const prep = await ws.prepareBranch(wc, { branch: BRANCH, start: "default" });
+      if (prep.kind !== "prepared") throw new Error("expected a prepared branch");
+      plantPacked(wc, ["refs/remotes/origin/bump-it"]);
+      writeFileSync(join(wc.path, "deps.txt"), "a=1\n");
+
+      const published = await ws.publishBranch(wc, prep.prepared, { message: "refreshing" });
+
+      if (published.kind !== "pushed") throw new Error("expected a push");
+      expect(gitOut(origin, ["rev-parse", `refs/heads/${BRANCH}`])).toBe(published.sha);
+      expect(gitOut(wc.path, [`--git-dir=${wc.gitDir!}`, "rev-parse", `refs/remotes/origin/${BRANCH}`])).toBe(published.sha);
+    });
+  });
+
+  it("quotes git's stderr when a captured call fails", async () => {
+    const { origin } = makeOrigin();
+    const { ws, wc } = await synced(origin);
+    const prep = await ws.prepareBranch(wc, { branch: BRANCH, start: "default" });
+    if (prep.kind !== "prepared") throw new Error("expected a prepared branch");
+    writeFileSync(join(wc.path, "deps.txt"), "a=1\n");
+    rmSync(origin, { recursive: true, force: true });
+
+    const err = await ws.publishBranch(wc, prep.prepared, { message: "refreshing" }).then(() => null, (e: unknown) => e as Error);
+
+    expect(err?.message).toMatch(/ls-remote .* exited with code \d+; stderr: .+/s);
   });
 
   it("reports unchanged when the agent edited nothing", async () => {
