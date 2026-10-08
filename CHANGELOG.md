@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1 - 2026-10-08
+
+### Fixed
+
+- Built-in OpenAI model prices provide API-equivalent usage estimates, including
+  cached input and per-request long-context rates; configured price overrides
+  remain supported.
+- Deprecated npm releases are excluded from direct and transitive target
+  candidates, including accidental major releases.
+- `@types/node` targets respect the lowest supported Node runtime across engines,
+  version files, Volta and CI. The cap covers direct/peer targets, routine
+  transitives and major-induced copies, with exact pinning and final checks.
+- Scheduled-scan detection recognizes callers of the reusable supply-chain
+  workflow, rather than requiring the caller's workflow name to match it.
+- npm registry lookup URLs encode package/version path segments explicitly,
+  addressing the CodeQL sanitization findings without changing package identity.
+
 ## 0.1.0 - 2026-10-08
 
 ### Added
