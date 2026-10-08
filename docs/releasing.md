@@ -19,7 +19,7 @@ GitHub release. The first release was v0.1.0; v0.1.1 contains the fixes listed i
    skips, and retain the [real-run evidence](validation.md).
 4. Squash-merge the release PR and create a lightweight `v<version>` tag at
    **its exact merge commit**. Create the matching GitHub release with the fixes
-   and `See `CHANGELOG.md` for more information`, as java-conventions does.
+   and a link to `CHANGELOG.md` for more information, as java-conventions does.
    Do not move an existing tag or publish packages.
 5. When the reusable workflow or gate code changes, resolve the tag's full commit
    SHA and repin adopting workflows to
