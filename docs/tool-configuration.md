@@ -32,7 +32,7 @@ permissions and schedules.
 | `dirs.state` | `~/.local/share/leanish/<tool>` | Workspaces, separate git metadata, publication journal and protected OSV-Scanner. bump-it also stores deferred-major ordering here. Keep this outside temp and cache roots; see the adoption guide. |
 | `dirs.cache` | `~/.cache/leanish/<tool>` | Sandbox-writable build cache, including Gradle and npm caches. Keep separate from state and between tools. |
 | `readDeny` | `[]` | Extra absolute paths denied to sandboxed commands, in addition to existing sensitive home paths. These paths' names can reach the model; their contents cannot. Other readable files can reach the model provider. |
-| `modelPrices` | Unset | Absolute path to the optional JSON price table below. Without prices, token usage is still reported and cost gaps are explicit. |
+| `modelPrices` | Built-in dated OpenAI Standard prices | Absolute path to an optional JSON table replacing the built-in rates. Unknown models and incomplete measurements still produce explicit cost gaps. |
 | `staleScanHours` | secure-it only, `36` | Positive integer: warn if the base branch's last successful daily full scan is older. This does not replace CI's daily scan or stop planning. |
 | `maxNewMajorsPerRun` | bump-it only, `3` | Nonnegative integer. Caps newly opened major PRs, never updates to existing ones. `0` defers all new majors. Deferred majors have priority next run. |
 
@@ -73,7 +73,7 @@ not family aliases such as `sol`. Each entry requires all four nonnegative USD
 prices per million tokens: `inputPerMTok`, `cachedInputPerMTok`,
 `cacheWritePerMTok`, `outputPerMTok`; and three provenance strings: `basis`
 (assumptions/context tier), `source` (provider pricing URL), `asOf` (date checked,
-`YYYY-MM-DD`). Use the provider's current prices; this repository ships no rates.
+`YYYY-MM-DD`). The default [table](../packages/remediation/src/model-prices.ts) covers GPT-6.1 Sol, GPT-6 Sol/Astra/Luna and retained GPT-5.6 Sol/Terra/Luna, checked on 2026-10-08 against [OpenAI pricing](https://developers.openai.com/api/docs/pricing) and its model pages. Rates assume Standard API processing without a regional premium; configure an override for Fast, Flex or other pricing. Long-context rates apply per request above 272,000 input tokens. The table needs periodic refresh; family aliases are resolved by the runner before pricing.
 
 Optional `longContextThresholdTokens` is a positive integer. If a request above
 that threshold has no `longContext` object with the same four price fields, it

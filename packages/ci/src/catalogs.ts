@@ -7,6 +7,7 @@
  */
 import type { Fetch } from "./http.ts";
 import type { MavenDates } from "./maven-changes.ts";
+import { isObject } from "./json.ts";
 import { type NpmRegistry, publishTime } from "./npm-registry.ts";
 import type { PackageName, PackageVersion } from "./package-version.ts";
 import { mavenCoordinates } from "./source-repos.ts";
@@ -20,7 +21,8 @@ export class NpmCatalog implements VersionCatalog {
   }
 
   async versions(pkg: PackageName): Promise<ReadonlyArray<string> | undefined> {
-    return Object.keys((await this.registry.packument(pkg.name)).versions);
+    const versions = (await this.registry.packument(pkg.name)).versions;
+    return Object.entries(versions).filter(([, manifest]) => !deprecated(manifest)).map(([version]) => version);
   }
 
   async published(pkg: PackageVersion): Promise<Date | undefined> {
@@ -32,6 +34,11 @@ export class NpmCatalog implements VersionCatalog {
       return undefined;
     }
   }
+}
+
+/** npm clears deprecation with an empty message; any nonempty message excludes a new target. */
+function deprecated(manifest: unknown): boolean {
+  return isObject(manifest) && typeof manifest["deprecated"] === "string" && manifest["deprecated"].length > 0;
 }
 
 export class MavenCatalog implements VersionCatalog {

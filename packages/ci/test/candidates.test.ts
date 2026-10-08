@@ -286,6 +286,16 @@ describe("securityCandidates, regressions", () => {
 });
 
 describe("bumpCandidates", () => {
+  it("skips deprecated routine and major releases, including aws-cdk's accidental major", async () => {
+    const registry = { "aws-cdk": { "2.1000.0": OLD, "2.1143.0": OLD, "2.1144.0": OLD, "3.0.0": OLD } };
+    const head = await tree({ "aws-cdk": "2.1000.0" }, {}, { dependencies: { "aws-cdk": "^2.1000.0" } });
+    const found = await bumpCandidates(head, environment({}, registry, [], {
+      "aws-cdk@2.1144.0": { deprecated: "Bad release" },
+      "aws-cdk@3.0.0": { deprecated: "This version was published accidentally. Please use 2.x.x instead." },
+    }));
+    expect(found.bumps[0]).toMatchObject({ minor: { version: "2.1143.0" }, major: undefined });
+  });
+
   it("moves each direct dependency to its line's highest aged version and its highest newer line's, leaving transitives alone", async () => {
     const scans: string[][] = [];
     const registry = {
