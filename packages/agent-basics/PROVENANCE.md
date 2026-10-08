@@ -26,7 +26,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `guard/lib.sh` | `agents/bump-it/local/guard/lib.sh` | copied | messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool" |
 | `src/errors.ts` | `core/runtime/src/errors.ts` | copied | only the classes the copied modules use; parameter properties written as fields |
 | `src/github/github-client.ts` | `core/runtime/src/needs/github-client.ts` | copied | `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them |
-| `src/isolation.ts` | `core/runtime/src/runtime/run-local-cli.ts` (`localCodexOptions`, `SENSITIVE_HOME_PATHS`) | derived | inputs from the tool's config; the configured commit identity instead of the developer's global one; the repository's release age, its own npm scopes exempt (`min-release-age-exclude`) |
+| `src/isolation.ts` | `core/runtime/src/runtime/run-local-cli.ts` (`localCodexOptions`, `SENSITIVE_HOME_PATHS`) | derived | inputs from the tool's config; the configured commit identity instead of the developer's global one; the repository's release age, its own npm scopes exempt (`min-release-age-exclude`); deny the resolved login `auth.json` and its canonical path when present, including custom `CODEX_HOME` |
 | `src/logger/console-logger.ts` | `core/runtime/src/logger/console-logger.ts` | copied | — |
 | `src/logger/correlation.ts` | `core/runtime/src/logger/correlation.ts` | copied | — |
 | `src/logger/redactor.ts` | `core/runtime/src/logger/redactor.ts` | copied | — |
