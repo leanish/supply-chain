@@ -298,6 +298,17 @@ describe("bumpCandidates", () => {
     expect(scans.flat()).not.toContain("@types/node@26.6.3");
   });
 
+  it("caps an aliased Node types declaration using the repository's pinned runtime", async () => {
+    const root = { devDependencies: { "node-types": "npm:@types/node@^22.0.0" } };
+    const lock = { lockfileVersion: 3, packages: {
+      "": root,
+      "node_modules/node-types": { name: "@types/node", version: "22.0.0", resolved: "https://registry.npmjs.org/@types/node/-/node-22.0.0.tgz", integrity: "sha512-AAAA" },
+    } };
+    const head = await tree({}, { ".node-version": "24.10.0", "package-lock.json": JSON.stringify(lock) });
+    const found = await bumpCandidates(head, environment({}, { "@types/node": { "22.0.0": OLD, "24.19.0": OLD, "26.6.3": OLD } }));
+    expect(found.bumps[0]).toMatchObject({ name: "@types/node", major: { version: "24.19.0" }, declarations: [{ declaredAs: "node-types" }] });
+  });
+
   it("keeps the current type major and reports unreadable runtime metadata", async () => {
     const root = { devDependencies: { "@types/node": "^24.19.0" } };
     const head = await tree({ "@types/node": "24.19.0" }, { ".nvmrc": "lts/*" }, root);
