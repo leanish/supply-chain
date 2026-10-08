@@ -1,8 +1,10 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory.
+// Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory;
+// the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved;
+// `beforePush`, called with the commit before it's pushed.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { assertRepoSourceId, type RepoSource as Project } from "../types/repo-source.ts";
@@ -149,7 +151,7 @@ export class LocalGitWorkspace implements Workspace {
     await this.#fetch(repo, args.branch);
     const remoteHeadSha = await this.#rev(repo, `refs/remotes/origin/${args.branch}`);
     await this.#checkout(repo, args.branch, remoteHeadSha);
-    if (args.start === "remote-merged" && !(await this.#isAncestor(repo, baseSha, remoteHeadSha))) {
+    if ((args.start === "remote-merged" || args.start === "remote-merging") && !(await this.#isAncestor(repo, baseSha, remoteHeadSha))) {
       const merged = await this.#runStatus(repo, [
         ...this.#identityArgs("merge"),
         "merge",
@@ -158,8 +160,14 @@ export class LocalGitWorkspace implements Workspace {
         `refs/remotes/origin/${base}`,
       ]);
       if (merged !== 0) {
+        const conflicted = args.start === "remote-merging" ? await this.#conflictedPaths(repo) : [];
+        if (conflicted.length > 0) {
+          // Left in progress: the conflicts are resolved in the working tree, and publishBranch commits the merge.
+          return { kind: "conflicted", prepared: { branch: args.branch, baseSha, remoteHeadSha, preparedSha: remoteHeadSha }, conflicted };
+        }
         await this.#runStatus(repo, ["merge", "--abort"]);
         await this.#checkout(repo, args.branch, remoteHeadSha);
+        if (args.start === "remote-merging") throw new Error(`prepareBranch: merging origin/${base} into ${args.branch} failed without conflicts`);
         return { kind: "conflict" };
       }
     }
@@ -179,9 +187,12 @@ export class LocalGitWorkspace implements Workspace {
       throw new Error(`publishBranch: ${workingCopy.path} is no longer at the prepared ${preparation.branch} head`);
     }
 
+    const merging = (await this.#runStatus(repo, ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"])) === 0;
+    if (merging) await this.#assertResolved(repo);
     await this.#run(repo, "add", ["add", "--all"]);
     const staged = (await this.#runStatus(repo, ["diff", "--cached", "--quiet"])) === 1;
-    if (staged) {
+    // A merge in progress is committed even when its result has the branch's own tree: the merge itself is the change.
+    if (staged || merging) {
       await this.#run(repo, "commit", [...this.#identityArgs("commit"), "commit", "--no-verify", "--quiet", "-m", args.message]);
     }
     const head = await this.#rev(repo, "HEAD");
@@ -194,6 +205,7 @@ export class LocalGitWorkspace implements Workspace {
           `(expected ${preparation.remoteHeadSha ?? "no branch"}, found ${remoteHead ?? "no branch"})`,
       );
     }
+    await args.beforePush?.(head);
     // A plain push: GitHub refuses anything but a fast-forward or a new branch.
     await this.#run(repo, "push", [
       ...cloneAuthArgs(this.#gitAuth, repo.url),
@@ -298,6 +310,23 @@ export class LocalGitWorkspace implements Workspace {
   async #checkout(repo: Repo, branch: string, sha: string): Promise<void> {
     await this.#run(repo, "checkout", ["checkout", "--quiet", "--force", "-B", branch, sha]);
     await this.#run(repo, "clean", ["clean", "-ffdxq"]);
+  }
+
+  /** The paths a merge in progress left unmerged. */
+  async #conflictedPaths(repo: Repo): Promise<string[]> {
+    const { stdout } = await this.#capture(repo, ["diff", "--name-only", "--diff-filter=U", "-z"]);
+    return stdout.split("\0").filter((path) => path !== "");
+  }
+
+  /** Refuses to commit a merge while a conflicted path still has conflict markers. */
+  async #assertResolved(repo: Repo): Promise<void> {
+    const markers = /^(<{7}|>{7})( |$)|^={7}$|^\|{7}( |$)/m;
+    const unresolved: string[] = [];
+    for (const path of await this.#conflictedPaths(repo)) {
+      const content = await readFile(join(repo.workTree, path), "utf8").catch(() => "");
+      if (markers.test(content)) unresolved.push(path);
+    }
+    if (unresolved.length > 0) throw new Error(`publishBranch: ${unresolved.join(", ")} still has conflict markers`);
   }
 
   /** The branch's head on origin, or `null` when it has none. */

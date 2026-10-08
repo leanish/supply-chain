@@ -1,0 +1,24 @@
+{
+  "name": "@leanish/supply-chain-remediation",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What secure-it and bump-it share: config, their PRs on GitHub (publication with race checks, review ticks), and the command around a run.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
+  }
+}
