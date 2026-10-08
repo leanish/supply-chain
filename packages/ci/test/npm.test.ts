@@ -84,6 +84,20 @@ function fake(options: { times?: Record<string, Record<string, string>>; sources
 
 const registry = (body: unknown): Fetch => async () => respond({ ok: true, status: 200, body });
 
+describe("npm candidate catalog", () => {
+  it("excludes every nonempty deprecation message while keeping cleared deprecations and base publish times", async () => {
+    let reads = 0;
+    const fetch = registry({ time: { "1.0.0": "2026-01-01T00:00:00Z" }, versions: {
+      "1.0.0": { deprecated: "Accidental release" }, "1.0.1": { deprecated: " " },
+      "1.0.2": { deprecated: "" }, "1.0.3": {},
+    } });
+    const catalog = new NpmCatalog(new NpmRegistry(async (...args) => { reads++; return fetch(...args); }));
+    expect(await catalog.versions({ ecosystem: "npm", name: "lib" })).toEqual(["1.0.2", "1.0.3"]);
+    expect(await catalog.published({ ecosystem: "npm", name: "lib", version: "1.0.0" })).toEqual(new Date("2026-01-01"));
+    expect(reads).toBe(1);
+  });
+});
+
 /** A snapshot from `name@version` → advisories; every version not listed (and every candidate) has none. */
 function snapshot(
   affecting: Record<string, Advisory[]>,

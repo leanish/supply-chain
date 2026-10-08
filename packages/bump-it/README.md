@@ -114,3 +114,5 @@ verified immediately before running. See [the security model](../../docs/securit
 See [Adopting the tools](../../docs/adopting-tools.md) for the read-only candidate preview, first live run,
 Keychain permissions, and four complete launchd examples (weekly bump-it run, review every four hours).
 The [config reference](../../docs/tool-configuration.md) covers every agent.yaml field. Nothing merges itself.
+
+Deprecated npm releases are excluded from direct and transitive target candidates, including accidental majors. A deprecated version already in the base can stay when no eligible replacement exists; it is never selected as a new target.

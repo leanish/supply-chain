@@ -97,6 +97,26 @@ function handlers(run: (context: ToolRunContext) => Promise<Readonly<Record<stri
 }
 
 describe("runToolCommand", () => {
+  it.each([undefined, "/config/prices.json"])("prices measured calls using built-in rates or the explicit override %s", async (priceFile) => {
+    const tokens = { input: 1_000, cachedInput: 0, cacheWriteInput: 0, output: 100, reasoningOutput: 0, total: 1_100 };
+    const configured = { inputPerMTok: 1, cachedInputPerMTok: 0, cacheWritePerMTok: 0, outputPerMTok: 1, basis: "test", source: "test", asOf: "2026-10-07" };
+    const { fake, finalLine } = machine({
+      readText: async (path) => path === "/config/agent.yaml"
+        ? CONFIG + (priceFile === undefined ? "" : `modelPrices: ${priceFile}\n`)
+        : JSON.stringify({ "gpt-6.1-sol": configured }),
+      runner: () => ({ codingAgent: "codex", async run(invocation) {
+        invocation.onUsage?.({
+          codingAgent: "codex", durationMs: 1, synthetic: false, measurement: "complete", tokens,
+          models: [{ model: "gpt-6.1-sol", tokens, requests: [{ tokens, exact: true }] }],
+          quota: { status: "unavailable" }, gaps: [],
+        });
+        return { responseText: '```json\n{"summary":"fixed"}\n```' };
+      } }),
+    });
+    await runToolCommand(handlers(async (context) => { await context.agent({ entrypoint: "fix", input: { package: "lib" } }); return {}; }), ["run", "leanish/widget", "--config", "/config/agent.yaml"], fake);
+    expect(finalLine()).toMatchObject({ totals: { estimatedApiCostUsd: priceFile === undefined ? 0.003 : 0.0011, gaps: [] } });
+  });
+
   it.each(["secure-it", "bump-it"] as const)("uses %s's default Keychain services and gives only the read token to the agent", async (tool) => {
     const defaults = { [`leanish-${tool}-write`]: "write-token", [`leanish-${tool}-read`]: "read-token" };
     const { fake, invocations, requested } = machine({

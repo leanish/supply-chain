@@ -257,8 +257,8 @@ rotate these files. They may contain repository details and model responses.
 
 `skills` and `totals` record model calls, measured tokens, available quota
 observations, API-equivalent cost estimates and gaps. Incomplete measurements use
-lower bounds, not invented zero cost. Configure a dated [price table](tool-configuration.md#optional-price-table)
-for cost estimates; these are not a subscription bill. `maxNewMajorsPerRun` limits
+lower bounds, not invented zero cost. The tools ship dated OpenAI Standard rates; an optional [price table](tool-configuration.md#optional-price-table)
+replaces them for other tiers/providers. Estimates are not a subscription bill. `maxNewMajorsPerRun` limits
 new-major volume, not total spend. Pending/green review ticks use no model; base
 reconciliation and failed-CI adaptations can. npm/wrapper-only bump-it routines
 need no model, while majors use `majorEffort`. Failed attempts also consume usage.
