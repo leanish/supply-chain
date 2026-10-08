@@ -23,7 +23,8 @@ export function workingTree(root: string): Tree {
       try {
         return await readFile(join(root, path), "utf8");
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        // ENOTDIR: a parent is a file (`ci.yml/action.yml`), so there's no such file either.
+        if (isMissing(err)) return undefined;
         throw err;
       }
     },
@@ -32,11 +33,16 @@ export function workingTree(root: string): Tree {
         const entries = await readdir(join(root, dir), { recursive: true, withFileTypes: true });
         return entries.filter((entry) => entry.isFile()).map((entry) => relative(root, join(entry.parentPath, entry.name))).sort();
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        if (isMissing(err)) return [];
         throw err;
       }
     },
   };
+}
+
+function isMissing(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /** The tree of `revision` in the repository at `root`, resolved to its full SHA once. */

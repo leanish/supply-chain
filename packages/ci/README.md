@@ -57,11 +57,11 @@ A package with no GitHub source repository, an unreadable repository, and a rang
 
 ## GitHub Actions
 
-Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, in a root `action.yml`, and in every local `./` action a workflow uses, is an action version, located in the file that uses it. Files are parsed as YAML (comments kept, aliases followed, a file that doesn't parse fails), and every `uses:` key counts.
+Every `uses:` in `.github/workflows/*.yml`, in `.github/actions/**/action.yml`, in a root `action.yml`, and in every local `./` action a workflow uses (a local reusable workflow, `./.github/workflows/x.yml`, is read as the workflow it is), is an action version, located in the file that uses it. Files are parsed as YAML (comments kept, aliases followed, a file that doesn't parse fails), and every `uses:` key counts.
 
 - A use resolves to a version when it's pinned to a full commit SHA and its comment names a full release tag (`# v7.0.1`, `# tag=v7.0.1`; a floating `# v7` doesn't say what's pinned) that GitHub says points at that commit, annotated tags dereferenced.
 - **A new or changed `uses:`** must resolve: a tag or branch ref, a missing comment, or a comment whose tag points elsewhere fails. Each occurrence is judged on its own: same file, action, ref and comment as in base, or it's a change (so dropping a comment, or copying an unpinned ref into another workflow, counts). Its age is its GitHub release's publish time (a tag's own date is whatever its author wrote); no published release fails, own actions aside (`ownPackages["GitHub Actions"].owners`).
-- An unchanged `uses:` that doesn't resolve, `docker://` uses, and a local action without an `action.yml` are coverage gaps: the PR didn't make them worse.
+- An unchanged `uses:` that doesn't resolve, `docker://` uses, a local action without an `action.yml`, and a local reusable workflow that doesn't exist are coverage gaps: the PR didn't make them worse.
 - A young action version can pass by the young-fix rule like any other, its candidates being the repository's releases (every page; past 2,000 releases the listing is incomplete and the rule can't be checked).
 
 ## Floors: `.github/dependency-floors.json`
@@ -100,7 +100,7 @@ For every version a PR adds or changes:
 - **Identity:** a version that replaces another fails on a publisher identity break: provenance dropped or from another repository or workflow, provenance from a repository the replaced version doesn't declare, or (without provenance) a publisher who hadn't published the package up to the replaced version. Every provenance statement must name the exact package, version and locked sha512.
 - Bundles the lockfile doesn't fully record fail: every `bundleDependencies` entry, and what it depends on, needs an `inBundle` entry inside the package that ships it.
 
-After a scriptless `npm ci --ignore-scripts`, `npm audit signatures` verifies registry signatures and attestations of what was installed (a workflow step, not this CLI).
+The CLI's `npm-signatures` command runs scriptless `npm ci` and `npm audit signatures` in fresh temporary projects containing only the selected lockfile and root/workspace manifests. It ignores repository `.npmrc` files and ambient npm/proxy settings, uses only gate-approved registries, and disables Git execution. Git, tarball URL and external file dependencies are refused; internal workspace links remain supported. The PR job and daily rescan use this same verifier; the rescan skips it unless comparison passes. See the [security model](../../docs/security-model.md) for the publisher's execution boundary.
 
 ## A young security fix (any ecosystem)
 
@@ -157,8 +157,66 @@ Malware ids can't be excepted.
 
 ## Report
 
-`--report <file>` writes JSON: `schemaVersion`, `mode`, the gate's commit and OSV-Scanner version, a digest of the config, `baseSha`, `headSha`, `startedAt` (the snapshot's time), `completedAt`, `completed`, `verdict`, and the failures, warnings, notes and gaps.
+`--report <file>` writes JSON: `schemaVersion`, `mode`, the gate's commit and OSV-Scanner version, a digest of the config, `baseSha`, `headSha` (the daily rescan's reports also carry `prHeadSha`, the PR's own head, since its `headSha` is that head merged onto the base's tip), `startedAt` (the snapshot's time), `completedAt`, `completed`, `verdict`, and the failures, warnings, notes and gaps.
+
+## Adopting the gate
+
+The reusable workflow [`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml) runs all of it. Call it from a workflow of your own, pinned to a full commit SHA of this repository (the gate is checked out from the same commit, so that's the only pin):
+
+```yaml
+# .github/workflows/supply-chain.yml
+name: supply-chain
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *" # an odd minute: GitHub delays or drops scheduled runs on the hour
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Rescan only this open PR now
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    uses: leanish/supply-chain/.github/workflows/supply-chain.yml@<full commit SHA> # v0.1.0
+    permissions:
+      contents: read
+      pull-requests: read # the daily rescan lists open PRs
+      statuses: write # the daily rescan posts its verdicts
+    with:
+      java-version: "25" # for Gradle builds; several lines for several JDKs, the last one runs Gradle
+```
+
+What runs where:
+
+- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check.
+- **On pushes to the default branch and daily:** the full `scan`.
+- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures in clean temporary projects only when comparison passes, and posts the verdict as a commit status on the PR's head, named like the required check, unless a newer status of that name exists. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
+
+**GitHub settings**
+
+- A ruleset (or branch protection) on the default branch requiring the check `supply-chain / supply-chain` (`<your job id> / supply-chain`; pass `required-check` if you call the job something else), from GitHub Actions. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
+- Actions enabled, allowing the actions this workflow uses (actions/checkout, setup-node, setup-java, upload-artifact, download-artifact).
+- The dependency graph and Dependabot **alerts** on; Dependabot version and security updates off (secure-it and bump-it make those PRs, with this gate's rules).
+
+**Limits**
+
+- **Fork PRs:** their workflow runs from the fork's own files, with a read-only token and no secrets, so their check is only as trustworthy as the PR: review workflow and build changes, require approval for outside contributors' runs, and don't merge before the daily rescan's status lands (or trigger it with `workflow_dispatch`, `pr` input).
+- **Scheduled runs** are best effort: GitHub may delay or skip them under load, and disables them in a public repository after 60 days without activity.
+- **The rescan goes through PRs one after another** in one job (up to 256 open PRs): minutes per PR, fine for a repository's own pace of work, slow for hundreds of open PRs.
+- A PR's build runs in its inventory job, which could also upload an artifact under another PR's name; such cross-PR tampering can make that PR's inventory lie, like a build can lie about its own.
+- The Gradle inventory comes from running the build, so a malicious build script or plugin can alter its own inventory; the job split keeps it from touching the comparison and the publishing credentials, not from lying about itself.
+
+**Updating the pin:** a PR that changes the SHA (and its `# vX.Y.Z` comment); bump-it does it like any other action update.
 
 ## Coming next
 
-A `candidates` command for secure-it and bump-it, and the reusable workflow with its daily rescan of open PRs.
+A `candidates` command for secure-it and bump-it.

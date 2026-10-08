@@ -30,3 +30,10 @@ export const runProcess: RunProcess = (command, args, options = {}) =>
       }),
     );
   });
+
+/** Credentials no tool the gate runs needs, kept out of its environment (a PR's `.npmrc` can expand variables). */
+const CREDENTIALS = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_FETCH_TOKEN", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"];
+
+export function withoutCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !CREDENTIALS.includes(key)));
+}

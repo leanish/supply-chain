@@ -197,6 +197,10 @@ describe("advisory ranges", () => {
     expect(inAdvisoryRange(maven, "4.0–33.7.1", "33.7.1-jre")).toBe(true);
     expect(inAdvisoryRange(maven, "4.0–33.7.1", "33.7.2-jre")).toBe(false);
     expect(inAdvisoryRange(npm, "≥ 3.0.0, ≤ 3.4.1", "3.4.1")).toBe(true);
+    // netty/netty's GHSA-4g8c-wm8x-jfhw, verbatim (`=<`).
+    expect(inAdvisoryRange(maven, "4.1.91.Final =< 4.1.117.Final", "4.1.117.Final")).toBe(true);
+    expect(inAdvisoryRange(maven, "4.1.91.Final =< 4.1.117.Final", "4.1.138.Final")).toBe(false);
+    expect(inAdvisoryRange(npm, "=> 2.0.0, < 2.1.0", "2.0.5")).toBe(true);
   });
 
   it("keeps `||` a hard boundary and reads an inverted interval as both open ends", () => {
