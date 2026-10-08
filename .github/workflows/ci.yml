@@ -33,9 +33,13 @@ jobs:
   # Keep the existing required check name; the reusable gate decides its result.
   supply-chain:
     needs: gate
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Supply-chain gate passed"
+      - name: Require a successful supply-chain gate
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+        run: test "$GATE_RESULT" = "success"
 
   check:
     needs: supply-chain
