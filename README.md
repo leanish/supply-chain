@@ -12,6 +12,7 @@ Work in progress: the pieces land through pull requests. Licensed under Apache-2
 - [Adopting the gate](packages/ci/README.md#adopting-the-gate), and everything it checks: [`packages/ci/README.md`](packages/ci/README.md)
 - [Security model](docs/security-model.md): what runs where, and which token it can reach
 - [Coverage gaps](docs/coverage-gaps.md)
+- [`packages/agent-basics`](packages/agent-basics): running a coding agent for secure-it and bump-it, copied for now from leanish-development's runtime ([provenance](packages/agent-basics/PROVENANCE.md))
 
 ## Development
 

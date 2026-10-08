@@ -1,0 +1,47 @@
+#!/bin/bash
+# Copied from leanish/leanish-development agents/bump-it/local/guard/gh at e4f8a1e; see PROVENANCE.md.
+# Local changes: messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool".
+# agent guard for gh: reads only. The agent's token is read-only, and every
+# GitHub write (PRs, comments, labels, ready, close) is the tool's; this
+# shim catches a mistaken write before it reaches the API. Never merge,
+# settings, secrets, workflows, releases or the token itself.
+# No `set -u`: macOS's bash 3.2 treats an empty "${array[@]}" as unbound.
+source "$(dirname "$0")/lib.sh"
+real=$(real_bin gh)
+
+check_api() {
+  local method="" fields=false endpoint="" arg next=""
+  for arg in "$@"; do
+    if [ -n "$next" ]; then method=$(printf '%s' "$arg" | tr '[:lower:]' '[:upper:]'); next=""; continue; fi
+    case "$arg" in
+      -X|--method) next=1 ;;
+      --method=*) method=$(printf '%s' "${arg#--method=}" | tr '[:lower:]' '[:upper:]') ;;
+      -X*) method=$(printf '%s' "${arg#-X}" | tr '[:lower:]' '[:upper:]') ;;
+      -f|-F|--field|--raw-field|--input|-f*|-F*|--field=*|--raw-field=*|--input=*) fields=true ;;
+      -*) ;;
+      *) [ -z "$endpoint" ] && endpoint=$arg ;;
+    esac
+  done
+  [ "$endpoint" = graphql ] && deny "gh api graphql"
+  # gh turns a call with fields into a POST unless the method says otherwise.
+  if [ -z "$method" ]; then
+    [ "$fields" = true ] && method=POST || method=GET
+  fi
+  [ "$method" = GET ] || deny "gh api $method $endpoint"
+}
+
+verb=${2:-}
+case "${1:-}" in
+  ""|--version|version|help|--help) ;;
+  pr) case "$verb" in list|view|diff|checks|status) ;; *) deny "gh pr $verb (the tool does GitHub writes)" ;; esac ;;
+  repo) [ "$verb" = view ] || deny "gh repo $verb" ;;
+  api) check_api "${@:2}" ;;
+  run) case "$verb" in list|view|watch) ;; *) deny "gh run $verb" ;; esac ;;
+  release) case "$verb" in list|view) ;; *) deny "gh release $verb" ;; esac ;;
+  issue) case "$verb" in list|view) ;; *) deny "gh issue $verb" ;; esac ;;
+  label) [ "$verb" = list ] || deny "gh label $verb" ;;
+  search|status) ;;
+  auth) [ "$verb" = status ] || deny "gh auth $verb" ;;
+  *) deny "gh ${1}" ;;
+esac
+exec "$real" "$@"

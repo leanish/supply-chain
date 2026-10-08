@@ -23,6 +23,8 @@ jobs:
   # The gate on this repository itself, from the code under review: the same reusable workflow adopters call.
   gate:
     uses: ./.github/workflows/supply-chain.yml
+    with:
+      required-check: supply-chain
     permissions:
       contents: read
       pull-requests: read

@@ -1,0 +1,70 @@
+#!/bin/bash
+# Copied from leanish/leanish-development agents/bump-it/local/guard/git at e4f8a1e; see PROVENANCE.md.
+# Local changes: messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool".
+# agent guard for git: no pushes (the tool publishes; the agent's git
+# metadata is read-only anyway), and origin and credential settings can't be
+# changed. Everything else passes through to the real git.
+# No `set -u`: macOS's bash 3.2 treats an empty "${array[@]}" as unbound.
+source "$(dirname "$0")/lib.sh"
+real=$(real_bin git)
+
+# Config keys that would redirect pushes or credentials.
+risky_key() {
+  local key
+  key=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$key" in
+    remote.*|url.*|credential*|include.*|includeif.*|core.sshcommand|core.askpass|core.hookspath|core.gitproxy|http.*extraheader*|http.*proxy*|pushurl) return 0 ;;
+  esac
+  return 1
+}
+
+# Global options come before the subcommand.
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  a=${args[$i]}
+  case "$a" in
+    -C|--git-dir|--work-tree|--namespace|--exec-path) i=$((i + 2)) ;;
+    -c)
+      risky_key "${args[$((i + 1))]%%=*}" && deny "git -c ${args[$((i + 1))]%%=*}"
+      i=$((i + 2)) ;;
+    --config-env=*) deny "git --config-env" ;;
+    -*) i=$((i + 1)) ;;
+    *) break ;;
+  esac
+done
+sub=${args[$i]:-}
+rest=("${args[@]:$((i + 1))}")
+
+check_remote() {
+  case "${rest[0]:-}" in
+    ""|-v|--verbose|show|get-url) ;;
+    *) deny "git remote ${rest[0]}" ;;
+  esac
+}
+
+check_config() {
+  local arg read=false write=false scope="" key="" values=0
+  for arg in "${rest[@]}"; do
+    case "$arg" in
+      --get|--get-all|--get-regexp|--get-urlmatch|-l|--list|get|list) read=true ;;
+      -e|--edit) deny "git config --edit" ;;
+      --unset|--unset-all|--add|--replace-all|--rename-section|--remove-section|set|unset) write=true ;;
+      --global|--system) scope=$arg ;;
+      -*) ;;
+      *) if [ -z "$key" ]; then key=$arg; else values=$((values + 1)); fi ;;
+    esac
+  done
+  # `git config <key>` alone is a read too.
+  if [ "$write" = false ] && { [ "$read" = true ] || [ "$values" -eq 0 ]; }; then return 0; fi
+  [ -z "$scope" ] || deny "git config $scope (write)"
+  [ -n "$key" ] && risky_key "$key" && deny "git config $key"
+  return 0
+}
+
+case "$sub" in
+  push) deny "git push (the tool pushes what you leave in the working tree)" ;;
+  remote) check_remote ;;
+  config) check_config ;;
+esac
+exec "$real" "$@"
