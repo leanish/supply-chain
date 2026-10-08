@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { versionKey } from "../../ci/src/package-version.ts";
+import { NpmCatalog } from "../../ci/src/catalogs.ts";
+import { NpmRegistry } from "../../ci/src/npm-registry.ts";
 import { type Advisory, Snapshot } from "../../ci/src/snapshot.ts";
+import { fakeFetch } from "../../ci/test/fake-fetch.ts";
 import { NpmGraph } from "../src/npm-graph.ts";
 import { repositoryOverrides } from "../src/npm-overrides.ts";
 import { decideTargets, type TargetInputs, type TargetSources } from "../src/npm-targets.ts";
@@ -8,7 +11,7 @@ import { decideTargets, type TargetInputs, type TargetSources } from "../src/npm
 const NOW = new Date("2026-10-07T06:00:00Z");
 const graph = (version: string, spec = "^1") => new NpmGraph({ packages: { "": { dependencies: { parent: "1" } }, "node_modules/parent": { version: "1.0.0", dependencies: { child: spec } }, "node_modules/child": { version } } });
 function inputs(spec = "^1", overrides: unknown = {}): TargetInputs {
-  return { graph: graph("1.2.0", spec), base: graph("1.0.0"), baseVersions: new Map([["child", ["1.0.0"]], ["parent", ["1.0.0"]]]), overrides: repositoryOverrides(overrides), direct: new Map([["node_modules/parent", "1.0.0"]]) };
+  return { nodeRuntime: { major: undefined, sources: [] }, graph: graph("1.2.0", spec), base: graph("1.0.0"), baseVersions: new Map([["child", ["1.0.0"]], ["parent", ["1.0.0"]]]), overrides: repositoryOverrides(overrides), direct: new Map([["node_modules/parent", "1.0.0"]]) };
 }
 function sources(findings: Record<string, Advisory[]> = {}): TargetSources {
   return { now: NOW, releaseAgeDays: 7, isOwn: () => false, versions: async () => ["1.0.0", "1.1.0", "1.2.0", "1.3.0"], published: async () => new Date("2026-09-01"), identity: async () => [], snapshot: async (base, candidates) => new Snapshot(new Map([...base, ...candidates].map((pkg) => [versionKey(pkg), findings[pkg.version] ?? []])), [], NOW) };
@@ -17,6 +20,21 @@ const advisory = (id: string, malicious = false): Advisory => ({ id, ids: [id], 
 const child = (result: Awaited<ReturnType<typeof decideTargets>>) => result.find((decision) => decision.copy.name === "child");
 
 describe("code-decided transitive targets", () => {
+  it("replaces npm's deprecated transitive pick with the highest nondeprecated eligible candidate", async () => {
+    const catalog = new NpmCatalog(new NpmRegistry(fakeFetch({
+      "https://registry.npmjs.org/child": { body: {
+        time: { "1.0.0": "2026-09-01T00:00:00Z", "1.2.0": "2026-09-01T00:00:00Z", "1.3.0": "2026-09-01T00:00:00Z" },
+        versions: { "1.0.0": {}, "1.2.0": {}, "1.3.0": { deprecated: "Accidental release" } },
+      } },
+    })));
+    const found = await decideTargets({ ...inputs(), graph: graph("1.3.0") }, {
+      ...sources(),
+      versions: (name) => catalog.versions({ ecosystem: "npm", name }),
+      published: (name, version) => catalog.published({ ecosystem: "npm", name, version }),
+    });
+    expect(child(found)).toMatchObject({ kind: "target", target: "1.2.0" });
+  });
+
   it("chooses the highest eligible in all parents' ranges on one snapshot, regardless of npm's pick", async () => {
     const snapshot = vi.fn(sources().snapshot);
     const found = await decideTargets(inputs(), { ...sources(), snapshot });

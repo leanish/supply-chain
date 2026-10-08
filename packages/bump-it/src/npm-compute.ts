@@ -2,11 +2,14 @@
  * Compute exact npm files in a sandboxed scratch copy, pin targets, then restore planned manifests.
  * npm's age exclusions include young or unreadable locked base versions, reported in notes;
  * code-decided targets still enforce age. Any exclusions require npm >= 11.17.0.
+ * Routine and major-induced Node types must fit the base tree's lowest supported runtime.
  */
 import { lstat, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import type { NpmDeclaration } from "../../ci/src/candidates.ts";
+import { type NodeRuntime, nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "../../ci/src/node-runtime.ts";
+import { workingTree } from "../../ci/src/tree.ts";
 
 import { assertLocalFile } from "./files.ts";
 import { formatManifest } from "./manifest-format.ts";
@@ -69,13 +72,18 @@ export async function computeNpm(inputs: NpmInputs): Promise<NpmResult> {
   const computedLocks = new Map(lockfiles.map((path) => [path, inputs.baseLocks.get(path)]));
   const preparedWindow = await npmWindowFor(versionsByName(computedLocks), inputs.window, inputs.sources);
   const notes = new Set(preparedWindow.notes);
+  const runtime = await nodeRuntime(workingTree(inputs.dir), [...inputs.baseLocks].flatMap(([lockfile, lock]) =>
+    Object.keys(new NpmGraph(lock).packages)
+      .filter((path) => !path.includes("node_modules/"))
+      .map((workspace) => ({ lockfile, workspace: workspace === "" ? "." : workspace })),
+  ));
   const readyInputs = { ...inputs, window: preparedWindow.window, sources: preparedWindow.sources };
   for (const lockfile of lockfiles) {
     // Use the same executable and project directory as every install/update, before changing any files.
     await requireNpmExcludes(inputs.npm, join(inputs.dir, dirname(lockfile)), preparedWindow.window.exclude, preparedWindow.reason);
   }
   for (const lockfile of lockfiles) {
-    const result = await computeLockfile(lockfile, readyInputs, baseVersions);
+    const result = await computeLockfile(lockfile, readyInputs, baseVersions, runtime);
     for (const [path, content] of result.files) {
       files.set(path, content);
     }
@@ -87,7 +95,7 @@ export async function computeNpm(inputs: NpmInputs): Promise<NpmResult> {
   return { files, changes, notes: [...notes].sort() };
 }
 
-async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions: ReadonlyMap<string, ReadonlyArray<string>>): Promise<NpmResult> {
+async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions: ReadonlyMap<string, ReadonlyArray<string>>, runtime: NodeRuntime): Promise<NpmResult> {
   const root = dirname(lockfile) === "." ? "" : dirname(lockfile);
   const at = (path: string) => join(inputs.dir, root, path);
   const repoPath = (path: string) => (root === "" ? path : `${root}/${path}`);
@@ -145,6 +153,7 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   const overrides = repositoryOverrides(plannedParsed.get(""));
   const plannedDirect = new Map(inputs.moves.filter((move) => move.lockfile === lockfile).map((move) => [`${move.workspace}:${move.declaredAs}`, move.to]));
   const baseCopies = new Map(baseGraph.copies().map((copy) => [copy.path, copy.version]));
+  const baseNodeTypes = new Map(baseGraph.copies().filter((copy) => copy.name === "@types/node").map((copy) => [copy.path, copy.version]));
   const baseDirect = new Map(baseGraph.declaredEdges().flatMap((edge) => {
     const version = edge.to === undefined ? undefined : baseCopies.get(edge.to);
     return version === undefined ? [] : [[`${edge.from === "" ? "." : edge.from}:${edge.key}`, version] as const];
@@ -153,15 +162,19 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   for (let pass = 0; ; pass++) {
     const graph = new NpmGraph(JSON.parse(await readFile(at(lockName), "utf8")));
     const direct = directTargets(graph, plannedDirect, baseDirect);
-    decisions =
-      inputs.kind === "routine"
-        ? await decideTargets({ graph, base: baseGraph, baseVersions, overrides, direct }, inputs.sources)
-        : graph.copies().flatMap((copy) => (direct.has(copy.path) ? [{ copy, kind: "target" as const, target: direct.get(copy.path)!, direct: true }] : []));
+    const targets = { graph, base: baseGraph, baseVersions, overrides, direct, nodeRuntime: runtime };
+    // Majors retain their induced graph, except Node API types must still fit the runtime.
+    decisions = inputs.kind === "routine"
+      ? await decideTargets(targets, inputs.sources)
+      : await decideTargets(targets, inputs.sources, (copy) =>
+        direct.has(copy.path) || copy.name === "@types/node" && !nodeTypesAllowed(copy.version, baseNodeTypes.get(copy.path), runtime),
+      );
     if (decisions.some((decision) => decision.kind === "unresolved" && decision.target === undefined)) {
       throw new Error(`a new copy in ${lockfile} has no eligible target: ${decisions.filter((decision) => decision.kind === "unresolved").map((decision) => decision.why).join("; ")}`);
     }
     const off = decisions.flatMap((decision) => (decision.target !== undefined && decision.target !== decision.copy.version ? [{ copy: decision.copy, target: decision.target }] : []));
     if (off.length === 0) {
+      assertNodeTypes(graph, baseNodeTypes, runtime, lockfile);
       break;
     }
     if (pass === MAX_PASSES) {
@@ -191,7 +204,30 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
     files.set(lockfile, finalText);
   }
   const notes = decisions.flatMap((decision) => decisionNotes(lockfile, decision));
+  if (new NpmGraph(JSON.parse(finalText)).copies().some((copy) => copy.name === "@types/node")) {
+    notes.push(nodeTypeProblem(runtime));
+  }
   return { files, changes: changesBetween(lockfile, baseGraph, new NpmGraph(JSON.parse(finalText))), notes };
+}
+
+/** Existing incompatible types need manual correction; never accept a new incompatible copy. */
+function assertNodeTypes(graph: NpmGraph, previous: ReadonlyMap<string, string>, runtime: NodeRuntime, lockfile: string): void {
+  for (const copy of graph.copies().filter((copy) => copy.name === "@types/node")) {
+    const from = previous.get(copy.path);
+    if (!nodeTypesAllowed(copy.version, from, runtime)) {
+      throw new Error(`${lockfile}: @types/node at ${copy.path} cannot land at ${copy.version}: ${nodeTypeProblem(runtime)}`);
+    }
+  }
+}
+
+function nodeTypesAllowed(version: string, from: string | undefined, runtime: NodeRuntime): boolean {
+  if (from === version) {
+    return true;
+  }
+  if (from === undefined && runtime.major === undefined) {
+    return false;
+  }
+  return nodeTypeVersions(from ?? version, [version], runtime).length > 0;
 }
 
 function decisionNotes(lockfile: string, decision: Decision): string[] {

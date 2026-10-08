@@ -19,6 +19,17 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   PR, including every declaration of that package with a selected major move. Each unit starts from the default branch,
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
+- `@types/node` targets never exceed the lowest supported Node major found in `engines.node`, `.nvmrc`,
+  `.node-version`, `volta.node`, or static `actions/setup-node` CI versions (including matrices). Root, lockfile-root
+  and declaring-workspace constraints are combined by taking the minimum; a newer development or CI runtime never
+  raises an older support floor. This applies to direct peer companions, the routine transitive refresh, and copies
+  induced by major updates.
+  npm-selected incompatible copies are re-locked to eligible versions within their parents' ranges; if no safe
+  resolution exists, the unit fails before publication. All workspace runtime constraints are included.
+  If none is readable, only updates within the current type major are allowed and the run reports why majors were
+  withheld. A newly introduced type copy also requires readable runtime evidence. Floating aliases and unresolved
+  CI expressions do not establish a support floor. An existing type major
+  above the runtime is left for a manual correction; bump-it does not raise it further or silently downgrade it.
 - The root Gradle wrapper joins the routine within its current major; the highest eligible newer major gets its own
   `gradle-gradle-major` PR, subject to the same new-major cap and deferred priority. Code picks stable, non-broken
   services.gradle.org releases at least `releaseAgeDays` old by `buildTime`. Published gradle/gradle repository
@@ -114,3 +125,5 @@ verified immediately before running. See [the security model](../../docs/securit
 See [Adopting the tools](../../docs/adopting-tools.md) for the read-only candidate preview, first live run,
 Keychain permissions, and four complete launchd examples (weekly bump-it run, review every four hours).
 The [config reference](../../docs/tool-configuration.md) covers every agent.yaml field. Nothing merges itself.
+
+Deprecated npm releases are excluded from direct and transitive target candidates, including accidental majors. A deprecated version already in the base can stay when no eligible replacement exists; it is never selected as a new target.

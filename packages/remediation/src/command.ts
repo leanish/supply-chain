@@ -37,6 +37,7 @@ import { readSettings } from "../../ci/src/gate.ts";
 import { workingTree } from "../../ci/src/tree.ts";
 
 import { defaultConfigPath, parseToolConfig, repoOf, type ToolConfig, type ToolRepo } from "./config.ts";
+import { DEFAULT_MODEL_PRICES } from "./model-prices.ts";
 import type { ToolName } from "./own-pr.ts";
 
 const GUARD_DIR = fileURLToPath(new URL("../../agent-basics/guard", import.meta.url));
@@ -142,7 +143,9 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
       buildCacheRoot: config.dirs.cache,
     });
     const runner = m.runner(isolation);
-    const prices = config.modelPrices === undefined ? undefined : parseModelPrices(JSON.parse(await m.readText(config.modelPrices)), config.modelPrices);
+    const prices = config.modelPrices === undefined
+      ? DEFAULT_MODEL_PRICES
+      : parseModelPrices(JSON.parse(await m.readText(config.modelPrices)), config.modelPrices);
     const skillContext = {
       entrypoints: handlers.skills.entrypoints,
       supportSkills: handlers.skills.support,
@@ -154,7 +157,7 @@ export async function runToolCommand(handlers: ToolHandlers, argv: ReadonlyArray
       validator: new SchemaValidator(),
       logger,
       usageRecorder: report.usageRecorder,
-      ...(prices === undefined ? {} : { modelPrices: prices }),
+      modelPrices: prices,
     };
     const context: ToolRunContext = {
       config,
