@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { versionKey } from "../../ci/src/package-version.ts";
+import { NpmCatalog } from "../../ci/src/catalogs.ts";
+import { NpmRegistry } from "../../ci/src/npm-registry.ts";
 import { type Advisory, Snapshot } from "../../ci/src/snapshot.ts";
+import { fakeFetch } from "../../ci/test/fake-fetch.ts";
 import { NpmGraph } from "../src/npm-graph.ts";
 import { repositoryOverrides } from "../src/npm-overrides.ts";
 import { decideTargets, type TargetInputs, type TargetSources } from "../src/npm-targets.ts";
@@ -17,6 +20,21 @@ const advisory = (id: string, malicious = false): Advisory => ({ id, ids: [id], 
 const child = (result: Awaited<ReturnType<typeof decideTargets>>) => result.find((decision) => decision.copy.name === "child");
 
 describe("code-decided transitive targets", () => {
+  it("replaces npm's deprecated transitive pick with the highest nondeprecated eligible candidate", async () => {
+    const catalog = new NpmCatalog(new NpmRegistry(fakeFetch({
+      "https://registry.npmjs.org/child": { body: {
+        time: { "1.0.0": "2026-09-01T00:00:00Z", "1.2.0": "2026-09-01T00:00:00Z", "1.3.0": "2026-09-01T00:00:00Z" },
+        versions: { "1.0.0": {}, "1.2.0": {}, "1.3.0": { deprecated: "Accidental release" } },
+      } },
+    })));
+    const found = await decideTargets({ ...inputs(), graph: graph("1.3.0") }, {
+      ...sources(),
+      versions: (name) => catalog.versions({ ecosystem: "npm", name }),
+      published: (name, version) => catalog.published({ ecosystem: "npm", name, version }),
+    });
+    expect(child(found)).toMatchObject({ kind: "target", target: "1.2.0" });
+  });
+
   it("chooses the highest eligible in all parents' ranges on one snapshot, regardless of npm's pick", async () => {
     const snapshot = vi.fn(sources().snapshot);
     const found = await decideTargets(inputs(), { ...sources(), snapshot });

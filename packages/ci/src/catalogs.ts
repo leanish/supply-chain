@@ -1,6 +1,6 @@
 /**
- * Version catalogs for the young-fix proof: every version a registry has,
- * and when each was published. npm reads the packument (already fetched for
+ * Version catalogs for candidate selection and the young-fix proof, with
+ * publish times. npm excludes deprecated targets and reads the packument (already fetched for
  * the age and identity checks); Maven joins `maven-metadata.xml` of every
  * configured repository that has it, and reads publish times from POM
  * `Last-Modified`.
