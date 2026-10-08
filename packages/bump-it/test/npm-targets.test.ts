@@ -11,7 +11,7 @@ import { decideTargets, type TargetInputs, type TargetSources } from "../src/npm
 const NOW = new Date("2026-10-07T06:00:00Z");
 const graph = (version: string, spec = "^1") => new NpmGraph({ packages: { "": { dependencies: { parent: "1" } }, "node_modules/parent": { version: "1.0.0", dependencies: { child: spec } }, "node_modules/child": { version } } });
 function inputs(spec = "^1", overrides: unknown = {}): TargetInputs {
-  return { graph: graph("1.2.0", spec), base: graph("1.0.0"), baseVersions: new Map([["child", ["1.0.0"]], ["parent", ["1.0.0"]]]), overrides: repositoryOverrides(overrides), direct: new Map([["node_modules/parent", "1.0.0"]]) };
+  return { nodeRuntime: { major: undefined, sources: [] }, graph: graph("1.2.0", spec), base: graph("1.0.0"), baseVersions: new Map([["child", ["1.0.0"]], ["parent", ["1.0.0"]]]), overrides: repositoryOverrides(overrides), direct: new Map([["node_modules/parent", "1.0.0"]]) };
 }
 function sources(findings: Record<string, Advisory[]> = {}): TargetSources {
   return { now: NOW, releaseAgeDays: 7, isOwn: () => false, versions: async () => ["1.0.0", "1.1.0", "1.2.0", "1.3.0"], published: async () => new Date("2026-09-01"), identity: async () => [], snapshot: async (base, candidates) => new Snapshot(new Map([...base, ...candidates].map((pkg) => [versionKey(pkg), findings[pkg.version] ?? []])), [], NOW) };
