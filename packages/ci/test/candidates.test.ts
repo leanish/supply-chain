@@ -70,11 +70,11 @@ function environment(affected: Record<string, string[]>, registry: Registry, sca
   const routes = Object.fromEntries(
     Object.entries(registry).flatMap(([name, versions]) => [
       [
-        `https://registry.npmjs.org/${name.replace("/", "%2F")}`,
+        `https://registry.npmjs.org/${encodeURIComponent(name)}`,
         { body: { time: versions, versions: Object.fromEntries(Object.keys(versions).map((version) => [version, { ...manifest, ...manifests[`${name}@${version}`] }])) } },
       ],
       // Each version's manifest, for its source repository (none here).
-      ...Object.keys(versions).map((version) => [`https://registry.npmjs.org/${name.replace("/", "%2F")}/${version}`, { body: {} }]),
+      ...Object.keys(versions).map((version) => [`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`, { body: {} }]),
     ]),
   );
   return { run, fetch: fakeFetch(routes), now: () => NOW, osvScanner: "osv-scanner", githubToken: undefined };
@@ -111,7 +111,7 @@ describe("securityCandidates", () => {
     expect(scans).toHaveLength(2);
     expect(scans[1]).toContain("@vitest/coverage-v8@4.1.11");
     expect(scans[1]).toContain("vitest@4.1.11");
-    for (const name of names) expect(fetched.filter((url) => url === `https://registry.npmjs.org/${name.replace("/", "%2F")}`)).toHaveLength(1);
+    for (const name of names) expect(fetched.filter((url) => url === `https://registry.npmjs.org/${encodeURIComponent(name)}`)).toHaveLength(1);
     const bumps = await bumpCandidates(head, environment({}, registry, [], manifests));
     const major = bumps.bumps.find((bump) => bump.name === "vitest")!;
     const coupled = await bumps.npmPeers!.resolve([{ name: major.name, from: major.from, to: major.minor!.version, locations: ["node_modules/vitest"] }]);

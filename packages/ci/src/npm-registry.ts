@@ -13,12 +13,14 @@
  * read must name the exact package, version and locked sha512.
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
- * (commit 9e7d098), unchanged in behavior.
+ * (commit 9e7d098). Registry package names are now encoded as whole URL
+ * components; empty and dot components fail before a request is made.
  */
 import type { Exceptions } from "./exceptions.ts";
 import type { Fetch } from "./http.ts";
 import { dig, isObject } from "./json.ts";
 import { type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
+import { npmPackageUrl } from "./npm-url.ts";
 
 const ATTESTATIONS_URL = `${NPM_REGISTRY}/-/npm/v1/attestations/`;
 const SLSA_PROVENANCE = "https://slsa.dev/provenance/";
@@ -120,7 +122,7 @@ export class NpmRegistry {
 }
 
 async function fetchPackument(name: string, fetch: Fetch): Promise<Packument> {
-  const response = await fetch(`${NPM_REGISTRY}/${name.replace("/", "%2F")}`, { headers: { accept: "application/json" } });
+  const response = await fetch(npmPackageUrl(name), { headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`registry lookup of ${name} failed with HTTP ${response.status}`);
   const json = await response.json();
   const times = isObject(json) ? json["time"] : undefined;

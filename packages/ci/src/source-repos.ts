@@ -7,7 +7,7 @@
  */
 import { mapLimited, type Fetch } from "./http.ts";
 import { dig, isObject } from "./json.ts";
-import { NPM_REGISTRY } from "./npm-lock.ts";
+import { npmPackageUrl } from "./npm-url.ts";
 import { packageKey, type PackageVersion, versionKey } from "./package-version.ts";
 
 export const MAVEN_CENTRAL = "https://repo1.maven.org/maven2";
@@ -38,7 +38,7 @@ export async function sourceRepository(pkg: PackageVersion, options: SourceRepoO
 }
 
 async function npmRepository(pkg: PackageVersion, fetch: Fetch): Promise<string | undefined> {
-  const url = `${NPM_REGISTRY}/${pkg.name.replace("/", "%2F")}/${encodeURIComponent(pkg.version)}`;
+  const url = npmPackageUrl(pkg.name, pkg.version);
   const response = await fetch(url, { headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`registry lookup of ${pkg.name}@${pkg.version} failed with HTTP ${response.status}`);
   const manifest = await response.json();
@@ -142,6 +142,8 @@ function interpolate(value: string, properties: ReadonlyMap<string, string>): st
 }
 
 function stripComments(xml: string): string {
+  // Metadata matching only, never HTML sanitization. Removing comments preserves
+  // text split by them (ac<!-- note -->me); spaces would change the repository name.
   return xml.replace(/<!--[\s\S]*?-->/g, "");
 }
 
