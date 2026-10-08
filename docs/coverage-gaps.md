@@ -23,3 +23,13 @@ These apply to versions a PR adds or changes, in `compare`; unchanged versions a
 
 - **Packages from another npm registry**: age and identity are checked against the npm registry only, so they fail, or (own packages) need a reviewed `identity` exception.
 - **Maven versions outside Maven Central and the Gradle Plugin Portal**: their release age can't be checked, so they fail unless configured. Own Maven packages skip the age check.
+
+## Gradle wrapper updates
+
+bump-it selects and verifies the root Gradle wrapper separately from the gate's dependency inventory. It reads
+stable, non-broken releases from services.gradle.org and published repository advisories from gradle/gradle; this
+is not a scan of the distribution archive. Nested wrappers, mirrors, custom distributions and prerelease base
+wrappers are not upgraded. The official wrapper jar is checksummed; generated shell/batch scripts are not
+independently compared with official scripts, but all four generated files are protected byte for byte and by executable
+mode against agent edits. A missing or unreadable advisory range leaves the wrapper out with a reported reason;
+other moves continue. Verification of a planned wrapper fails closed.

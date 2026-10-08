@@ -1,0 +1,290 @@
+[
+  {
+    "ghsa_id": "GHSA-mqwm-5m85-gmcv",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.gradle:gradle-core"
+        },
+        "vulnerable_version_range": "< 8.14.4, 9.0.0 to 9.2.1",
+        "patched_versions": "8.14.4, >= 9.3.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-w78c-w6vf-rw82",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "maven",
+          "name": "org.gradle:gradle-core"
+        },
+        "vulnerable_version_range": "< 8.14.4, 9.0.0 to 9.2.1",
+        "patched_versions": "8.14.4, >= 9.3.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-465q-w4mf-4f4r",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "8.12",
+        "patched_versions": "8.12.1",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-43r3-pqhv-f7h9",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.6.3, <8.4",
+        "patched_versions": "7.6.3, 8.4",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-mrff-q8qj-xvg8",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.6.3, <8.4",
+        "patched_versions": "7.6.3, 8.4",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-2h6c-rv6q-494v",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.6.1, [8.0,8.1.1]",
+        "patched_versions": "7.6.2, 8.2",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-84mw-qh6q-v842",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.6.1, [8.0,8.1.1]",
+        "patched_versions": "7.6.2, 8.2",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-c724-3xg7-g3hf",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "6.2 to 7.6",
+        "patched_versions": "6.9.4, 7.6.1, 8.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-j6wc-xfg8-jx2j",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "6.2 to 7.4.2",
+        "patched_versions": "7.5",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-9pf5-88jw-3qgr",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "6.2 to 7.3.3",
+        "patched_versions": "7.4",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-6j2p-252f-7mw8",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.2",
+        "patched_versions": "7.2",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-fp8h-qmr5-j4c8",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.0",
+        "patched_versions": "7.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-jvmj-rh6q-x395",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "5.1 to 6.8.3",
+        "patched_versions": "7.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-j45w-qrgf-25vm",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<6.8",
+        "patched_versions": "6.8",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-89qm-pxvm-p336",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "<7.0",
+        "patched_versions": "7.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-ww7h-4fx5-8c2j",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java, android, c/c++, build tooling",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "4.5 through 6.4.x",
+        "patched_versions": "6.5",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-mrm8-42q4-6rm7",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java, android, c/c++, build tooling",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "< 6.0",
+        "patched_versions": "6.0",
+        "vulnerable_functions": []
+      }
+    ]
+  },
+  {
+    "ghsa_id": "GHSA-4cwg-f7qc-6r95",
+    "state": "published",
+    "withdrawn_at": null,
+    "vulnerabilities": [
+      {
+        "package": {
+          "ecosystem": "java, android, c/c++, build tooling",
+          "name": "Gradle"
+        },
+        "vulnerable_version_range": "< 5.6",
+        "patched_versions": "5.6",
+        "vulnerable_functions": []
+      }
+    ]
+  }
+]

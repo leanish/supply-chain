@@ -1,6 +1,6 @@
 ---
 name: bump-it
-description: Apply bump-it's selected Gradle declarations and action pins, adapting code only for a major. npm files are written by the tool and must remain unchanged.
+description: Apply bump-it's selected Gradle declarations and action pins, adapting code only for a major. npm and wrapper files are written by the tool and must remain unchanged.
 compatibleCodingAgents: [codex]
 inputSchema:
   type: object
@@ -18,14 +18,22 @@ inputSchema:
         additionalProperties: false
         required: [ecosystem, name, from, to, mechanism, locations, major]
         properties:
-          ecosystem: { type: string, enum: [npm, Maven, GitHub Actions] }
+          ecosystem: { type: string, enum: [npm, Maven, GitHub Actions, Gradle Wrapper] }
           name: { type: string }
           from: { type: string }
           to: { type: string }
-          mechanism: { type: string, enum: [npm-range, gradle-declared, action-pin] }
+          mechanism: { type: string, enum: [npm-range, gradle-declared, action-pin, gradle-wrapper] }
           locations: { type: array, items: { type: string } }
           major: { type: boolean }
           commitSha: { type: string }
+          wrapper:
+            type: object
+            additionalProperties: false
+            required: [distributionUrl, distributionSha256, jarSha256]
+            properties:
+              distributionUrl: { type: string }
+              distributionSha256: { type: string, minLength: 64, maxLength: 64 }
+              jarSha256: { type: string, minLength: 64, maxLength: 64 }
     toolWritten: { type: array, items: { type: string } }
     failingChecks: { type: array, items: { type: string } }
     conflicted: { type: array, items: { type: string } }
@@ -74,6 +82,9 @@ or touch git metadata. Leave no temporary files: everything in the working tree 
   peerDependenciesMeta, overrides, workspaces). Only a major may adapt a manifest's other fields (scripts, config).
 - `gradle-declared`: edit the declarations in every configuration location, to exactly `to`, keeping the repository's
   version catalog and build conventions. Never add or change transitive constraints or raise a floor.
+- `gradle-wrapper`: already generated and applied by the tool. Never touch wrapper files: gradlew, gradlew.bat,
+  gradle/wrapper/gradle-wrapper.properties or gradle/wrapper/gradle-wrapper.jar. Keep their bytes and executable
+  modes unchanged in every editing mode. Do not run the wrapper task or download/replace a wrapper yourself.
 - `action-pin`: replace the planned action's uses in the named files with its same owner/repo/path at `commitSha # to`.
   Preserve the action's path. When a file has several versions, move only the uses at `from` to that move's target.
 - Never edit a dependency version outside the supplied moves. The tool-written npm graph can already include
@@ -88,12 +99,12 @@ or touch git metadata. Leave no temporary files: everything in the working tree 
 Run the repository's relevant checks. npm commands inherit min-release-age and min-release-age-exclude from the
 runner. Use `npm ci --ignore-scripts` when installation is needed: do not write lockfiles at all. Do not run npm
 install, npm update or any command that rewrites the tool's npm files; --package-lock-only is not a check. Don't run
-Gradle's wrapper-upgrade task; wrapper upgrades are a separate slice.
+Gradle's wrapper task: the tool has already generated and protected the wrapper files.
 
 ## Resolve and adapt
 
 In `resolve`, resolve the named code conflicts, preserving the base's changes and this major's adaptation; leave no
-conflict markers. The tool has taken the base's side of mechanical dependency files and re-written its npm plan.
+conflict markers. The tool has taken the base's side of mechanical dependency files and re-written its npm plan and generated wrapper files.
 Then apply the non-npm moves. In `adapt`, investigate `failingChecks` (Actions job names and commit status contexts)
 with `gh run list --commit <head SHA>`, `gh run view --log-failed` or commit status reads. These use Actions and
 Commit statuses permissions, never the Checks API. Fix only what this major broke. If it cannot be fixed within these limits, answer cannot-apply. Routine failures are not adapted.

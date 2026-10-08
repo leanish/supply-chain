@@ -19,6 +19,17 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   PR, including every declaration of that package with a selected major move. Each unit starts from the default branch,
   and a unit's failure does not stop others. Gradle transitives are never explicitly moved; induced changes are judged
   by `compare`. Recorded security and compatibility floors stay untouched.
+- The root Gradle wrapper joins the routine within its current major; the highest eligible newer major gets its own
+  `gradle-gradle-major` PR, subject to the same new-major cap and deferred priority. Code picks stable, non-broken
+  services.gradle.org releases at least `releaseAgeDays` old by `buildTime`. Published gradle/gradle repository
+  advisories are read once per run/tick: inherited advisories do not veto a candidate, but any newly affecting
+  advisory does. Release timestamps include their signed UTC offset; an invalid timestamp skips only that release,
+  with a reason in run results and plan notes. A rejected newer release does not veto an older eligible one.
+  Missing metadata or unreadable
+  advisory ranges leave the wrapper out with a reported reason; other moves continue.
+  Advisory reading supports inclusive `to`/`through` ranges, bracketed intervals and wildcard upper lines,
+  plus lists of maintenance-line fixes. An unknown advisory range omits the entire wrapper selection: without
+  readable bounds, code cannot prove which versions it might affect. Verification of a planned wrapper fails closed.
 - Before npm resolves a routine or major, code checks incoming and outgoing peer constraints against existing directs.
   Rule-picked bump targets stay fixed; required companions are added explicitly at the lowest safe version in their
   own compatible line that makes the set consistent, aged (own scopes: any age), with no new advisory group, malware
@@ -44,7 +55,7 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   induced transitives, even when those versions are absent from the explicit move list; the agent preserves them.
   It may adapt code and manifest scripts/config only for a major, using `majorEffort` (configure Sol with high effort). The [skill](skills/bump-it/SKILL.md) defines the boundary.
 - Verification fences off policy changes first, requires exact planned lockfiles and dependency fields, exact planned
-  Gradle declarations, unchanged unplanned declarations and floors, and correct action pins. Only after every local
+  Gradle declarations, unchanged unplanned declarations and floors, correct action pins and all generated wrapper bytes/modes plus official checksums. Only after every local
   check passes does it run `compare`, which must also pass. A report of local problems means `compare` has not run.
 - Open PRs count only when the head matches their body state or the exact tool journal entry. Same plan: leave it to
   review. Changed plan: merge base, revert all old PR edits to base, apply the new plan, verify and push a normal commit.
@@ -56,14 +67,25 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
 
 Plans carry moves and npm file hashes, with a bounded copy-change summary, never file contents. Major manifests also
 carry a hash of their dependency fields, allowing later review to protect them while retaining script adaptations.
-The Gradle wrapper is a separate slice E2 and is not upgraded by this command.
+For a planned wrapper move the tool runs `./gradlew wrapper --gradle-version X
+--gradle-distribution-sha256-sum SUM --distribution-type bin|all --no-daemon` twice, sequentially, under
+`runSandboxed` in an exported base commit. This replaces design item 31's agent-run generation. The first call
+selects the target; the second regenerates its jar and scripts. The tool preserves bin/all, rejects other changes
+to tracked or non-ignored repository files, and copies all four generated files into the working copy before any
+agent work. Ignored build/cache output stays in the scratch copy. The plan records each file's SHA-256 and executable
+mode; verification requires those exact bytes and modes, plus the official distribution URL/checksum and jar checksum.
+The agent never edits wrapper files. A routine with only npm and wrapper moves needs no agent.
+Selection or generation failures leave the wrapper out with a reason in the run report and plan notes; other moves
+continue. Verification of a planned wrapper still fails closed. A wrapper major whose recomputation is unavailable
+keeps its existing PR for a later review. Only the root wrapper is supported; mirrors, custom distribution URLs and
+prerelease base wrappers are reported as unsupported rather than guessed.
 
 ## Review
 
 The [shared tick](../remediation) leaves human pushes alone, recomputes on any base movement before reading CI, then
 handles pending/green checks without a model. A routine recomputes the whole routine; a major recomputes its package.
 Nothing remains: close. Changed routine plan or major target: reconcile by revert. Otherwise merge, resolve dependency
-conflicts from base and re-apply (major code conflicts go to the agent's `resolve` mode), verify, publish normally.
+conflicts from base (wrapper jars restored as binary) and re-apply (major code conflicts go to the agent's `resolve` mode), verify, publish normally.
 If recomputation blocks a major's direct-peer set, the tick reports an `error` with the reason and retains the PR
 and branch for a later tick; it does not treat the blocked move as completed work.
 Clean same-target major merges preserve existing script/config adaptations. Failed major CI gets at most two
