@@ -1,0 +1,27 @@
+name: released-supply-chain
+
+on:
+  pull_request:
+    # `edited` covers a retargeted base, which changes what the gate compares against.
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * *" # daily default-branch scan and open-PR rescan
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Rescan only this open PR now
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    uses: leanish/supply-chain/.github/workflows/supply-chain.yml@c65259a14e83de0d812384241978ae41301b30fa # v0.1.0
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write

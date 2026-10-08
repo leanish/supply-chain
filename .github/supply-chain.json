@@ -1,0 +1,11 @@
+{
+  "npm": {
+    "lockfiles": ["package-lock.json"],
+    "registries": ["https://registry.npmjs.org"]
+  },
+  "releaseAgeDays": 7,
+  "ownPackages": {
+    "npm": { "scopes": ["@leanish"] },
+    "GitHub Actions": { "owners": ["leanish"] }
+  }
+}
