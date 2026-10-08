@@ -1,0 +1,24 @@
+{
+  "name": "@leanish/supply-chain-ci",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The CI gate: one advisory snapshot for base and head, a PR fails only on what it makes worse. Runs with plain Node, no runtime dependencies.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "supply-chain": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

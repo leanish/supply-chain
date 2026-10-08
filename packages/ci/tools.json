@@ -1,0 +1,9 @@
+{
+  "osv-scanner": {
+    "version": "2.6.0",
+    "sha256": {
+      "linux_amd64": "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108",
+      "darwin_arm64": "98c460dcd37de25819babd757d04542045b6243113e209edcd4d89fedb0256b4"
+    }
+  }
+}
