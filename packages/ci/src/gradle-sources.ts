@@ -19,7 +19,7 @@
  * the whole build, without checking which configurations it controls.
  *
  * Each build owns its directory, minus the builds nested in it; its `buildSrc` and `build-logic`
- * count as its own, since their convention plugins declare its dependencies. A catalog its settings
+ * count as its own when they're in the inventory, since their convention plugins declare its dependencies. A catalog its settings
  * import by path (`from(files("../gradle/libs.versions.toml"))`) counts too, wherever it lives.
  */
 import { posix } from "node:path";
@@ -44,7 +44,7 @@ export async function gradleSourceIndex(tree: Tree, builds: ReadonlyArray<string
     for (const path of [...await ownSources(tree, build, builds), ...await importedCatalogs(tree, build)]) {
       const text = await tree.read(path);
       if (text === undefined) throw new Error(`${path} disappeared while reading it`);
-      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(path, text) : scriptCoordinates(text, /\.kts?$/.test(path))) found.add(coordinate);
+      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(text) : scriptCoordinates(text, /\.kts?$/.test(path))) found.add(coordinate);
     }
     coordinates.set(build, found);
   }
@@ -60,12 +60,14 @@ export async function gradleSourceIndex(tree: Tree, builds: ReadonlyArray<string
 /** The build's scripts and catalogs, and its convention builds' scripts, catalogs and main code. */
 async function ownSources(tree: Tree, build: string, builds: ReadonlyArray<string>): Promise<string[]> {
   const prefix = build === "." ? "" : `${build}/`;
-  const conventions = CONVENTION_BUILDS.map((dir) => `${prefix}${dir}/`);
+  // A convention build counts only when Gradle uses it (it's in the inventory); an unused one counts not at all.
+  const conventions = CONVENTION_BUILDS.map((dir) => `${prefix}${dir}`).filter((dir) => builds.includes(dir)).map((dir) => `${dir}/`);
+  const inactive = CONVENTION_BUILDS.map((dir) => `${prefix}${dir}/`).filter((dir) => !conventions.includes(dir));
   const isConvention = (dir: string) => conventions.some((convention) => dir.startsWith(convention));
   const nested = builds.filter((other) => other !== build && (build === "." || other.startsWith(prefix)))
     .map((other) => `${other}/`).filter((dir) => !isConvention(dir));
   return (await tree.list(build)).filter((path) => {
-    if (nested.some((dir) => path.startsWith(dir))) return false;
+    if (nested.some((dir) => path.startsWith(dir)) || inactive.some((dir) => path.startsWith(dir))) return false;
     const convention = conventions.find((dir) => path.startsWith(dir));
     const relative = path.slice((convention ?? prefix).length);
     const segments = relative.split("/");
@@ -123,13 +125,13 @@ function pluginMarker(id: string): string {
 }
 
 /** Libraries and plugins of a version catalog: a library's `"g:n:v"`, `module` or `group`/`name`; a plugin's `"id:v"` or `id`. */
-function catalogCoordinates(path: string, text: string): string[] {
+function catalogCoordinates(text: string): string[] {
   let catalog: Record<string, unknown>;
   try {
     catalog = parse(text);
-  } catch (error) {
-    // Gradle can't read it either; a dependency it declares can't be told apart from a plugin's.
-    throw new Error(`${path} isn't a readable version catalog: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    // Gradle can't load it either, so no build uses it (one that did would have failed its inventory): no evidence.
+    return [];
   }
   const found: string[] = [];
   for (const entry of Object.values(tableOf(catalog["libraries"]))) {
