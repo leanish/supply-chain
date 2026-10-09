@@ -87,9 +87,10 @@ async function importedCatalogs(tree: Tree, build: string): Promise<string[]> {
     const text = await tree.read(settings);
     if (text === undefined) continue;
     for (const match of withoutComments(text).matchAll(/\bfrom\s*\(?\s*files\s*\(\s*["']([^"']+\.toml)["']\s*\)/g)) {
-      const path = posix.normalize(posix.join(build, match[1]!));
       // One outside the repository can't be read: its entries just don't count.
-      if (path.startsWith("../") || path === ".." || posix.isAbsolute(path)) continue;
+      if (posix.isAbsolute(match[1]!)) continue;
+      const path = posix.normalize(posix.join(build, match[1]!));
+      if (path.startsWith("../") || path === "..") continue;
       if (await tree.read(path) !== undefined) found.push(path);
     }
   }
@@ -186,9 +187,25 @@ function readPair(text: string, pos: number, prefix: string[], found: Array<[str
     }
     return at + 1;
   }
-  // Numbers, booleans, one-line arrays: nothing a coordinate lives in.
+  if (text[at] === "[") return skipArray(text, at);
+  // Numbers and booleans: nothing a coordinate lives in.
   const rest = /^[^,}#]*/.exec(text.slice(at))![0];
   return at + rest.length;
+}
+
+/** Past a one-line array (`reject = ["1.1", "1.2"]`), strings and nested arrays included; undefined if it doesn't close. */
+function skipArray(text: string, pos: number): number | undefined {
+  let depth = 0;
+  for (let at = pos; at < text.length; at++) {
+    const string = readString(text, at);
+    if (string !== undefined) {
+      at = string.end - 1;
+      continue;
+    }
+    if (text[at] === "[") depth++;
+    else if (text[at] === "]" && --depth === 0) return at + 1;
+  }
+  return undefined;
 }
 
 /** A dotted key of bare and quoted parts. */
@@ -206,7 +223,7 @@ function readKey(text: string, pos: number): { parts: string[]; end: number } | 
   }
 }
 
-/** A one-line basic (`"..."`, with escapes) or literal (`'...'`) string. */
+/** A one-line basic (`"..."`) or literal (`'...'`) string. A basic string's escapes keep their character (`\\u` escapes aren't decoded: coordinates never need them). */
 function readString(text: string, pos: number): { value: string; end: number } | undefined {
   const quote = text[pos];
   if (quote !== '"' && quote !== "'") return undefined;

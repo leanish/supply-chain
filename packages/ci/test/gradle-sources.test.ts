@@ -75,7 +75,7 @@ describe("gradleSourceIndex", () => {
     for (const coordinate of ["com.acme:mixed", "com.acme:commented", "com.acme:plugin"]) expect(await named(files, coordinate)).toBe(false);
   });
 
-  it("reads every TOML form a catalog entry can take", async () => {
+  it("reads the TOML forms catalog entries take", async () => {
     const catalog = [
       "[libraries]",
       '"quoted-key" = { module = "com.acme:quoted-key", version = "1.0" }',
@@ -84,6 +84,7 @@ describe("gradleSourceIndex", () => {
       'dotted.module = "com.acme:dotted"',
       'dotted.version.ref = "x"',
       'nested = { group = "com.acme", name = "nested", version = { strictly = "[1.0, 2.0[", prefer = "1.5" } } # trailing',
+      'rejecting = { version = { reject = ["1.1", "1,2]"], prefer = "1.3" }, module = "com.acme:rejecting" }',
       "[libraries.tabled]",
       'group = "com.acme"',
       'name = "tabled"',
@@ -95,7 +96,7 @@ describe("gradleSourceIndex", () => {
       "'single-plugin' = { id = 'com.acme.single-plugin', version = '1.0' }",
     ].join("\n");
     const files = { "gradle/libs.versions.toml": catalog };
-    for (const name of ["quoted-key", "single", "literal-single", "dotted", "nested", "tabled"]) expect(await named(files, `com.acme:${name}`)).toBe(true);
+    for (const name of ["quoted-key", "single", "literal-single", "dotted", "nested", "rejecting", "tabled"]) expect(await named(files, `com.acme:${name}`)).toBe(true);
     expect(await named(files, "com.acme.single-plugin:com.acme.single-plugin.gradle.plugin")).toBe(true);
   });
 
@@ -104,10 +105,14 @@ describe("gradleSourceIndex", () => {
       "gradle/libs.versions.toml": '[libraries]\nshared = "com.acme:shared:1.0"',
       "buildSrc/settings.gradle.kts": 'dependencyResolutionManagement { versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } } }',
       "outside/settings.gradle": "dependencyResolutionManagement { versionCatalogs { libs { from files('../../elsewhere/libs.versions.toml') } } }",
+      // An absolute path isn't this repository's file, even when the repository has one at the joined path.
+      "absolute/settings.gradle.kts": 'dependencyResolutionManagement { versionCatalogs { create("libs") { from(files("/tmp/libs.versions.toml")) } } }',
+      "absolute/tmp/libs.versions.toml": '[libraries]\ncollision = "com.acme:collision:1.0"',
     };
-    const index = await gradleSourceIndex(tree(files), ["buildSrc", "outside"]);
+    const index = await gradleSourceIndex(tree(files), ["buildSrc", "outside", "absolute"]);
     expect(index.named("buildSrc", "com.acme", "shared")).toBe(true);
     expect(index.named("outside", "com.acme", "shared")).toBe(false);
+    expect(index.named("absolute", "com.acme", "collision")).toBe(false);
   });
 
   it("names a plugin's marker where a plugins block or a catalog plugin declares it", async () => {
