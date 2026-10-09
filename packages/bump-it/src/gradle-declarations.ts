@@ -4,18 +4,29 @@ import type { Tree } from "../../ci/src/tree.ts";
 import { declaredAt } from "../../remediation/src/edit-checks.ts";
 import type { PlannedMove } from "./plan.ts";
 
+/** What a unit changed, and which of those changes other checks verify exactly. */
+export interface UnitEdits {
+  readonly changedFiles: ReadonlyArray<string>;
+  /** Tracked paths whose file mode changed. */
+  readonly modeChanged: ReadonlyArray<string>;
+  /** Files whose text another check compares exactly (beyond what it plans). */
+  readonly textChecked: ReadonlySet<string>;
+  /** Files whose bytes and mode another check compares exactly. */
+  readonly bytesChecked: ReadonlySet<string>;
+}
+
 /**
  * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
  * through: the plan moves a plugin of that build (a move on a buildscript or settings classpath), only its version
- * changed (as many declarations before as after: nothing added or removed), no file mode changed (`modeChanged`: the
- * wrapper's, verified exactly, aside), and every file the unit changed, outside `checkedElsewhere` (files verified
- * exactly by their own checks), exists on both sides, is valid UTF-8 and differs only by planned version swaps (`from` to `to`, each a
- * whole version string). Nothing but the planned edits changed, so the planned plugin update
+ * changed (as many declarations before as after: nothing added or removed), and nothing else changed: no file mode
+ * outside `bytesChecked`, no text that isn't valid UTF-8, and every other changed file outside `textChecked` exists on
+ * both sides and differs only by planned version swaps (`from` to `to`, each a whole version string). Nothing but the
+ * planned edits changed, so the planned plugin update
  * moved it (updating the Kotlin plugin moves the stdlib it adds); the gate still judges every version that changes.
  * A swap is recognised by its text alone, so a dependency written with a planned move's exact `from` version may move
  * to its `to` with it, as one sharing a version variable with the plugin does.
  */
-export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>, changedFiles: ReadonlyArray<string>, checkedElsewhere: ReadonlySet<string>, modeChanged: ReadonlyArray<string>): Promise<(name: string, location: string) => boolean> {
+export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>, edits: UnitEdits): Promise<(name: string, location: string) => boolean> {
   const buildOf = new Map<string, string>();
   const classpath = new Set<string>();
   for (const build of [inventories.base, inventories.head].flatMap((inventory) => inventory?.builds ?? [])) {
@@ -27,11 +38,14 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   }
   const planned = moves.filter((move) => move.mechanism === "gradle-declared");
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
-  if (pluginBuilds.size === 0 || modeChanged.length > 0) return () => false;
-  for (const path of changedFiles.filter((file) => !checkedElsewhere.has(file))) {
-    // An added or deleted file is an edit, however empty; so is one that isn't valid UTF-8, whose bytes the text can't show.
+  if (pluginBuilds.size === 0 || edits.modeChanged.some((path) => !edits.bytesChecked.has(path))) return () => false;
+  for (const path of edits.changedFiles.filter((file) => !edits.bytesChecked.has(file))) {
     const [before, after] = [await base.read(path), await head.read(path)];
-    if (before === undefined || after === undefined || lossy(before) || lossy(after) || !onlySwaps(before, after, planned)) return () => false;
+    // Text that isn't valid UTF-8 can't show its bytes: different bytes may read the same, here or in a text check elsewhere.
+    if (before !== undefined && lossy(before) || after !== undefined && lossy(after)) return () => false;
+    if (edits.textChecked.has(path)) continue;
+    // An added or deleted file is an edit, however empty.
+    if (before === undefined || after === undefined || !onlySwaps(before, after, planned)) return () => false;
   }
   return (name, location) => {
     const build = buildOf.get(location);
@@ -43,7 +57,7 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
 }
 
 /** Whether decoding replaced invalid bytes, so different bytes may read as the same text. */
-export function lossy(text: string): boolean {
+function lossy(text: string): boolean {
   return text.includes("\uFFFD");
 }
 

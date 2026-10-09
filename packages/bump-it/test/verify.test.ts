@@ -6,6 +6,7 @@ import { type BumpPlan, planFor } from "../src/plan.ts";
 import { gradleWrapperPlanner, WRAPPER_FILES, WRAPPER_PROPERTIES } from "../src/gradle-wrapper.ts";
 import { routineUnit, majorUnits } from "../src/units.ts";
 import { plannedFiles, verifyPlan, type VerifyInputs } from "../src/verify.ts";
+import { pluginDriven } from "../src/gradle-declarations.ts";
 import { candidate } from "./fixtures.ts";
 
 vi.mock("../../ci/src/gate.ts", async (original) => ({ ...await original<object>(), runCompare: vi.fn(async () => ({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } })) }));
@@ -187,6 +188,12 @@ describe("bump verification", () => {
     // Bytes that aren't valid UTF-8 read as U+FFFD, so different bytes may look the same.
     expect(await verifyPlan({ ...input, base: tree("base", { ...files("2.0.0"), "flag.gradle": "\uFFFD" }), head: tree("head", { ...files("2.1.0"), "flag.gradle": "\uFFFD" }), changedFiles: ["build.gradle.kts", "flag.gradle"] }))
       .toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    // Even in a file another check compares as text (a planned pin's workflow), but not in one checked by its bytes.
+    const lossyPin = { ...files("2.1.0"), ".github/workflows/ci.yml": "# \uFFFD" };
+    const edits = (checked: "textChecked" | "bytesChecked") => ({ changedFiles: ["build.gradle.kts", ".github/workflows/ci.yml"], modeChanged: [], textChecked: new Set<string>(), bytesChecked: new Set<string>(), [checked]: new Set([".github/workflows/ci.yml"]) });
+    const driven = (checked: "textChecked" | "bytesChecked") => pluginDriven(input.base, tree("head", lossyPin), { base: inventory("2.0.0"), head: inventory("2.1.0") }, plan.moves, edits(checked));
+    expect((await driven("textChecked"))("org.jetbrains.kotlin:kotlin-stdlib", ":compileClasspath")).toBe(false);
+    expect((await driven("bytesChecked"))("org.jetbrains.kotlin:kotlin-stdlib", ":compileClasspath")).toBe(true);
     // A file mode changed, even with the content the same.
     expect(await verifyPlan({ ...input, modeChanged: ["tools/build.gradle.kts"], changedFiles: ["build.gradle.kts", "tools/build.gradle.kts"] })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
     // A planned npm file counts as checked only with exactly its planned bytes.
