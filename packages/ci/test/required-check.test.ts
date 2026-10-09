@@ -7,6 +7,7 @@ import { parse } from "yaml";
 
 interface CompatibilityWorkflow {
   readonly jobs: {
+    readonly check: { readonly needs: string; readonly if: string };
     readonly gate: { readonly with: { readonly "required-check": string } };
     readonly "supply-chain": {
       readonly needs: string;
@@ -30,6 +31,11 @@ describe("the existing required supply-chain check", () => {
       COMPARISON_PASSED: "${{ needs.gate.outputs.comparison-passed }}",
       COOLDOWN_HELD: "${{ needs.gate.outputs.cooldown-held }}",
     });
+  });
+
+  it("runs the tests whenever the bridge passed, a held PR's failed cooldown included", () => {
+    expect(workflow.jobs.check.needs).toBe("supply-chain");
+    expect(workflow.jobs.check.if).toBe("${{ !cancelled() && needs.supply-chain.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'push') }}");
   });
 
   it.each([
