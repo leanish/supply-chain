@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- The gate, secure-it and bump-it retry transient GET/HEAD connection failures
+  twice with bounded backoff and jitter, including interrupted response bodies.
+  No overall timeout is added; caller cancellation and fetch timeouts still apply.
+  Exhausted retries still fail closed; HTTP error responses and write requests
+  are not retried.
+- Concurrent metadata lookups stop scheduling after the first failure and wait
+  for active requests to finish before reporting it. The POM limit stays at 16.
 - secure-it and bump-it no longer fail to fetch or push a branch when their
   cached clone still tracks a deleted branch on a conflicting path (for example
   `bump-it` left behind while `bump-it/2026-10-08-routine` is fetched); the stale
