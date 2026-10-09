@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- secure-it and bump-it no longer fail to fetch or push a branch when their
+  cached clone still tracks a deleted branch on a conflicting path (for example
+  `bump-it` left behind while `bump-it/2026-10-08-routine` is fetched); the stale
+  ref is dropped first.
+- A failed git call's error quotes git's own stderr, bounded and with
+  credentials masked, instead of only its exit code.
+
 ## 0.1.1 - 2026-10-08
 
 ### Fixed
