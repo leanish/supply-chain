@@ -7,14 +7,15 @@ import type { PlannedMove } from "./plan.ts";
 /**
  * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
  * through: the plan moves a plugin of that build (a move on a buildscript or settings classpath), only its version
- * changed (as many declarations before as after: nothing added or removed), and every file the unit changed, outside
- * `checkedElsewhere` (files verified exactly by their own checks), exists on both sides and differs only by planned version swaps
- * (`from` to `to`, each a whole version string). Nothing but the planned edits changed, so the planned plugin update
+ * changed (as many declarations before as after: nothing added or removed), no file mode changed (`modeChanged`: the
+ * wrapper's, verified exactly, aside), and every file the unit changed, outside `checkedElsewhere` (files verified
+ * exactly by their own checks), exists on both sides and differs only by planned version swaps (`from` to `to`, each a
+ * whole version string). Nothing but the planned edits changed, so the planned plugin update
  * moved it (updating the Kotlin plugin moves the stdlib it adds); the gate still judges every version that changes.
  * A swap is recognised by its text alone, so a dependency written with a planned move's exact `from` version may move
  * to its `to` with it, as one sharing a version variable with the plugin does.
  */
-export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>, changedFiles: ReadonlyArray<string>, checkedElsewhere: ReadonlySet<string>): Promise<(name: string, location: string) => boolean> {
+export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>, changedFiles: ReadonlyArray<string>, checkedElsewhere: ReadonlySet<string>, modeChanged: ReadonlyArray<string>): Promise<(name: string, location: string) => boolean> {
   const buildOf = new Map<string, string>();
   const classpath = new Set<string>();
   for (const build of [inventories.base, inventories.head].flatMap((inventory) => inventory?.builds ?? [])) {
@@ -26,7 +27,7 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   }
   const planned = moves.filter((move) => move.mechanism === "gradle-declared");
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
-  if (pluginBuilds.size === 0) return () => false;
+  if (pluginBuilds.size === 0 || modeChanged.length > 0) return () => false;
   for (const path of changedFiles.filter((file) => !checkedElsewhere.has(file))) {
     // An added or deleted file is an edit, however empty.
     const [before, after] = [await base.read(path), await head.read(path)];

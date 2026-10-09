@@ -87,6 +87,7 @@ function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; 
     npm: async (_context, unit, base) => { computed.push({ topic: unit.topic, base: base.id }); return options.npm === undefined ? npmOf(unit) : options.npm(unit); },
     verify: async (input) => { verified.push(input.plan); return options.problems ?? []; },
     changedSince: async () => ["package.json", "package-lock.json"],
+    modeChangedSince: async () => [],
     journal: () => journal,
     priority: () => ({ read: async () => deferred, write: async (packages) => { deferred = [...packages]; } }),
     writeFile: async (_wc, path, content) => { files[path] = content; },

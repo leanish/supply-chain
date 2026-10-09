@@ -24,6 +24,8 @@ export interface VerifyInputs {
   readonly env: GateEnvironment;
   readonly gradle: GradleInputs;
   readonly changedFiles: ReadonlyArray<string>;
+  /** Tracked paths whose file mode changed. */
+  readonly modeChanged: ReadonlyArray<string>;
 }
 
 export const isNpmLock = (path: string) => ["package-lock.json", "npm-shrinkwrap.json"].includes(basename(path));
@@ -52,9 +54,12 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...await floorProblems(base, head, gradle));
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  // Each of these is verified exactly by its own check.
-  const checkedElsewhere = new Set([...plan.npmFiles.map((file) => file.path), ...inputs.changedFiles.filter(isNpmLock), ...wrapperMoves.length > 0 ? WRAPPER_FILES : [], ...pins.flatMap((pin) => pin.locations)]);
-  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves, inputs.changedFiles, checkedElsewhere);
+  // Each of these is verified exactly by its own check: npm files holding the planned bytes, the wrapper's files (modes too), planned pins' files.
+  const exactNpm: string[] = [];
+  for (const [path, text] of inputs.npmFiles) if (await head.read(path) === text) exactNpm.push(path);
+  const checkedElsewhere = new Set([...exactNpm, ...wrapperMoves.length > 0 ? WRAPPER_FILES : [], ...pins.flatMap((pin) => pin.locations)]);
+  const modeChanged = inputs.modeChanged.filter((path) => !(wrapperMoves.length > 0 && WRAPPER_FILES.includes(path)));
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves, inputs.changedFiles, checkedElsewhere, modeChanged);
   const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
   problems.push(...directChangesOutside(before, after, planned));
   problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));
