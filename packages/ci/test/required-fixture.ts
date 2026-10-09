@@ -94,3 +94,20 @@ export function bridgeBatch() {
   return { docs, base: batchFiles("1.0.0", "1.0.0", "1.0.0"), head: batchFiles("1.0.1", "1.0.2", "1.0.1"),
     affected: { "app@1.0.0": [FIXED], "lib@1.0.0": ["GHSA-lib"] } };
 }
+
+/** Aged fixes a@1.0.1 and b@1.0.1, where a requires b's fix and b's fix requires young c@1.0.1. */
+export function chainBatch() {
+  const doc = (versions: Record<string, unknown>, time: Record<string, string>) => ({ time, versions });
+  const docs = {
+    a: doc({ "1.0.0": metadata, "1.0.1": { ...metadata, dependencies: { b: "^1.0.1" } } }, { "1.0.0": OLD, "1.0.1": OLD }),
+    b: doc({ "1.0.0": metadata, "1.0.1": { ...metadata, dependencies: { c: "^1.0.1" } } }, { "1.0.0": OLD, "1.0.1": OLD }),
+    c: doc({ "1.0.0": metadata, "1.0.1": metadata }, { "1.0.0": OLD, "1.0.1": YOUNG }),
+  };
+  const batchFiles = (version: string) => {
+    const manifest = { devDependencies: { a: `^${version}` } };
+    return { "package.json": json(manifest), "package-lock.json": json({ lockfileVersion: 3, packages: {
+      "": manifest, "node_modules/a": locked("a", version), "node_modules/b": locked("b", version), "node_modules/c": locked("c", version),
+    } }) };
+  };
+  return { docs, base: batchFiles("1.0.0"), head: batchFiles("1.0.1"), affected: { "a@1.0.0": [FIXED], "b@1.0.0": ["GHSA-b"] } };
+}
