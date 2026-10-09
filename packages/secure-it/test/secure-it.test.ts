@@ -812,6 +812,31 @@ describe("the cooldown hold", () => {
     expect(aged.agentCalls).toEqual([]);
   });
 
+  it("keeps a held PR on a moved base when its aged fix still requires a young dependency", async () => {
+    const plan = await planFor([vite()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
+      { kind: "routine", topic: "security-cooldown" });
+    const pr = ownPr({
+      headRef: "secure-it/2026-10-05-security-cooldown",
+      body: withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }),
+    });
+    const h = harness({ prs: [pr], baseSha: "f".repeat(40), fixes: [vite()] });
+    h.workspace.setRemoteHead(pr.headRef, HEAD_SHA);
+    let requiredPlanned = 0;
+    const requiredNpm: SecureItDeps["requiredNpm"] = async (_base, planned) => {
+      requiredPlanned++;
+      return planned.packages.includes("npm|vite")
+        ? { ...planned, requiredNpm: [{
+          exempt: true, name: "postcss", version: "8.5.29", path: "node_modules/postcss", lockfile: "package-lock.json", key: "postcss", range: "^8.5.29",
+          reason: "vite@8.3.3 requires postcss ^8.5.29", parent: { name: "vite", version: "8.3.3", path: "node_modules/vite" }, root: { name: "vite", version: "8.3.3", path: "node_modules/vite" },
+        }] }
+        : planned;
+    };
+    expect(await secureIt({ ...h.deps, requiredNpm, verify: holdingVerify }).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
+    expect(requiredPlanned).toBeGreaterThan(0);
+    expect(h.github.prs.get(7)?.state).not.toBe("closed");
+    expect(planOf(h.github.prs.get(7)!.body)?.cooldown).toHaveLength(1);
+  });
+
   it("refuses a held PR whose recorded hold doesn't read", async () => {
     const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
     const body = withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, eligibleAt: "soon", signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 });

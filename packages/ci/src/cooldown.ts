@@ -12,7 +12,7 @@
  * longer wait, and own packages only where both name them, so a PR can't
  * loosen the cooldown that judges it.
  */
-import { type Config, type OwnPackages } from "./config.ts";
+import type { Config } from "./config.ts";
 import { isObject } from "./json.ts";
 import type { HeldVersion, YoungJustification } from "./release-age.ts";
 import { REPORT_SCHEMA_VERSION } from "./report.ts";
@@ -32,19 +32,8 @@ export function strictestPolicy(head: Config, base: Config): Config {
   return {
     ...head,
     releaseAgeDays: Math.max(head.releaseAgeDays, base.releaseAgeDays),
-    ownPackages: sharedOwnPackages(head.ownPackages, base.ownPackages),
-  };
-}
-
-/** Entries both sides list (owners case-insensitively): a subset of what both consider own. */
-function sharedOwnPackages(head: OwnPackages, base: OwnPackages): OwnPackages {
-  const shared = (ours: ReadonlyArray<string>, theirs: ReadonlyArray<string>, fold: (entry: string) => string = (entry) => entry) =>
-    ours.filter((entry) => theirs.some((other) => fold(other) === fold(entry)));
-  return {
-    npmScopes: shared(head.npmScopes, base.npmScopes),
-    mavenGroups: shared(head.mavenGroups, base.mavenGroups),
-    pluginIdPrefixes: shared(head.pluginIdPrefixes, base.pluginIdPrefixes),
-    actionOwners: shared(head.actionOwners, base.actionOwners, (owner) => owner.toLowerCase()),
+    // Own only where both sides say so: `isOwnPackage` checks head's lists, then base's.
+    ownPackages: { ...head.ownPackages, alsoOwnedBy: base.ownPackages },
   };
 }
 

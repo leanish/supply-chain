@@ -180,13 +180,16 @@ export function releaseSignals(doc: Packument, name: string, version: string, re
   const provenance = attempt(() => provenanceUrl(doc, name, version) !== undefined);
   const publisher = attempt(() => publisherOf(doc, name, version));
   const before = [...new Set(known.map((previous) => attempt(() => publisherOf(doc, name, previous)) ?? "unknown"))];
+  // Each install script as `name: command`, so a changed command counts as new too.
   const scripts = (of: string) => attempt(() => {
     const declared = manifestDist(doc, name, of).manifest["scripts"];
-    return INSTALL_SCRIPTS.filter((script) => isObject(declared) && typeof declared[script] === "string");
+    return INSTALL_SCRIPTS.flatMap((script) => isObject(declared) && typeof declared[script] === "string" ? [`${script}: ${declared[script]}`] : []);
   });
-  const now = scripts(version);
+  const named = (entries: ReadonlyArray<string>) => entries.map((entry) => entry.slice(0, entry.indexOf(":")));
+  const current = scripts(version);
   const earlier = new Set(known.flatMap((previous) => scripts(previous) ?? []));
-  const added = now?.filter((script) => !earlier.has(script));
+  const now = current === undefined ? undefined : named(current);
+  const added = current === undefined ? undefined : named(current.filter((entry) => !earlier.has(entry)));
   return [
     provenance === undefined ? "provenance unknown" : provenance ? "has provenance" : "no provenance",
     publisher === undefined ? "publisher unknown"
@@ -196,7 +199,7 @@ export function releaseSignals(doc: Packument, name: string, version: string, re
     added === undefined ? "install scripts unknown"
       : now!.length === 0 ? "no install scripts"
       : known.length === 0 ? `install scripts: ${now!.join(", ")}`
-      : added.length > 0 ? `adds install scripts: ${added.join(", ")}`
+      : added.length > 0 ? `adds or changes install scripts: ${added.join(", ")}`
       : `install scripts as before: ${now!.join(", ")}`,
   ];
 }

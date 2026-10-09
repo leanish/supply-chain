@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { FLOORS_PATH } from "../../ci/src/floors.ts";
+import { type CooldownEvaluation, heldLines } from "../../ci/src/cooldown.ts";
 import { runCompare } from "../../ci/src/gate.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
 import { actionsOutsidePlan, directChangesOutside, directVersions } from "../../remediation/src/edit-checks.ts";
@@ -51,8 +52,14 @@ export async function verifyRemovalEdit(inputs: VerifyInputs): Promise<string[]>
     removal.floors.some((floor) => floor.ecosystem === "Maven" && floor.package === name && floor.locations.includes(location))));
   if (problems.length > 0) return problems;
   const compared = await runCompare(base, head, inputs.env, gradle);
-  return [...compared.failures.map((failure) => `compare: ${failure}`), ...removal.floors.flatMap((floor) =>
+  return [...compared.failures.map((failure) => `compare: ${failure}`), ...removalCooldownProblems(compared.cooldown), ...removal.floors.flatMap((floor) =>
     floorFindings(floor, compared.headFindings).map((finding) => `${floor.package}@${finding.version} still has ${finding.advisory}`))];
+}
+
+/** A floor removal has no fix to justify an early version: anything the cooldown holds, or can't evaluate, stops it. */
+function removalCooldownProblems(cooldown: CooldownEvaluation): string[] {
+  if (!cooldown.evaluated) return [`the cooldown can't be evaluated: ${cooldown.reason}`];
+  return heldLines(cooldown.held).map((line) => `a floor removal can't take a version under the release-age wait: ${line}`);
 }
 
 function otherDeclarations(inventory: GradleInventory | undefined, selected: ReadonlyMap<string, Set<string>>): string[] {

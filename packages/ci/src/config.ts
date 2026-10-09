@@ -71,6 +71,8 @@ export interface OwnPackages {
   readonly pluginIdPrefixes: ReadonlyArray<string>;
   /** GitHub owners whose actions and reusable workflows are own. */
   readonly actionOwners: ReadonlyArray<string>;
+  /** Set by the stricter policy (`cooldown.ts`): a package is own only when this side owns it too. */
+  readonly alsoOwnedBy?: OwnPackages;
 }
 
 export const GRADLE_PLUGIN_PORTAL = "https://plugins.gradle.org/m2";
@@ -87,6 +89,10 @@ export const DEFAULT_CONFIG: Config = {
 
 /** Own packages skip the release-age wait, and only that. */
 export function isOwnPackage(own: OwnPackages, pkg: PackageName): boolean {
+  return ownedBy(own, pkg) && (own.alsoOwnedBy === undefined || isOwnPackage(own.alsoOwnedBy, pkg));
+}
+
+function ownedBy(own: OwnPackages, pkg: PackageName): boolean {
   if (pkg.ecosystem === "npm") return own.npmScopes.some((scope) => pkg.name.startsWith(`${scope}/`));
   if (pkg.ecosystem === "GitHub Actions") return own.actionOwners.some((owner) => pkg.name.startsWith(`${owner.toLowerCase()}/`));
   const [group, artifact] = pkg.name.split(":");

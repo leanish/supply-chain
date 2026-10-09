@@ -531,8 +531,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         await publishUpdate(publication, merge.prepared, pr.number, content);
         return "rebased";
       }
-      const { unit, blocked } = await reviewUnit(previous, found.fixes, found.npmPeers);
+      const { units, blocked } = await reviewUnits(previous, found.fixes, found.npmPeers);
       if (blocked.length > 0) notes.push({ number: pr.number, blocked });
+      // Split exactly as a run would, required-dependency moves included, before telling which unit is this PR's.
+      const unit = unitOf(previous, await holdRequiredYoung(execution, units, { tree: base, gradle: baseGradle }));
       if (unit === undefined) {
         await closeAndDelete(publication, pr.number, pr.headSha, "No actionable fixes remain for this security unit on the default branch. Blocked fixes are reported by secure-it.");
         return "retired";
@@ -612,15 +614,18 @@ export function cooldownState(plan: ChangePlan, now: Date): CooldownState | unde
 }
 
 /** New routine PRs recompute all non-majors; majors and legacy PRs retain their package scope. */
-async function reviewUnit(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner) {
+async function reviewUnits(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner) {
   if (previous.kind !== "malware" && !previous.malware && fixes.some((fix) => fix.malicious)) {
     throw new Error("malware on the new base must be fixed together before this security unit can verify");
   }
   const ours = new Set(previous.packages);
   const scoped = previous.kind === "routine" || previous.malware ? fixes : fixes.filter((fix) => ours.has(packageKey(fix)));
-  const selected = await coupledWork(scoped, peers);
+  return coupledWork(scoped, peers);
+}
+
+/** The recomputed unit an open PR stands for: two routine units can exist (aged and held), so its topic says which. */
+function unitOf(previous: ChangePlan, units: ReadonlyArray<SecurityUnit>): SecurityUnit | undefined {
   const kind = previous.malware ? "malware" : previous.kind;
-  // Two routine units can exist (aged and held): the PR's topic says which one it is.
-  const unit = kind === undefined ? selected.units[0] : selected.units.find((unit) => unit.kind === kind && (kind !== "routine" || unit.topic === previous.topic));
-  return { unit, blocked: selected.blocked };
+  if (kind === undefined) return units[0];
+  return units.find((unit) => unit.kind === kind && (kind !== "routine" || unit.topic === previous.topic));
 }
