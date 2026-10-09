@@ -70,7 +70,8 @@ async function ownSources(tree: Tree, build: string, builds: ReadonlyArray<strin
     const relative = path.slice((convention ?? prefix).length);
     const segments = relative.split("/");
     if (segments.slice(0, -1).some((segment) => SKIPPED_SEGMENTS.has(segment))) return false;
-    if (/^gradle\/[^/]+\.versions\.toml$/.test(relative)) return true;
+    // Gradle loads only the default catalog by itself; any other is read when the settings import it.
+    if (relative === "gradle/libs.versions.toml") return true;
     // In a convention build, its main code declares the build's dependencies too.
     if (convention !== undefined && CODE.test(relative) && /(?:^|\/)src\/main\//.test(relative)) return true;
     // Not precompiled script plugins (`src/main/kotlin/x.gradle.kts`): what a build ships, not how it builds.

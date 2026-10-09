@@ -122,6 +122,18 @@ describe("gradleSourceIndex", () => {
     expect(await named(files, "com.acme.single-plugin:com.acme.single-plugin.gradle.plugin")).toBe(true);
   });
 
+  it("reads only the catalogs Gradle loads: the default one and the imported ones", async () => {
+    const files = {
+      "gradle/libs.versions.toml": '[libraries]\ndefault = "com.acme:default:1.0"',
+      "gradle/tools.versions.toml": '[libraries]\nimported = "com.acme:imported:1.0"',
+      "gradle/unused.versions.toml": "[libraries]\nbroken = { module = ",
+      "settings.gradle.kts": 'dependencyResolutionManagement { versionCatalogs { create("tools") { from(files("gradle/tools.versions.toml")) } } }',
+    };
+    expect([await named(files, "com.acme:default"), await named(files, "com.acme:imported")]).toEqual([true, true]);
+    const { "settings.gradle.kts": _settings, ...unimported } = files;
+    expect(await named(unimported, "com.acme:imported")).toBe(false);
+  });
+
   it("decodes TOML escapes, and refuses a catalog Gradle couldn't read either", async () => {
     expect(await named({ "gradle/libs.versions.toml": '[libraries]\nlib = "com.acme:\\u006Cib:1.0"' }, "com.acme:lib")).toBe(true);
     await expect(named({ "gradle/libs.versions.toml": "[libraries]\nlib = { module = " }, "com.acme:lib")).rejects.toThrow("gradle/libs.versions.toml isn't a readable version catalog");
