@@ -9,7 +9,7 @@ import type { PlannedMove } from "./plan.ts";
  * through: the plan moves a plugin of that build (a move on a buildscript or settings classpath), only its version
  * changed (as many declarations before as after: nothing added or removed), no file mode changed (`modeChanged`: the
  * wrapper's, verified exactly, aside), and every file the unit changed, outside `checkedElsewhere` (files verified
- * exactly by their own checks), exists on both sides and differs only by planned version swaps (`from` to `to`, each a
+ * exactly by their own checks), exists on both sides, is valid UTF-8 and differs only by planned version swaps (`from` to `to`, each a
  * whole version string). Nothing but the planned edits changed, so the planned plugin update
  * moved it (updating the Kotlin plugin moves the stdlib it adds); the gate still judges every version that changes.
  * A swap is recognised by its text alone, so a dependency written with a planned move's exact `from` version may move
@@ -29,9 +29,9 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
   if (pluginBuilds.size === 0 || modeChanged.length > 0) return () => false;
   for (const path of changedFiles.filter((file) => !checkedElsewhere.has(file))) {
-    // An added or deleted file is an edit, however empty.
+    // An added or deleted file is an edit, however empty; so is one that isn't valid UTF-8, whose bytes the text can't show.
     const [before, after] = [await base.read(path), await head.read(path)];
-    if (before === undefined || after === undefined || !onlySwaps(before, after, planned)) return () => false;
+    if (before === undefined || after === undefined || lossy(before) || lossy(after) || !onlySwaps(before, after, planned)) return () => false;
   }
   return (name, location) => {
     const build = buildOf.get(location);
@@ -40,6 +40,11 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
     const was = declaredAt(inventories.base, location, name);
     return was.length > 0 && was.length === declaredAt(inventories.head, location, name).length;
   };
+}
+
+/** Whether decoding replaced invalid bytes, so different bytes may read as the same text. */
+export function lossy(text: string): boolean {
+  return text.includes("\uFFFD");
 }
 
 /** Whether `after` is `before` with some whole version strings swapped as planned, and nothing else changed. */

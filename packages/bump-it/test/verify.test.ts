@@ -184,6 +184,9 @@ describe("bump verification", () => {
     for (const sides of [{ head: tree("head", { ...files("2.1.0"), "legacy.gradle": "" }) }, { base: tree("base", { ...files("2.0.0"), "legacy.gradle": "" }) }]) {
       expect(await verifyPlan({ ...input, ...sides, changedFiles: ["build.gradle.kts", "legacy.gradle"] })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
     }
+    // Bytes that aren't valid UTF-8 read as U+FFFD, so different bytes may look the same.
+    expect(await verifyPlan({ ...input, base: tree("base", { ...files("2.0.0"), "flag.gradle": "\uFFFD" }), head: tree("head", { ...files("2.1.0"), "flag.gradle": "\uFFFD" }), changedFiles: ["build.gradle.kts", "flag.gradle"] }))
+      .toContainEqual(expect.stringContaining("kotlin-stdlib"));
     // A file mode changed, even with the content the same.
     expect(await verifyPlan({ ...input, modeChanged: ["tools/build.gradle.kts"], changedFiles: ["build.gradle.kts", "tools/build.gradle.kts"] })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
     // A planned npm file counts as checked only with exactly its planned bytes.

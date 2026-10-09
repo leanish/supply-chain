@@ -10,7 +10,7 @@ import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, F
 import type { WrapperFile } from "./wrapper-generation.ts";
 import { WRAPPER_FILES, type WrapperPlanner } from "./gradle-wrapper.ts";
 import { plannedPinsLanded } from "./action-pins.ts";
-import { gradleDeclarationProblems, pluginDriven } from "./gradle-declarations.ts";
+import { gradleDeclarationProblems, lossy, pluginDriven } from "./gradle-declarations.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, dependencyDigest, sha256 } from "./plan.ts";
 
 export interface VerifyInputs {
@@ -56,7 +56,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const after = await directVersions(head, gradle.head);
   // Each of these is verified exactly by its own check: npm files holding the planned bytes, the wrapper's files (modes too), planned pins' files.
   const exactNpm: string[] = [];
-  for (const [path, text] of inputs.npmFiles) if (await head.read(path) === text) exactNpm.push(path);
+  for (const [path, text] of inputs.npmFiles) if (!lossy(text) && await head.read(path) === text) exactNpm.push(path);
   const checkedElsewhere = new Set([...exactNpm, ...wrapperMoves.length > 0 ? WRAPPER_FILES : [], ...pins.flatMap((pin) => pin.locations)]);
   const modeChanged = inputs.modeChanged.filter((path) => !(wrapperMoves.length > 0 && WRAPPER_FILES.includes(path)));
   const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves, inputs.changedFiles, checkedElsewhere, modeChanged);
