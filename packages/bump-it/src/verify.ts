@@ -52,7 +52,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...await floorProblems(base, head, gradle));
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  const driven = await pluginDriven(base, head, [gradle.base, gradle.head]);
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves);
   const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
   problems.push(...directChangesOutside(before, after, planned));
   problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));
