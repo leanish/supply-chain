@@ -33,9 +33,13 @@ on:
         type: string
         default: "24"
       required-check:
-        description: The name the `supply-chain` job's check shows as (`<calling job id> / supply-chain`); the daily rescan posts its statuses under it.
+        description: The name the `supply-chain` job's check shows as (`<calling job id> / supply-chain`); the daily rescan posts its verdicts under it.
         type: string
         default: supply-chain / supply-chain
+      required-cooldown-check:
+        description: The name the required cooldown check shows as (`<calling job id> / cooldown`, or a bridge job's); the daily rescan posts the current cooldown under it.
+        type: string
+        default: supply-chain / cooldown
     outputs:
       comparison-passed:
         description: "`true` once the `supply-chain` job passed, whatever the cooldown says."
@@ -335,11 +339,12 @@ jobs:
           PLAN: ${{ needs.rescan-plan.outputs.prs }}
           STARTED: ${{ needs.plan.outputs.started }}
           CONTEXT: ${{ inputs.required-check }}
+          COOLDOWN_CONTEXT: ${{ inputs.required-cooldown-check }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           printf '%s' "$PLAN" > "$RUNNER_TEMP/plan.json"
           node tool/packages/ci/src/cli.ts rescan --repo repo --github-repo "$REPOSITORY" --plan "$RUNNER_TEMP/plan.json" \
-            --inventories "$RUNNER_TEMP/inventories" --reports "$RUNNER_TEMP/reports" --context "$CONTEXT" \
+            --inventories "$RUNNER_TEMP/inventories" --reports "$RUNNER_TEMP/reports" --context "$CONTEXT" --cooldown-context "$COOLDOWN_CONTEXT" \
             --started-at "$STARTED" --target-url "$RUN_URL"
       - name: Keep each PR's report
         if: always()

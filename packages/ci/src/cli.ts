@@ -54,7 +54,7 @@ const USAGE = `usage:
   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
-  supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --started-at <iso> [--repo <dir>] [--reports <dir>] [--target-url <url>]`;
+  supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --cooldown-context <name> --started-at <iso> [--repo <dir>] [--reports <dir>] [--target-url <url>]`;
 
 interface Options {
   base?: string;
@@ -71,6 +71,7 @@ interface Options {
   inventories?: string;
   reports?: string;
   context?: string;
+  "cooldown-context"?: string;
   "started-at"?: string;
   "target-url"?: string;
 }
@@ -96,6 +97,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
         inventories: { type: "string" },
         reports: { type: "string" },
         context: { type: "string" },
+        "cooldown-context": { type: "string" },
         "started-at": { type: "string" },
         "target-url": { type: "string" },
       },
@@ -234,7 +236,7 @@ async function compareTrees(
   gate: GateEnvironment,
   files: { base: string | undefined; head: string | undefined },
   repo: string,
-): Promise<GateOutcome> {
+): Promise<CompareOutcome> {
   const headSources = await treeSources(head);
   const headGradle = await gradleInput(files.head, head, headSources.gradleBuilds, "head", repo);
   const baseGradle = await gradleInput(files.base, base, (await baseSources(base, headSources)).gradleBuilds, "base", repo);
@@ -350,6 +352,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
           warnings: outcome.warnings,
           gaps: outcome.gaps,
           notes: outcome.notes,
+          cooldown: outcome.cooldown,
         };
       },
       signatures: () => npmSignatures(workingTree(repo), { env, log: (text) => process.stdout.write(text) }),
@@ -378,8 +381,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
           notes: outcome?.notes ?? [],
           gaps: outcome?.gaps ?? [],
           error: result.error,
-          // The daily rescan posts the verdict only; held PRs are retired and reopened, not re-judged in place.
-          cooldown: undefined,
+          cooldown: outcome?.cooldown,
         };
         console.log(`#${pr.number} (${pr.baseRef} ← ${pr.head.slice(0, 12)}):`);
         await emitReport(report, {
@@ -395,6 +397,7 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
       token,
       repository: required("github-repo"),
       context: required("context"),
+      cooldownContext: required("cooldown-context"),
       startedAt: new Date(required("started-at")),
       targetUrl: values["target-url"],
       log: (line) => console.log(line),

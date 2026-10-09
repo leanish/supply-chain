@@ -71,8 +71,9 @@ function steps(outcome: RescanOutcome | Error, signatures: string[] = [], calls:
   };
 }
 
-const pass: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "pass", failures: [], warnings: [], gaps: [], notes: [] };
-const fail: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [], gaps: [], notes: [] };
+const nothingHeld = { evaluated: true, releaseAgeDays: 7, held: [] } as const;
+const pass: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "pass", failures: [], warnings: [], gaps: [], notes: [], cooldown: nothingHeld };
+const fail: RescanOutcome = { osvScannerVersion: "2.6.0", configDigest: "default", completed: true, verdict: "fail", failures: ["new: lib@1.0.0: GHSA-x has no exception"], warnings: [], gaps: [], notes: [], cooldown: nothingHeld };
 
 async function rescan(rescanSteps: RescanSteps, fetch: ReturnType<typeof github>) {
   const log: string[] = [];
@@ -81,6 +82,7 @@ async function rescan(rescanSteps: RescanSteps, fetch: ReturnType<typeof github>
     token: "t",
     repository: "acme/app",
     context: "supply-chain / supply-chain",
+    cooldownContext: "supply-chain / cooldown",
     startedAt: STARTED,
     targetUrl: "https://github.com/acme/app/actions/runs/1",
     log: (line) => log.push(line),
@@ -93,7 +95,7 @@ describe("rescan", () => {
     await inventory(["base", "head"], ["head"]);
     const posts: Array<{ url: string; body: unknown }> = [];
     const calls: string[] = [];
-    expect((await rescan(steps(fail, [], calls), github({}, posts))).posted).toBe(1);
+    expect((await rescan(steps(fail, [], calls), github({}, posts))).posted).toBe(2);
     expect(calls).toEqual(["prepare", "compare b..c -g", "reset"]);
     expect(posts).toEqual([
       {
@@ -102,6 +104,15 @@ describe("rescan", () => {
           state: "failure",
           context: "supply-chain / supply-chain",
           description: "Daily rescan: 1 failure(s): new: lib@1.0.0: GHSA-x has no exception",
+          target_url: "https://github.com/acme/app/actions/runs/1",
+        },
+      },
+      {
+        url: `${API}/statuses/${HEAD}`,
+        body: {
+          state: "success",
+          context: "supply-chain / cooldown",
+          description: "Daily rescan: nothing under the 7-day wait",
           target_url: "https://github.com/acme/app/actions/runs/1",
         },
       },
@@ -187,10 +198,10 @@ describe("rescan", () => {
   it("skips a PR that closed, moved its head or base, or got a newer status, reading every page of statuses", async () => {
     await inventory(["base", "head"]);
     const old = Array.from({ length: 100 }, () => ({ context: "other", created_at: "2026-10-07T05:00:00Z" }));
-    const cases: Array<[Record<string, FakeResponse>, string]> = [
-      [{ [`${API}/pulls/7`]: { body: { state: "closed", head: { sha: HEAD }, base: { ref: "main" } } } }, "closed or changed"],
-      [{ [`${API}/pulls/7`]: { body: { state: "open", head: { sha: "d".repeat(40) }, base: { ref: "main" } } } }, "closed or changed"],
-      [{ [`${API}/branches/main`]: { body: { commit: { sha: "e".repeat(40) } } } }, "main moved"],
+    const cases: Array<[Record<string, FakeResponse>, string, number]> = [
+      [{ [`${API}/pulls/7`]: { body: { state: "closed", head: { sha: HEAD }, base: { ref: "main" } } } }, "closed or changed", 0],
+      [{ [`${API}/pulls/7`]: { body: { state: "open", head: { sha: "d".repeat(40) }, base: { ref: "main" } } } }, "closed or changed", 0],
+      [{ [`${API}/branches/main`]: { body: { commit: { sha: "e".repeat(40) } } } }, "main moved", 0],
       [
         {
           [`${API}/commits/${HEAD}/statuses?per_page=100&page=1`]: { body: old },
@@ -199,13 +210,15 @@ describe("rescan", () => {
           },
         },
         "a newer supply-chain / supply-chain status exists",
+        // Each name on its own: the cooldown status still goes out.
+        1,
       ],
     ];
-    for (const [overrides, reason] of cases) {
-      const posts: Array<{ url: string; body: unknown }> = [];
+    for (const [overrides, reason, expected] of cases) {
+      const posts: Array<{ url: string; body: { context: string } }> = [];
       const { posted, log } = await rescan(steps(fail), github(overrides, posts));
-      expect(posted).toBe(0);
-      expect(posts).toEqual([]);
+      expect(posted).toBe(expected);
+      expect(posts.map((post) => post.body.context)).toEqual(expected === 0 ? [] : ["supply-chain / cooldown"]);
       expect(log.join("\n")).toContain(reason);
     }
   });
@@ -215,7 +228,24 @@ describe("rescan", () => {
     const posts: Array<{ url: string; body: unknown }> = [];
     const statuses = { body: [{ context: "supply-chain / supply-chain", created_at: "2026-10-06T04:30:00Z", state: "success" }] };
     await rescan(steps(fail), github({ [`${API}/commits/${HEAD}/statuses?per_page=100&page=1`]: statuses }, posts));
-    expect(posts).toHaveLength(1);
+    expect(posts).toHaveLength(2);
+  });
+
+  it("re-judges the cooldown under the base's current policy: held, or not evaluated, fails it", async () => {
+    await inventory(["base", "head"]);
+    const held = { ecosystem: "npm" as const, name: "lib", version: "1.1.0", replaced: ["1.0.0"], published: "2026-10-01T00:00:00Z", eligibleAt: "2026-10-15T00:00:00Z", justification: "security-fix" as const };
+    const cooldownPost = async (outcome: RescanOutcome) => {
+      const posts: Array<{ url: string; body: { context: string } }> = [];
+      await rescan(steps(outcome), github({}, posts));
+      return posts.find((post) => post.body.context === "supply-chain / cooldown")?.body;
+    };
+    expect(await cooldownPost({ ...pass, cooldown: { evaluated: true, releaseAgeDays: 14, held: [held] } }))
+      .toMatchObject({ state: "failure", description: "Daily rescan: 1 version(s) under the 14-day wait, held until 2026-10-15T00:00:00Z" });
+    expect(await cooldownPost({ ...pass, cooldown: { evaluated: false, reason: "base's settings don't parse" } }))
+      .toMatchObject({ state: "failure", description: "Daily rescan: the cooldown can't be evaluated: base's settings don't parse" });
+    // A comparison that didn't complete posts no cooldown verdict: its own status already fails.
+    expect(await cooldownPost(new Error("merge failed") as never)).toBeUndefined();
+    expect(await cooldownPost({ ...pass, completed: false })).toBeUndefined();
   });
 
   it("fails closed when GitHub doesn't answer", async () => {

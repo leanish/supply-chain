@@ -162,9 +162,11 @@ requires it, or a `releaseAge` exception names it:
 - Exceptions don't clear a hold. Taking a held version before its time is a person's decision: every other check
   green, the reason written on the PR, then an admin merge past the red `cooldown` check. Where nothing enforces
   the check (no ruleset, e.g. a private repository on the free plan), the same: a merge with the reason written.
-- The daily rescan doesn't re-judge the cooldown. secure-it retires its held PRs once everything aged and opens a
-  fresh one; for a person's PR, re-run the **whole** workflow on the current revision after the time it gives (a
-  re-run of the `cooldown` job alone reads the old report and stays red).
+- The daily rescan re-judges the cooldown under the base's current policy and posts it as a status named like the
+  required cooldown check: a PR that was green under a shorter wait is held again when the base raises it. A status
+  can't clear a red `cooldown` job, though: secure-it retires its held PRs once everything aged and opens a fresh one;
+  for a person's PR, re-run the **whole** workflow on the current revision after the time it gives (a re-run of the
+  `cooldown` job alone reads the old report and stays red).
 
 `compare` writes the held versions into its report (`cooldown`, report schema 2); `supply-chain cooldown --report
 <file> --head <sha>` reads it, refusing anything but a complete, passing comparison of that exact head.
@@ -255,11 +257,11 @@ What runs where:
 
 - **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check. The `cooldown` job then reads the verdict's report: red while it holds young versions, and red when the comparison didn't pass (also `if: always()`, so it's never skipped on a PR).
 - **On pushes to the default branch and daily:** the full `scan`.
-- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures in clean temporary projects only when comparison passes, and posts the verdict as a commit status on the PR's head, named like the required check, unless a newer status of that name exists. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
+- **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures in clean temporary projects only when comparison passes, and posts the verdict as a commit status on the PR's head, named like the required check, and, once the comparison completed, the cooldown under the base's current policy, named like the required cooldown check; neither is posted over a newer status of its name. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
 
 **GitHub settings**
 
-- A ruleset (or branch protection) on the default branch requiring the checks `supply-chain / supply-chain` and `supply-chain / cooldown` (`<your job id> / …`; pass `required-check` if you call the job something else), from GitHub Actions. secure-it and bump-it recognise the cooldown hold by those job names and the job's steps. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
+- A ruleset (or branch protection) on the default branch requiring the checks `supply-chain / supply-chain` and `supply-chain / cooldown` (`<your job id> / …`; pass `required-check` and `required-cooldown-check` if you call the job something else, or require a bridge job's checks instead), from GitHub Actions. secure-it and bump-it recognise the cooldown hold by those job names and the job's steps. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
 - Actions enabled, allowing the actions this workflow uses (actions/checkout, setup-node, setup-java, upload-artifact, download-artifact).
 - The dependency graph and Dependabot **alerts** on; Dependabot version and security updates off (secure-it and bump-it make those PRs, with this gate's rules).
 
