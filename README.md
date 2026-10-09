@@ -17,7 +17,7 @@ version/advisory policy shared by CI and the update tools.
 The gate runs in GitHub Actions. The tools run on macOS and propose PRs; they do
 not merge them. Node 24 is required; npm 11.17+ is needed for release-age exclusions.
 Packages remain private: adoption uses a reviewed Git commit, with no npm publish.
-The current release is **v0.2.1**; see the [CHANGELOG](CHANGELOG.md) for its changes.
+The current release is **v0.2.2**; see the [CHANGELOG](CHANGELOG.md) for its changes.
 Licensed under Apache-2.0.
 
 ## Adoption and operation
