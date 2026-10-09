@@ -69,7 +69,8 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/usage/usage-totals.ts` | `core/runtime/src/usage/usage-totals.ts` | copied | — |
 | `src/working-copy/git-clone-auth.ts` | `core/runtime/src/working-copy/git-clone-auth.ts` | copied | `gitCloneAuth(token, host)` replaces `resolveGitCloneAuth(needs, env)`; the tool passes its token |
 | `src/working-copy/in-memory-workspace.ts` | `core/runtime/src/working-copy/in-memory-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`; `remote-merging` (a scheduled conflict lists package-lock.json); calls `beforePush`; a test double the tools' tests use |
-| `src/working-copy/local-git-workspace.ts` | `core/runtime/src/working-copy/local-git-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory; the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved; `beforePush`, called with the commit before it's pushed |
+| `src/working-copy/git-failure.ts` | — | new | — |
+| `src/working-copy/local-git-workspace.ts` | `core/runtime/src/working-copy/local-git-workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory; the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved; `beforePush`, called with the commit before it's pushed; stale remote-tracking refs that conflict with a fetched or pushed branch's path are deleted first; a failed git call's error quotes its stderr (bounded, credentials masked) instead of inheriting or dropping it |
 | `src/working-copy/workspace.ts` | `core/runtime/src/working-copy/workspace.ts` | copied | `RepoSource` instead of catalog-it's `Project` |
 | `test/api-cost.test.ts` | `core/runtime/test/unit/api-cost.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/claude-code-runner.test.ts` | `core/runtime/test/unit/claude-code-runner.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
@@ -83,12 +84,13 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/fixtures/codex-rollout.ts` | `core/runtime/test/fixtures/codex-rollout.ts` | copied | — |
 | `test/fixtures/report-on-signal.ts` | — | new | — |
 | `test/git-clone-auth.test.ts` | `core/runtime/test/unit/git-clone-auth.test.ts` | copied | `gitCloneAuth` tests replace the `resolveGitCloneAuth` ones; imports this package's modules from `../src/` instead of `../../src/` |
+| `test/git-failure.test.ts` | — | new | — |
 | `test/github-client.test.ts` | `core/runtime/test/unit/github-client.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures |
 | `test/guard.test.ts` | `agents/bump-it/test/local-guard.test.ts` | copied | the guards' directory, and their messages say "agent guard" |
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/in-memory-workspace.test.ts` | `core/runtime/test/unit/in-memory-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/isolation.test.ts` | — | new | — |
-| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; new `remote-merging` (markers refused, the resolved merge published) and `beforePush` tests; imports this package's modules from `../src/` instead of `../../src/` |
+| `test/local-git-workspace.test.ts` | `core/runtime/test/unit/local-git-workspace.test.ts` | copied | `RepoSource` instead of catalog-it's `Project`; a new id-validation regression test; new `remote-merging` (markers refused, the resolved merge published), `beforePush`, stale-tracking-ref and git-stderr tests; imports this package's modules from `../src/` instead of `../../src/` |
 | `test/model-prices.test.ts` | `core/runtime/test/unit/model-prices.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/output-parse.test.ts` | `core/runtime/test/unit/output-parse.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/quota.test.ts` | `core/runtime/test/unit/quota.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |

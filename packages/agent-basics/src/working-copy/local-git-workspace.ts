@@ -1,7 +1,8 @@
 // Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at e4f8a1e; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory;
 // the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved;
-// `beforePush`, called with the commit before it's pushed.
+// `beforePush`, called with the commit before it's pushed; stale remote-tracking refs that would block storing a
+// fetched or pushed branch are dropped first; a failed call's error quotes git's stderr, credentials masked.
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm } from "node:fs/promises";
@@ -24,10 +25,13 @@ import type {
 } from "../types/working-copy.ts";
 
 import { cloneAuthArgs, type GitCloneAuth } from "./git-clone-auth.ts";
+import { maskGitCredentials, StderrTail, stderrSuffix } from "./git-failure.ts";
 import type { Workspace } from "./workspace.ts";
 
 /** Where the clones' git metadata lives, under the workspace root and outside every working tree. */
 const GIT_DIRS = ".git-dirs";
+/** Where `origin`'s branches are tracked. */
+const TRACKING_REFS = "refs/remotes/origin/";
 /** Branch names the workspace checks out and pushes: plain refs, never an option. */
 const BRANCH_PATTERN = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
 
@@ -206,6 +210,8 @@ export class LocalGitWorkspace implements Workspace {
       );
     }
     await args.beforePush?.(head);
+    // The push also stores origin/<branch> locally, which a stale conflicting ref would make fail after the push landed.
+    await this.#dropConflictingTrackingRefs(repo, preparation.branch);
     // A plain push: GitHub refuses anything but a fast-forward or a new branch.
     await this.#run(repo, "push", [
       ...cloneAuthArgs(this.#gitAuth, repo.url),
@@ -297,6 +303,7 @@ export class LocalGitWorkspace implements Workspace {
   }
 
   async #fetch(repo: Repo, branch: string): Promise<void> {
+    await this.#dropConflictingTrackingRefs(repo, branch);
     await this.#run(repo, "fetch", [
       ...cloneAuthArgs(this.#gitAuth, repo.url),
       "fetch",
@@ -304,6 +311,26 @@ export class LocalGitWorkspace implements Workspace {
       "origin",
       `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
     ]);
+  }
+
+  /**
+   * Deletes the remote-tracking refs that can't coexist with `origin/<branch>`: one at a parent path
+   * (`origin/bump-it` for `bump-it/x`) or one under it (`origin/bump-it/x` for `bump-it`). GitHub refuses
+   * such branch pairs as well, so they are leftovers of deleted branches, and git refuses to store
+   * `origin/<branch>` while one exists. Each is deleted only at the value just read; if `branch` is gone
+   * from origin too, the fetch that follows still fails.
+   */
+  async #dropConflictingTrackingRefs(repo: Repo, branch: string): Promise<void> {
+    const target = `${TRACKING_REFS}${branch}`;
+    const { stdout } = await this.#capture(repo, ["for-each-ref", "--format=%(objectname) %(refname)", TRACKING_REFS]);
+    for (const line of stdout.split("\n")) {
+      const separator = line.indexOf(" ");
+      if (separator === -1) continue;
+      const oid = line.slice(0, separator);
+      const ref = line.slice(separator + 1);
+      if (!pathsConflict(ref, target)) continue;
+      await this.#run(repo, "update-ref", ["update-ref", "--no-deref", "-d", ref, oid]);
+    }
   }
 
   /** `branch` at `sha`, the working tree matching it exactly (untracked and ignored files removed). */
@@ -373,16 +400,26 @@ export class LocalGitWorkspace implements Workspace {
   }
 
   async #run(repo: Repo, label: string, args: ReadonlyArray<string>): Promise<void> {
-    const code = await this.#runStatus(repo, args);
-    if (code !== 0) {
-      throw new Error(`git ${label} exited with code ${code}; args=[${redactArgs(args)}]`);
-    }
+    await this.#runIn(repo.workTree, label, [...repoArgs(repo), ...args]);
   }
 
   async #runIn(cwd: string, label: string, args: ReadonlyArray<string>): Promise<void> {
-    const code = await this.#spawnStatus(cwd, args);
+    const stderr = new StderrTail();
+    const code = await new Promise<number>((resolve, reject) => {
+      const child = spawn(this.#git, [...TRUSTED_CONFIG_ARGS, ...args], {
+        cwd,
+        env: trustedGitEnv(),
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => stderr.append(chunk));
+      child.on("error", reject);
+      child.on("close", (exit) => resolve(exit ?? -1));
+    });
     if (code !== 0) {
-      throw new Error(`git ${label} exited with code ${code}; args=[${redactArgs(args)}]`);
+      throw new Error(
+        `git ${label} exited with code ${code}; args=[${this.#redactArgs(args)}]${stderrSuffix(stderr.text(), this.#gitAuth)}`,
+      );
     }
   }
 
@@ -403,19 +440,33 @@ export class LocalGitWorkspace implements Workspace {
       const child = spawn(this.#git, [...TRUSTED_CONFIG_ARGS, ...repoArgs(repo), ...args], {
         cwd: repo.workTree,
         env: trustedGitEnv(),
-        stdio: ["ignore", "pipe", "inherit"],
+        stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
+      const stderr = new StderrTail();
       child.stdout.on("data", (chunk) => {
         stdout += chunk.toString("utf8");
       });
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => stderr.append(chunk));
       child.on("error", reject);
       child.on("close", (code) => {
         if (code === 0) resolve({ stdout });
-        else reject(new Error(`git ${redactArgs(args)} exited with code ${code}`));
+        else {
+          reject(new Error(`git ${this.#redactArgs(args)} exited with code ${code}${stderrSuffix(stderr.text(), this.#gitAuth)}`));
+        }
       });
     });
   }
+
+  #redactArgs(args: ReadonlyArray<string>): string {
+    return maskGitCredentials(redactArgs(args), this.#gitAuth);
+  }
+}
+
+/** Whether git can't hold both refs: one names a directory of the other. */
+function pathsConflict(ref: string, other: string): boolean {
+  return ref !== other && (other.startsWith(`${ref}/`) || ref.startsWith(`${other}/`));
 }
 
 /** Never run hooks or an fsmonitor command, whatever the repo's own config says. */
