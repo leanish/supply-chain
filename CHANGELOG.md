@@ -5,18 +5,19 @@
 ### Fixed
 
 - bump-it no longer plans Gradle dependencies a plugin adds (the Kotlin DSL
-  plugin's embedded Kotlin, for one): it moves a Gradle dependency only where
-  its build's own scripts, version catalogs or `buildSrc`/`build-logic` code
-  name it (plugins through `id(...)` or a catalog plugin), and lists the rest
-  as not moved automatically. Gradle reports
-  plugin-added dependencies as declared, so bump-it asked its agent, on every
-  run, to move declarations that don't exist. Of the version catalogs, it reads the default
-  `gradle/libs.versions.toml` and those the settings import, as Gradle does.
-  When a planned plugin update moves the dependencies that plugin adds (the
-  Kotlin plugin's stdlib), verification lets their version change: only for
-  declarations the build's sources don't name, in a build whose plugin the plan
-  moves, and never an addition or removal. Everything else must still change
-  only as planned, and the gate judges every version that changes.
+  plugin's embedded Kotlin, for one): it moves a Gradle dependency only when
+  the repository's Gradle sources name it, and lists the rest as not moved
+  automatically. Gradle reports plugin-added dependencies as declared, so
+  bump-it asked its agent, on every run, to move declarations that don't
+  exist. The evidence is deliberately coarse and errs toward "named": build
+  scripts, catalogs and `buildSrc`/`build-logic` code anywhere in the
+  repository, comments included (see `packages/ci/README.md` for its known
+  limitations). When a planned plugin update moves the dependencies that plugin
+  adds (the Kotlin plugin's stdlib), verification lets their version change:
+  only for dependencies no Gradle source names, before or after, in a build
+  whose plugin the plan moves, and never an addition or removal. Everything
+  else must still change only as planned, and the gate judges every version
+  that changes.
 
 ### Changed
 

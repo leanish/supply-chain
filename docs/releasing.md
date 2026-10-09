@@ -23,7 +23,11 @@ lists its changes in [the CHANGELOG](../CHANGELOG.md).
 
    A fix found here lands on main through its own PR and gets a new candidate,
    `rc.<n+1>`, which is run and reviewed again. Release only a candidate with
-   no unresolved review findings.
+   no unresolved review findings. A finding whose only effect is that a tool
+   doesn't update something automatically (it skips it with a note, or the
+   attempt fails visibly) doesn't block: it's documented as a known limitation
+   and fixed in a later version. Findings that weaken verification or the gate,
+   produce wrong data, or abort whole runs always block.
 3. Open `release/<version>` from the reviewed candidate's commit; if main moved
    past it, those commits need a candidate of their own first. Set the root
    version in `package.json` and both root version fields in `package-lock.json`;

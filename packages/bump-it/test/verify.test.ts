@@ -155,6 +155,30 @@ describe("bump verification", () => {
     expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), true), head: withReflect(inventory("2.1.0"), false) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
     expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
   });
+  it("lets a plugin-driven change through only when no build file anywhere names it, before or after, and the plugin is its build's", async () => {
+    const marker = "org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin";
+    const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: marker, from: "2.0.0", minor: { version: "2.1.0", line: "2" }, major: undefined, locations: [":buildscript.classpath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
+    const other = { group: "com.acme.other", name: "com.acme.other.gradle.plugin" };
+    const inventory = (kotlin: string, stdlibBuild = ".", otherPlugin = "1.0"): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [".", "tools"].map((build) => ({ build, configurations: [
+      { id: ":buildscript.classpath", kind: "buildscript" as const, unresolved: [], error: undefined, resolved: [], declared: build === "." ? [{ group: "org.jetbrains.kotlin.jvm", name: "org.jetbrains.kotlin.jvm.gradle.plugin", version: kotlin, reason: undefined }, { ...other, version: otherPlugin, reason: undefined }] : [] },
+      { id: ":compileClasspath", kind: "project" as const, unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: build === stdlibBuild ? kotlin : "2.0.0", reason: undefined }] },
+    ] })) });
+    const script = (kotlin: string) => `plugins {\n  id("org.jetbrains.kotlin.jvm") version "${kotlin}"\n  id /* ours */ ("com.acme.other") version "1.0"\n}`;
+    const files = (kotlin: string, extra: Record<string, string> = {}) => ({ "build.gradle.kts": script(kotlin), "tools/build.gradle.kts": "plugins { java }", ...extra });
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", files("2.0.0")), head: tree("head", files("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, changedFiles: ["build.gradle.kts"] };
+    expect(await verifyPlan(input)).toEqual([]);
+    // Named in a comment, in another build's file, before only or after only: strict.
+    const named = { "tools/build.gradle.kts": '// "org.jetbrains.kotlin:kotlin-stdlib" comes from the plugin' };
+    for (const sides of [{ base: tree("base", files("2.0.0", named)) }, { head: tree("head", files("2.1.0", named)) }]) {
+      expect(await verifyPlan({ ...input, ...sides })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    }
+    // A plugin id split by a comment still counts as named, so its unplanned move is refused.
+    expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("2.1.0", ".", "1.1") } })).toContainEqual(expect.stringContaining("com.acme.other"));
+    // The plugin moved in the root build; the stdlib changing in tools isn't its doing.
+    const problems = await verifyPlan({ ...input, gradle: { base: inventory("2.0.0", "tools"), head: inventory("2.1.0", "tools") } });
+    expect(problems).not.toEqual([]);
+    expect(problems).toEqual(problems.map(() => expect.stringContaining("tools/:compileClasspath")));
+  });
   it("protects declarations it can't read when the plan moves no plugin of their build", async () => {
     const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: "g:lib", from: "1.0", minor: { version: "1.1", line: "1" }, major: undefined, locations: [":compileClasspath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
     const inventory = (lib: string, stdlib: string): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [
