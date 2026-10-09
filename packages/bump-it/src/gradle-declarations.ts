@@ -7,7 +7,7 @@ import type { PlannedMove } from "./plan.ts";
 
 /**
  * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
- * through: its build's own sources name it neither before nor after (see `gradleSourceIndex`), the plan moves a
+ * through: the repository's Gradle sources name it neither before nor after (see `gradleSourceIndex`), the plan moves a
  * plugin of that build (a move on a buildscript or settings classpath), and only its version changed (as many
  * declarations before as after: nothing added or removed). bump-it never plans such dependencies (updating the
  * Kotlin plugin moves the stdlib it adds), and the gate still judges every version that changes. Anything else keeps
@@ -26,14 +26,13 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   const planned = moves.filter((move) => move.mechanism === "gradle-declared");
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
   if (pluginBuilds.size === 0) return () => false;
-  const builds = [...new Set(buildOf.values())];
-  const [before, after] = await Promise.all([gradleSourceIndex(base, builds), gradleSourceIndex(head, builds)]);
+  const [before, after] = await Promise.all([gradleSourceIndex(base), gradleSourceIndex(head)]);
   return (name, location) => {
     const build = buildOf.get(location);
     if (build === undefined || !pluginBuilds.has(build)) return false;
     if (planned.some((move) => move.name === name && move.locations.includes(location))) return false;
     const [group, artifact] = name.split(":") as [string, string];
-    if (before.named(build, group, artifact) || after.named(build, group, artifact)) return false;
+    if (before.named(group, artifact) || after.named(group, artifact)) return false;
     const was = declaredAt(inventories.base, location, name);
     return was.length > 0 && was.length === declaredAt(inventories.head, location, name).length;
   };

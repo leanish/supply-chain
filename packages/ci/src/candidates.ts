@@ -539,7 +539,7 @@ async function newestAged(
 
 /**
  * The directly declared dependencies of the scanned tree, one per version, with where each is declared, sorted. A
- * Gradle dependency counts only where its build's own sources name it (see `gradleSourceIndex`): plugins add
+ * Gradle dependency counts only when the repository's Gradle sources name it (see `gradleSourceIndex`): plugins add
  * dependencies too, and a bump needs a declaration to move. The rest are listed in `notes`.
  */
 async function directOf(head: Tree, state: ScanState, floors: ReadonlyArray<Floor>): Promise<{ direct: Direct[]; notes: string[] }> {
@@ -565,7 +565,7 @@ async function directOf(head: Tree, state: ScanState, floors: ReadonlyArray<Floo
   }
   const floored = new Set(floors.filter((floor) => floor.ecosystem === "Maven").map((floor) => `${floor.package}@${floor.version}`));
   const builds = state.inventory.gradle?.builds ?? [];
-  const sources = builds.length === 0 ? undefined : await gradleSourceIndex(head, builds.map((build) => build.build));
+  const sources = builds.length === 0 ? undefined : await gradleSourceIndex(head);
   const unnamed = new Map<string, Set<string>>();
   for (const build of builds) {
     for (const configuration of build.configurations) {
@@ -574,7 +574,7 @@ async function directOf(head: Tree, state: ScanState, floors: ReadonlyArray<Floo
         const name = `${declared.group}:${declared.name}`;
         if (floored.has(`${name}@${declared.version}`)) continue;
         const location = gradleLocation(build.build, configuration.id);
-        if (!sources!.named(build.build, declared.group, declared.name)) {
+        if (!sources!.named(declared.group, declared.name)) {
           const key = `${name}@${declared.version}`;
           unnamed.set(key, (unnamed.get(key) ?? new Set()).add(location));
           continue;
@@ -584,7 +584,7 @@ async function directOf(head: Tree, state: ScanState, floors: ReadonlyArray<Floo
     }
   }
   const notes = [...unnamed.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, locations]) =>
-    `${key}: no supported declaration found in its build's sources (${[...locations].sort().join(", ")}), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read`);
+    `${key}: not named in the repository's Gradle sources (${[...locations].sort().join(", ")}), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read`);
   for (const pkg of state.packages.filter((located) => located.ecosystem === "GitHub Actions")) {
     for (const location of pkg.locations) add(pkg, location);
   }
