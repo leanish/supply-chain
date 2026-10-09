@@ -9,9 +9,12 @@ import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/w
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
 import type { Floor } from "../../ci/src/floors.ts";
 import { type SecurityCandidates, type SecurityFix, securityCandidates } from "../../ci/src/candidates.ts";
+import { type CooldownEvaluation, heldUntil } from "../../ci/src/cooldown.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
 import { namingFailures } from "../../ci/src/http.ts";
+import { NpmRegistry, releaseSignals } from "../../ci/src/npm-registry.ts";
+import type { HeldVersion } from "../../ci/src/release-age.ts";
 import { runProcess } from "../../ci/src/process.ts";
 import { gitTree, type Tree, workingTree } from "../../ci/src/tree.ts";
 import { failingCheckNames } from "../../remediation/src/ci-state.ts";
@@ -29,15 +32,16 @@ import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanne
 import { branchFor, ownPullRequests, stateOf, topicOf } from "../../remediation/src/own-pr.ts";
 import { revertToBase } from "../../remediation/src/reconcile.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate, recoverPublication } from "../../remediation/src/publication.ts";
-import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
+import { type BaseMerge, type CooldownState, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
 import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { reconcileNpmFloors } from "./npm-floor-history.ts";
 import { materializeOnBase } from "./npm-materialize.ts";
+import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
-import { type ChangePlan, coupledWork, packageKey, planFor, type SecurityUnit } from "./plan.ts";
+import { type ChangePlan, coupledWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit } from "./plan.ts";
 import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { verifyPlan, type VerifyInputs } from "./verify.ts";
@@ -54,6 +58,7 @@ interface SkillAnswer {
 
 /** What secure-it reaches outside its own logic; tests replace them. */
 export interface SecureItDeps {
+  readonly requiredNpm: typeof requiredNpmPlan;
   readonly materializeNpm: typeof materializeOnBase;
   readonly floorProbe: (context: ToolRunContext, base: Tree, floors: ReadonlyArray<Floor>, env: GateEnvironment) => Promise<RemovalProbe>;
   readonly gate: (context: ToolRunContext) => Promise<GateEnvironment>;
@@ -74,6 +79,7 @@ export interface SecureItDeps {
 
 export function defaultDeps(): SecureItDeps {
   return {
+    requiredNpm: requiredNpmPlan,
     materializeNpm: materializeOnBase,
     floorProbe: probeOnBase,
     gate: async (context) => {
@@ -165,7 +171,7 @@ async function prepareNpmFiles(execution: Execution, plan: ChangePlan, base: Tre
   const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base));
   for (const detail of window.notes) context.logger.warn("secure-it: npm release-age exclusion", { detail });
   if (plan.moves.some((move) => move.ecosystem === "npm")) {
-    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young or unreadable security targets or locked base versions, or own-package exclusions");
+    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young security targets or proved requirements, unreadable or young locked base versions, or own-package exclusions");
   }
   let files = await deps.materializeNpm(context, base, plan, window.exclude);
   if (reconcileFloors) files = reconcileNpmFloors(files, await deps.trees.working(context.workingCopy).read(FLOORS_FILE));
@@ -225,7 +231,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps), npmFiles: new Map<string, string>() };
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
   const results: Readonly<Record<string, unknown>>[] = [];
-  for (const unit of selection.units) {
+  for (const unit of await holdRequiredYoung(execution, selection.units, base)) {
     try {
       results.push(await runUnit(execution, unit, base, own));
     } catch (err) {
@@ -284,9 +290,45 @@ async function runRemoval(execution: Execution, removal: ComputedRemoval, base: 
   return { ...report, outcome: pr === undefined ? "nothing-changed" : "published", ...(pr === undefined ? {} : { pullRequest: pr.url }) };
 }
 
+/**
+ * A routine fix whose required npm dependency is younger than the wait can't
+ * wait either: it moves to the held unit with every package coupled to it.
+ * Moving roots only drops requirements, so one pass leaves the rest aged.
+ */
+async function holdRequiredYoung(execution: Execution, units: ReadonlyArray<SecurityUnit>, base: PlanBase): Promise<SecurityUnit[]> {
+  const aged = units.find((unit) => unit.kind === "routine" && unit.held !== true);
+  if (aged === undefined) return [...units];
+  let plan: ChangePlan;
+  try {
+    plan = await planUnit(execution, aged, base);
+  } catch {
+    // Its own run reports why it can't be planned.
+    return [...units];
+  }
+  const moved = new Set((plan.requiredNpm ?? []).filter((target) => target.exempt).map((target) => `npm|${target.root.name}`));
+  if (moved.size === 0) return [...units];
+  for (;;) {
+    const size = moved.size;
+    for (const set of aged.coupled ?? []) if (set.some((key) => moved.has(key))) for (const key of set) moved.add(key);
+    if (moved.size === size) break;
+  }
+  const held = units.find((unit) => unit.kind === "routine" && unit.held === true);
+  const stays = aged.work.filter((fix) => !moved.has(packageKey(fix)));
+  const joined: SecurityUnit = {
+    kind: "routine",
+    topic: HELD_TOPIC,
+    held: true,
+    work: [...(held?.work ?? []), ...aged.work.filter((fix) => moved.has(packageKey(fix)))],
+    coupled: [...(held?.coupled ?? []), ...(aged.coupled ?? []).filter((set) => set.some((key) => moved.has(key)))],
+  };
+  const rest = stays.length === 0 ? [] : [{ ...aged, work: stays, coupled: (aged.coupled ?? []).filter((set) => !set.some((key) => moved.has(key))) }];
+  return [...units.filter((unit) => unit !== aged && unit !== held), ...rest, joined];
+}
+
 async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
-  return planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const plan = await planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 
 async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase, own: ReadonlyArray<GitHubPullRequest>): Promise<Readonly<Record<string, unknown>>> {
@@ -297,7 +339,7 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
     const previous = planOf(pr.body);
     return stateOf(pr.body)?.head === pr.headSha && previous !== undefined && planDigest(previous) === planDigest(plan);
   });
-  const details = { topic: plan.topic, packages: plan.packages };
+  const details = { topic: plan.topic, packages: plan.packages, notes: plan.notes ?? [] };
   if (already !== undefined) return { ...details, outcome: "already-open", pullRequest: already.url };
   const reusable = owned[0];
   const prepared = await preparePlan(context, deps, plan, reusable, own, base.tree.id);
@@ -305,7 +347,7 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
   if (answer.outcome !== "applied" || answer.publication == null) return { ...details, outcome: "cannot-apply", summary: answer.summary };
   const verified = await verifyWithRetry(execution, base, plan, answer.publication);
-  const checked = { ...details, packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
+  const checked = { ...details, notes: verified.plan.notes ?? [], packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
   if (verified.problems.length > 0) return { ...checked, outcome: "verification-failed", problems: verified.problems };
   const content = { ...verified.content, body: withPlanSection(verified.content.body, verified.plan) };
   if (reusable !== undefined) {
@@ -345,8 +387,12 @@ async function verifyWithRetry(execution: Execution, base: PlanBase, plan: Chang
     const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base.tree));
     for (const [path, text] of await deps.materializeNpm(context, base.tree, plan, window.exclude)) execution.npmFiles.set(path, text);
   }
-  const problems = await verifyEdit(context, deps, plan, env, inventories, base.tree, base.gradle, execution.npmFiles);
-  if (problems.length === 0) return { plan, content, problems, named: [], leftOut: plan.leftOut ?? [] };
+  let cooldown: CooldownEvaluation | undefined;
+  const heard = (evaluation: CooldownEvaluation) => {
+    cooldown = evaluation;
+  };
+  const problems = await verifyEdit(context, deps, plan, env, inventories, base.tree, base.gradle, execution.npmFiles, heard);
+  if (problems.length === 0) return withCooldown(env, { plan, content, problems, named: [], leftOut: plan.leftOut ?? [] }, cooldown);
   const retry = retryWithoutNamed(plan, problems);
   if (retry.plan === undefined) return { plan, content, problems, named: retry.named, leftOut: retry.leftOut };
   context.logger.warn("secure-it: retrying the routine without named package groups", { leftOut: retry.leftOut });
@@ -357,8 +403,34 @@ async function verifyWithRetry(execution: Execution, base: PlanBase, plan: Chang
   if (answer.outcome !== "applied" || answer.publication == null) {
     return { plan: retry.plan, content, problems: [`retry could not apply: ${answer.summary}`], named: retry.named, leftOut: retry.plan.leftOut ?? [] };
   }
-  const remaining = await verifyEdit(context, deps, retry.plan, env, inventories, base.tree, base.gradle, execution.npmFiles);
-  return { plan: retry.plan, content: answer.publication, problems: remaining, named: [...retry.named, ...namedProblems(retry.plan, remaining)], leftOut: retry.plan.leftOut ?? [] };
+  cooldown = undefined;
+  const remaining = await verifyEdit(context, deps, retry.plan, env, inventories, base.tree, base.gradle, execution.npmFiles, heard);
+  const batch = { plan: retry.plan, content: answer.publication, problems: remaining, named: [...retry.named, ...namedProblems(retry.plan, remaining)], leftOut: retry.plan.leftOut ?? [] };
+  return remaining.length === 0 ? withCooldown(env, batch, cooldown) : batch;
+}
+
+/**
+ * The verified plan with what the verifying comparison's cooldown holds (and
+ * the signals people weigh), or without any; a cooldown the comparison
+ * couldn't evaluate is a problem, never "nothing held".
+ */
+async function withCooldown(env: GateEnvironment, batch: VerifiedBatch, cooldown: CooldownEvaluation | undefined): Promise<VerifiedBatch> {
+  if (cooldown?.evaluated === false) return { ...batch, problems: [`the cooldown can't be evaluated: ${cooldown.reason}`] };
+  const { cooldown: _previous, ...plan } = batch.plan;
+  const held = cooldown?.held ?? [];
+  if (held.length === 0) return { ...batch, plan };
+  const registry = new NpmRegistry(env.fetch);
+  const planned: PlannedHold[] = [];
+  for (const entry of held) planned.push({ ...entry, signals: entry.ecosystem === "npm" ? await npmSignals(registry, entry) : [] });
+  return { ...batch, plan: { ...plan, cooldown: planned } };
+}
+
+async function npmSignals(registry: NpmRegistry, entry: HeldVersion): Promise<string[]> {
+  try {
+    return releaseSignals(await registry.packument(entry.name), entry.name, entry.version, entry.replaced);
+  } catch {
+    return ["registry metadata unreadable"];
+  }
 }
 
 async function recognisedPlans(
@@ -411,10 +483,13 @@ async function verifyEdit(
   base: Tree,
   baseGradle: GradleInputs["head"],
   npmFiles?: ReadonlyMap<string, string>,
+  cooldown?: (evaluation: CooldownEvaluation) => void,
 ): Promise<string[]> {
   const head = deps.trees.working(context.workingCopy);
   const headGradle = await inventories.ofWorkingTree(head);
-  return deps.verify({ plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id) });
+  return deps.verify({
+    plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id), ...(cooldown === undefined ? {} : { cooldown }),
+  });
 }
 
 async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Readonly<Record<string, unknown>>> {
@@ -429,6 +504,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
     return plan;
   };
   const steps: ReviewSteps = {
+    cooldown: (pr) => cooldownState(planFrom(pr), context.now),
     async rebase(pr, merge: BaseMerge) {
       execution.npmFiles.clear();
       const previous = planFrom(pr);
@@ -455,8 +531,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         await publishUpdate(publication, merge.prepared, pr.number, content);
         return "rebased";
       }
-      const { unit, blocked } = await reviewUnit(previous, found.fixes, found.npmPeers);
+      const { units, blocked } = await reviewUnits(previous, found.fixes, found.npmPeers);
       if (blocked.length > 0) notes.push({ number: pr.number, blocked });
+      // Split exactly as a run would, required-dependency moves included, before telling which unit is this PR's.
+      const unit = unitOf(previous, await holdRequiredYoung(execution, units, { tree: base, gradle: baseGradle }));
       if (unit === undefined) {
         await closeAndDelete(publication, pr.number, pr.headSha, "No actionable fixes remain for this security unit on the default branch. Blocked fixes are reported by secure-it.");
         return "retired";
@@ -464,6 +542,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const recomputed = await planUnit(execution, unit, { tree: base, gradle: baseGradle });
       // Plans predating batches retain their package scope and branch topic until retired.
       const plan = previous.kind === undefined ? { ...recomputed, kind: undefined, topic: previous.topic } : recomputed;
+      if (plan.notes !== undefined && plan.notes.length > 0) notes.push({ number: pr.number, notes: plan.notes });
       const changed = planDigest(plan) !== planDigest(previous);
       const code: string[] = [];
       if (changed) {
@@ -527,15 +606,26 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   return { outcome: "reviewed", reviewed, notes };
 }
 
+/** Whether a PR's plan is held, and whether its last held version has aged by `now`. */
+export function cooldownState(plan: ChangePlan, now: Date): CooldownState | undefined {
+  const until = heldUntil(plan.cooldown ?? []);
+  if (until === undefined) return undefined;
+  return { kind: now.getTime() >= Date.parse(until) ? "aged" : "waiting", until };
+}
+
 /** New routine PRs recompute all non-majors; majors and legacy PRs retain their package scope. */
-async function reviewUnit(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner) {
+async function reviewUnits(previous: ChangePlan, fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner) {
   if (previous.kind !== "malware" && !previous.malware && fixes.some((fix) => fix.malicious)) {
     throw new Error("malware on the new base must be fixed together before this security unit can verify");
   }
   const ours = new Set(previous.packages);
   const scoped = previous.kind === "routine" || previous.malware ? fixes : fixes.filter((fix) => ours.has(packageKey(fix)));
-  const selected = await coupledWork(scoped, peers);
+  return coupledWork(scoped, peers);
+}
+
+/** The recomputed unit an open PR stands for: two routine units can exist (aged and held), so its topic says which. */
+function unitOf(previous: ChangePlan, units: ReadonlyArray<SecurityUnit>): SecurityUnit | undefined {
   const kind = previous.malware ? "malware" : previous.kind;
-  const unit = kind === undefined ? selected.units[0] : selected.units.find((unit) => unit.kind === kind);
-  return { unit, blocked: selected.blocked };
+  if (kind === undefined) return units[0];
+  return units.find((unit) => unit.kind === kind && (kind !== "routine" || unit.topic === previous.topic));
 }

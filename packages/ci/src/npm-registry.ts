@@ -160,6 +160,50 @@ function provenanceUrl(doc: Packument, name: string, version: string): string | 
   return url;
 }
 
+const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"] as const;
+
+/**
+ * What a person weighing an early `name@version` may want to know, against
+ * the versions it replaces: provenance, a publisher change, install scripts
+ * it adds. Information only (the identity checks above are what fail); a
+ * fact the registry can't tell is said to be unknown, never guessed.
+ */
+export function releaseSignals(doc: Packument, name: string, version: string, replaced: ReadonlyArray<string>): string[] {
+  const known = replaced.filter((previous) => isObject(doc.versions[previous]));
+  const attempt = <T>(read: () => T): T | undefined => {
+    try {
+      return read();
+    } catch {
+      return undefined;
+    }
+  };
+  const provenance = attempt(() => provenanceUrl(doc, name, version) !== undefined);
+  const publisher = attempt(() => publisherOf(doc, name, version));
+  const before = [...new Set(known.map((previous) => attempt(() => publisherOf(doc, name, previous)) ?? "unknown"))];
+  // Each install script as `name: command`, so a changed command counts as new too.
+  const scripts = (of: string) => attempt(() => {
+    const declared = manifestDist(doc, name, of).manifest["scripts"];
+    return INSTALL_SCRIPTS.flatMap((script) => isObject(declared) && typeof declared[script] === "string" ? [`${script}: ${declared[script]}`] : []);
+  });
+  const named = (entries: ReadonlyArray<string>) => entries.map((entry) => entry.slice(0, entry.indexOf(":")));
+  const current = scripts(version);
+  const earlier = new Set(known.flatMap((previous) => scripts(previous) ?? []));
+  const now = current === undefined ? undefined : named(current);
+  const added = current === undefined ? undefined : named(current.filter((entry) => !earlier.has(entry)));
+  return [
+    provenance === undefined ? "provenance unknown" : provenance ? "has provenance" : "no provenance",
+    publisher === undefined ? "publisher unknown"
+      : known.length === 0 ? `published by ${publisher}`
+      : before.every((name) => name === publisher) ? `published by ${publisher}, as before`
+      : `publisher changed: ${publisher} (before: ${before.join(", ")})`,
+    added === undefined ? "install scripts unknown"
+      : now!.length === 0 ? "no install scripts"
+      : known.length === 0 ? `install scripts: ${now!.join(", ")}`
+      : added.length > 0 ? `adds or changes install scripts: ${added.join(", ")}`
+      : `install scripts as before: ${now!.join(", ")}`,
+  ];
+}
+
 function publisherOf(doc: Packument, name: string, version: string): string | undefined {
   const user = manifestDist(doc, name, version).manifest["_npmUser"];
   const publisher = isObject(user) ? user["name"] : undefined;

@@ -7,7 +7,10 @@
 import { createHash } from "node:crypto";
 import { appendFile, writeFile } from "node:fs/promises";
 
-export const REPORT_SCHEMA_VERSION = 1;
+import { type CooldownEvaluation, heldLines } from "./cooldown.ts";
+
+/** 2: `cooldown` on comparisons. */
+export const REPORT_SCHEMA_VERSION = 2;
 
 export interface Report {
   readonly schemaVersion: number;
@@ -28,6 +31,8 @@ export interface Report {
   readonly notes: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
   readonly error: string | undefined;
+  /** A comparison's held versions (`cooldown.ts`); undefined for scans and runs that didn't get that far. */
+  readonly cooldown: CooldownEvaluation | undefined;
 }
 
 export function configDigest(text: string | undefined): string {
@@ -69,6 +74,9 @@ export function markdownSummary(report: Report): string {
     section("Warnings", report.warnings),
     section("Coverage gaps", report.gaps),
     section("Notes", report.notes),
+    report.cooldown === undefined ? "" : report.cooldown.evaluated
+      ? section(`Held by the ${report.cooldown.releaseAgeDays}-day cooldown`, heldLines(report.cooldown.held))
+      : `\n**Cooldown not evaluated:** ${report.cooldown.reason}\n`,
     "\n",
   ].join("");
 }

@@ -8,7 +8,8 @@ import { MemoryJournal } from "../src/journal.ts";
 import { stateOf, withMarker } from "../src/own-pr.ts";
 import { closeAndDelete, publishUpdate, type PublicationContext } from "../src/publication.ts";
 import { type BaseMerge, MAX_ADAPTATIONS, type ReviewContext, reviewOpenPullRequests, type ReviewSteps } from "../src/review.ts";
-import { BASE_SHA, FakeGitHub, HEAD_SHA, ownPr, PUSHED_SHA, RED, RULES } from "./fake-github.ts";
+import { COOLDOWN_STEPS } from "../src/ci-state.ts";
+import { BASE_SHA, FakeGitHub, GREEN, HEAD_SHA, ownPr, PUSHED_SHA, RED, RULES } from "./fake-github.ts";
 
 const REPO = "leanish/widget";
 const NEW_BASE = "f".repeat(40);
@@ -211,5 +212,62 @@ describe("reviewOpenPullRequests", () => {
     expect((await reviewOpenPullRequests(context(github), failing))[0]).toMatchObject({ outcome: "error" });
     expect((await reviewOpenPullRequests(context(github), failing))[0]).toMatchObject({ outcome: "closed" });
     expect(calls).toBe(2);
+  });
+  describe("a PR the cooldown holds", () => {
+    const UNTIL = "2026-10-13T00:00:00.000Z";
+    const holding = (kind: "waiting" | "aged", calls: string[] = []): ReviewSteps => ({ ...steps(calls), cooldown: () => ({ kind, until: UNTIL }) });
+    const step = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+    const CI_HOLDING = {
+      source: "actions-jobs" as const,
+      checkRuns: [
+        { name: "supply-chain / supply-chain", status: "completed", conclusion: "success" },
+        { name: "supply-chain / cooldown", status: "completed", conclusion: "failure", steps: [step(COOLDOWN_STEPS.evaluate, "success"), step(COOLDOWN_STEPS.hold, "failure")] },
+      ],
+      statuses: [],
+    };
+
+    it("stays a draft on green CI, or when only the cooldown holds it, with no model", async () => {
+      for (const checks of [GREEN, CI_HOLDING]) {
+        const github = new FakeGitHub(ownPr());
+        github.checks = checks;
+        const calls: string[] = [];
+        expect((await reviewOpenPullRequests(context(github), holding("waiting", calls)))[0]).toMatchObject({ outcome: "held", detail: `until ${UNTIL}` });
+        expect(github.prs.get(7)?.isDraft).toBe(true);
+        expect(calls).toEqual([]);
+      }
+    });
+
+    it("adapts as usual when the cooldown failed without an evaluation, or something else failed", async () => {
+      const broken = { ...CI_HOLDING, checkRuns: [CI_HOLDING.checkRuns[0]!, { ...CI_HOLDING.checkRuns[1]!, steps: [step(COOLDOWN_STEPS.evaluate, "failure")] }] };
+      for (const checks of [broken, RED]) {
+        const github = new FakeGitHub(ownPr());
+        github.checks = checks;
+        const calls: string[] = [];
+        expect((await reviewOpenPullRequests(context(github), holding("waiting", calls)))[0]?.outcome).toBe("adapted");
+        expect(calls).toEqual(["adapt #7 attempt 1"]);
+      }
+    });
+
+    it("retires the draft once everything has aged, before looking at the base or CI", async () => {
+      const github = new FakeGitHub(ownPr());
+      github.checks = GREEN;
+      const calls: string[] = [];
+      const entries = await reviewOpenPullRequests(context(github, new InMemoryWorkspace(), workingCopy(NEW_BASE)), holding("aged", calls));
+      expect(entries[0]).toMatchObject({ outcome: "graduated", detail: `held until ${UNTIL}` });
+      expect(github.prs.get(7)?.state).toBe("closed");
+      expect(calls).toEqual([]);
+      expect(github.calls.some((call) => call.startsWith("markReadyForReview"))).toBe(false);
+    });
+
+    it("leaves a held PR a person marked ready alone", async () => {
+      for (const kind of ["waiting", "aged"] as const) {
+        const github = new FakeGitHub(ownPr({ isDraft: false }));
+        github.checks = RED;
+        const calls: string[] = [];
+        expect((await reviewOpenPullRequests(context(github), holding(kind, calls)))[0]).toMatchObject({ outcome: "left-alone", detail: "a person marked the held PR ready" });
+        expect(github.prs.get(7)?.state).not.toBe("closed");
+        expect(calls).toEqual([]);
+      }
+    });
   });
 });

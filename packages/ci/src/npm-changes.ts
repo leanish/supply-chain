@@ -6,6 +6,8 @@
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
  * (commit 9e7d098); the advisory evidence now comes from the shared snapshot.
+ * Own-package changes are also returned separately as potential security roots,
+ * without introducing a publish-date requirement for their age exemption.
  */
 import { type Config, isOwnPackage } from "./config.ts";
 import type { Exceptions } from "./exceptions.ts";
@@ -26,6 +28,8 @@ export interface NpmChanges {
   readonly problems: ReadonlyArray<string>;
   /** Versions from the npm registry the change adds or changes. */
   readonly changes: ReadonlyArray<ChangedVersion>;
+  /** Own packages can seed required-dependency proofs without needing a publish date of their own. */
+  readonly ownChanges: ReadonlyArray<ChangedVersion>;
 }
 
 export async function npmChanges(
@@ -35,6 +39,7 @@ export async function npmChanges(
 ): Promise<NpmChanges> {
   const problems = sourceProblems(head, context.config.npm.registries);
   const changes: ChangedVersion[] = [];
+  const ownChanges: ChangedVersion[] = [];
   const today = context.now.toISOString().slice(0, 10);
   const changed = changedPackages(base, head).filter((pkg) => fromRegistry(pkg, context.config.npm.registries));
   for (const pkg of uniqueVersions(changed.map((locked) => ({ ...locked, ecosystem: "npm" as const })))) {
@@ -44,11 +49,14 @@ export async function npmChanges(
     }
     problems.push(...(await context.registry.identityProblems(pkg, identityBaseline(pkg.name, base, head), context.exceptions, today)));
     // Own packages skip only the wait: their identity is checked, their publish time isn't needed.
-    if (isOwnPackage(context.config.ownPackages, pkg)) continue;
+    if (isOwnPackage(context.config.ownPackages, pkg)) {
+      ownChanges.push({ pkg: { ecosystem: "npm", name: pkg.name, version: pkg.version }, published: new Date(0), replaced: replacedVersions(pkg.name, base, head) });
+      continue;
+    }
     const published = publishTime(await context.registry.packument(pkg.name), pkg.name, pkg.version);
     changes.push({ pkg: { ecosystem: "npm", name: pkg.name, version: pkg.version }, published, replaced: replacedVersions(pkg.name, base, head) });
   }
-  return { problems, changes };
+  return { problems, changes, ownChanges };
 }
 
 /**

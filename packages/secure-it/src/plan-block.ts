@@ -2,16 +2,20 @@
  * The plan in a PR's body: a table for people, and the plan itself as JSON in
  * a hidden comment, so a later run can tell whether its new plan is the same
  * (then it leaves the PR to its review tick) and the review tick can re-apply
- * and verify it exactly.
+ * and verify it exactly. A plan the cooldown holds also opens the body with
+ * a warning, kept in step with the plan.
  */
 import { createHash } from "node:crypto";
 
+import { heldEntry, heldUntil } from "../../ci/src/cooldown.ts";
 import { planBlock, planPayload, withPlanSection as replaced } from "../../remediation/src/plan-blocks.ts";
 
 import { floorIdentity, validRemoval } from "./floor-removal.ts";
-import type { ChangePlan, PlannedMove } from "./plan.ts";
+import type { ChangePlan, PlannedHold, PlannedMove } from "./plan.ts";
 
 const HEADING = "### What secure-it moved";
+const WARNING_START = "<!-- secure-it cooldown warning -->";
+const WARNING_END = "<!-- /secure-it cooldown warning -->";
 
 /** Identity includes version targets, or exact removed floor records and the jointly resolved npm bytes. */
 export function planDigest(plan: ChangePlan): string {
@@ -19,7 +23,7 @@ export function planDigest(plan: ChangePlan): string {
     .map((move) => ({ ...move, locations: [...move.locations].sort(), advisories: [...move.advisories].sort() }))
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const removal = plan.floorRemoval;
-  const identity = removal === undefined ? moves : {
+  const identity = removal === undefined ? { moves, requiredNpm: [...plan.requiredNpm ?? []].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) } : {
     floors: removal.floors.map(floorIdentity).sort(),
     files: [...removal.files].sort((a, b) => a.path.localeCompare(b.path)),
   };
@@ -33,18 +37,21 @@ export function planSection(plan: ChangePlan): string {
     (move) =>
       `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${fixesLabel(plan, move)} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
   );
-  return [
+  const section = [
     HEADING,
     "",
     "| Ecosystem | Package | Version | How | Fixes | Where |",
     "|---|---|---|---|---|---|",
     ...rows,
     ...omittedSection(plan),
+    ...(plan.notes ?? []).map((note) => `- ${note.replace(/\s+/g, " ")}`),
     "",
     "Security targets are the versions the supply-chain gate's rule picks (`supply-chain candidates --rule security`); code chose any required direct-peer companions at their lowest safe compatible versions. The gate verified the change before it was published.",
     "",
     planBlock(plan),
   ].join("\n");
+  if (section.length > 43000) throw new Error("security plan is too large for a PR body");
+  return section;
 }
 
 function removalSection(plan: ChangePlan): string {
@@ -61,6 +68,7 @@ function removalSection(plan: ChangePlan): string {
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
 function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
+  if (plan.requiredNpm?.some((target) => target.name === move.name && target.version === move.to)) return "required dependency compatibility";
   const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
   return coupled ? "direct peer compatibility" : "";
 }
@@ -81,9 +89,43 @@ function omittedSection(plan: ChangePlan): string[] {
   ];
 }
 
-/** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none). */
+/** `body` with its plan section replaced by `plan`'s (or `plan`'s appended when it has none), and the cooldown warning on top while it holds. */
 export function withPlanSection(body: string, plan: ChangePlan): string {
-  return replaced(body, HEADING, planSection(plan));
+  const warning = cooldownWarning(plan.cooldown ?? []);
+  const rest = replaced(withoutWarning(body), HEADING, planSection(plan));
+  return warning === undefined ? rest : `${warning}\n\n${rest}`;
+}
+
+function withoutWarning(body: string): string {
+  const start = body.indexOf(WARNING_START);
+  const end = body.indexOf(WARNING_END);
+  if (start === -1 || end < start) return body;
+  return `${body.slice(0, start)}${body.slice(end + WARNING_END.length)}`.replace(/^\s+/, "");
+}
+
+/** The warning a held PR opens with: what came early, why, what to check, and how the hold ends. */
+export function cooldownWarning(held: ReadonlyArray<PlannedHold>): string | undefined {
+  const until = heldUntil(held);
+  if (until === undefined) return undefined;
+  const cell = (text: string) => text.replaceAll("|", "\\|").replace(/\s+/g, " ");
+  const minute = (instant: string) => `${instant.slice(0, 10)} ${instant.slice(11, 16)}`;
+  const why = { "security-fix": "the security fix the version rule picks", required: "required by a security fix", exception: "a release-age exception", unjustified: "not justified: the gate fails it" } as const;
+  const rows = held.map((entry) =>
+    `> | ${entry.ecosystem} \`${cell(entry.name)}\` | ${entry.replaced.length === 0 ? "new" : cell(entry.replaced.join(", "))} → ${cell(entry.version)} | ${minute(entry.published)} | ${minute(entry.eligibleAt)} | ${why[entry.justification]} | ${cell(entry.signals.join("; ")) || "—"} |`);
+  return [
+    WARNING_START,
+    "> [!WARNING]",
+    "> **Release-age cooldown bypassed.** This PR takes versions published less than the release-age wait ago. Needing them for a security fix, and passing every check, doesn't rule out malware: whoever controls a publisher can ship it inside a real fix, whatever the advisory's severity.",
+    ">",
+    "> | Package | Version | Published (UTC) | Held until (UTC) | Why | Signals |",
+    "> |---|---|---|---|---|---|",
+    ...rows,
+    ">",
+    `> secure-it keeps this PR a draft, and the supply-chain gate's \`cooldown\` check stays red, until ${minute(until)} UTC. Then secure-it closes it and its next run opens a freshly verified PR (held again only if something in it is still young).`,
+    ">",
+    "> To take it earlier, a person decides: every other check green, the reason written in a PR comment, then an admin merge past the red `cooldown` check (where no ruleset enforces it, a merge with the same written reason).",
+    WARNING_END,
+  ].join("\n");
 }
 
 /** The plan a PR's body carries, if it has one that parses. */
@@ -95,6 +137,10 @@ export function planOf(body: string): ChangePlan | undefined {
 function validMetadata(plan: ChangePlan): boolean {
   if (plan.kind === "floor-removal") return plan.topic === "floor-removal" && plan.malware === false && plan.moves.length === 0 && validRemoval(plan.floorRemoval);
   if (plan.floorRemoval !== undefined) return false;
+  if (plan.notes !== undefined && (!Array.isArray(plan.notes) || !plan.notes.every((note) => typeof note === "string"))) return false;
+  if (plan.cooldown !== undefined && !validHolds(plan.cooldown)) return false;
+  if (plan.requiredNpm !== undefined && (!Array.isArray(plan.requiredNpm) || !plan.requiredNpm.every((target) =>
+    target !== null && typeof target === "object" && typeof target.exempt === "boolean" && [target.name, target.version, target.path, target.lockfile, target.key, target.range, target.reason, target.parent?.name, target.parent?.version, target.parent?.path, target.root?.name, target.root?.version, target.root?.path].every((value) => typeof value === "string")))) return false;
   if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
   if (plan.coupled !== undefined && (!Array.isArray(plan.coupled) || !plan.coupled.every((set) => Array.isArray(set) && set.every((name: unknown) => typeof name === "string")))) return false;
   if (plan.leftOut === undefined) return true;
@@ -107,4 +153,17 @@ function isMove(move: unknown): move is PlannedMove {
   if (typeof move !== "object" || move === null) return false;
   const m = move as Record<string, unknown>;
   return typeof m["name"] === "string" && typeof m["from"] === "string" && typeof m["to"] === "string" && typeof m["mechanism"] === "string" && Array.isArray(m["locations"]);
+}
+
+function validHolds(held: unknown): boolean {
+  if (!Array.isArray(held)) return false;
+  return held.every((entry: unknown) => {
+    try {
+      heldEntry(entry);
+    } catch {
+      return false;
+    }
+    const signals = (entry as PlannedHold).signals;
+    return Array.isArray(signals) && signals.every((signal) => typeof signal === "string");
+  });
 }

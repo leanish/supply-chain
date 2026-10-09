@@ -22,6 +22,17 @@ describe("batch retry", () => {
     expect(planOf(planSection(retry.plan!))?.coupled).toEqual(original.coupled);
   });
 
+  it("attributes a failed required child to its security root and leaves unrelated npm work", () => {
+    const root = { name: "lib", version: "1.0.1", path: "node_modules/lib" };
+    const target = { name: "child", version: "2.0.0", path: "node_modules/child", lockfile: "package-lock.json", root, parent: root, key: "child", range: "^2", exempt: true, reason: "forced young child" };
+    const original = { ...plan(move("lib"), move("other")), requiredNpm: [target], notes: [target.reason], coupled: [["npm|lib"]] };
+    const retry = retryWithoutNamed(original, ["compare: child@2.0.0 adds an advisory"]);
+    expect(retry.plan?.packages).toEqual(["npm|other"]);
+    expect(retry.plan?.requiredNpm).toEqual([]);
+    expect(retry.plan?.notes).toEqual([]);
+    expect(retry.leftOut[0]?.problems).toEqual(["compare: child@2.0.0 adds an advisory"]);
+  });
+
   it("drops all copies of a named package rather than silently publishing only some", () => {
     const original = plan(move("lib"), move("lib", "0.9.0"), move("other"));
     const retry = retryWithoutNamed(original, ["compare: new: lib@1.0.1: GHSA-new has no exception"]);

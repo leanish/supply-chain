@@ -6,6 +6,7 @@
  *   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
  *   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
+ *   supply-chain cooldown --report <file> --head <sha>
  *
  * `compare` (pull requests) fails on findings head adds, on malware anywhere
  * in head, and on added or changed versions that fail the release-age,
@@ -17,7 +18,10 @@
  * JSON, where to move versions: `--rule security`, the fix the rule picks for
  * every version a scan fails on (secure-it); `--rule bump`, the highest
  * acceptable version of every direct dependency, in its line and the highest
- * newer one (bump-it).
+ * newer one (bump-it). `cooldown` reads a `compare` report and says what the
+ * release-age cooldown holds (`cooldown.ts`): exit 0 once evaluated, held or
+ * not, with `held=true|false` in GITHUB_OUTPUT; 2 when the report can't be
+ * trusted.
  *
  * Exit codes: 0 pass, 1 fail, 2 the gate couldn't complete (also a failure).
  * Environment: OSV_SCANNER (default `osv-scanner` on PATH), GITHUB_TOKEN or
@@ -30,7 +34,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { bumpCandidates, securityCandidates } from "./candidates.ts";
-import { baseSources, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
+import { cooldownOf, heldLines, heldUntil } from "./cooldown.ts";
+import { baseSources, type CompareOutcome, type GateEnvironment, type GateOutcome, lenientSources, runCompare, runScan, treeSources } from "./gate.ts";
 import { type GradleInventory, parseGradleInventory, runGradleInventory } from "./gradle.ts";
 import { runProcess, withoutCredentials } from "./process.ts";
 import { type Fetch, namingFailures } from "./http.ts";
@@ -45,6 +50,7 @@ const USAGE = `usage:
   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
+  supply-chain cooldown --report <file> --head <sha>
   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
@@ -102,6 +108,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   const repo = resolve(values.repo ?? process.cwd());
   if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out, values.head);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
+  if (command === "cooldown") return cooldownCommand(values, env);
   if (command === "candidates") return candidatesCommand(values, env, repo);
   if (command === "rescan-plan" || command === "rescan") return rescanCommand(command, values, env, repo);
   if ((command !== "compare" && command !== "scan") || (command === "compare" && values.base === undefined)) {
@@ -118,7 +125,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   const startedAt = new Date();
   let head: Tree | undefined;
   let base: Tree | undefined;
-  let outcome: GateOutcome | undefined;
+  let outcome: GateOutcome | CompareOutcome | undefined;
   let error: string | undefined;
   try {
     head = values.head === "worktree" ? workingTree(repo) : await gitTree(repo, values.head ?? "HEAD", runProcess);
@@ -150,6 +157,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     notes: outcome?.notes ?? [],
     gaps: outcome?.gaps ?? [],
     error,
+    cooldown: outcome !== undefined && "cooldown" in outcome ? outcome.cooldown : undefined,
   };
   await emitReport(report, {
     reportPath: values.report,
@@ -159,6 +167,31 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
   });
   if (!completed) return 2;
   return report.verdict === "pass" ? 0 : 1;
+}
+
+/** What a `compare` report holds for `--head`: logged, annotated in CI, and `held=` written to GITHUB_OUTPUT. */
+async function cooldownCommand(values: Options, env: NodeJS.ProcessEnv): Promise<number> {
+  if (values.report === undefined || values.head === undefined) {
+    console.error(`cooldown needs --report and --head\n${USAGE}`);
+    return 2;
+  }
+  const annotate = env["GITHUB_ACTIONS"] === "true";
+  let verdict;
+  try {
+    verdict = cooldownOf(JSON.parse(await readFile(values.report, "utf8")), values.head);
+  } catch (err) {
+    const message = `the cooldown can't be evaluated: ${(err as Error).message}`;
+    console.error(annotate ? `::error title=supply-chain cooldown not evaluated::${message}` : `✗ ${message}`);
+    return 2;
+  }
+  const until = heldUntil(verdict.held);
+  if (until === undefined) console.log(`supply-chain cooldown: nothing is under the ${verdict.releaseAgeDays}-day wait`);
+  else {
+    console.log(`supply-chain cooldown: ${verdict.held.length} version(s) under the ${verdict.releaseAgeDays}-day wait, held until ${until}`);
+    for (const line of heldLines(verdict.held)) console.log(`  ${line}`);
+  }
+  if (env["GITHUB_OUTPUT"] !== undefined) await writeFile(env["GITHUB_OUTPUT"], `held=${until === undefined ? "false" : "true"}\nuntil=${until ?? ""}\n`, { flag: "a" });
+  return 0;
 }
 
 /**
@@ -345,6 +378,8 @@ async function rescanCommand(command: string, values: Options, env: NodeJS.Proce
           notes: outcome?.notes ?? [],
           gaps: outcome?.gaps ?? [],
           error: result.error,
+          // The daily rescan posts the verdict only; held PRs are retired and reopened, not re-judged in place.
+          cooldown: undefined,
         };
         console.log(`#${pr.number} (${pr.baseRef} ← ${pr.head.slice(0, 12)}):`);
         await emitReport(report, {

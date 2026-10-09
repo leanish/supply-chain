@@ -95,7 +95,7 @@ A floor forces a minimum version on a dependency, usually a transitive one: a se
 
 For every version a PR adds or changes:
 
-- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
+- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or its independently proved required npm dependency (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
 - **Source:** every locked package comes from an allowed registry (`npm.registries`, default the npm registry). The gate checks age and identity only against the npm registry, so a package from another allowed registry fails, unless it's an own package with an unexpired `identity` exception recording that its publish was reviewed (own packages skip only the wait).
 - **Identity:** a version that replaces another fails on a publisher identity break: provenance dropped or from another repository or workflow, provenance from a repository the replaced version doesn't declare, or (without provenance) a publisher who hadn't published the package up to the replaced version. Every provenance statement must name the exact package, version and locked sha512.
 - Bundles the lockfile doesn't fully record fail: every `bundleDependencies` entry, and what it depends on, needs an `inBundle` entry inside the package that ships it.
@@ -115,6 +115,57 @@ A version younger than the wait passes without an exception when it's the fix th
 - V passes only if it's that version. If an older fix in the line turns 7 days old before CI runs, the check fails on purpose: that one is safer, and secure-it picks it up.
 
 Candidates join the same advisory snapshot as base and head, so the rule and the comparison read the same data. On sqs-codec's snappy-java 1.1.10.8 → 1.1.10.10, three days old, it passes with no exception: 1.1.10.9 leaves two of the seven advisories, and 1.1.10.10 is the lowest that fixes them all.
+
+## npm dependencies required by a security fix
+
+A rule-picked npm security fix can require a dependency whose satisfying versions are all younger than the window.
+Only the lowest stable, non-deprecated version satisfying the registry requirement and existing applicable constraints
+gets an age exemption. If any satisfying version is aged, the ordinary age rule applies. Unknown dates or manifests
+cannot prove the absence of an aged alternative and block the proof. An unsafe lowest target is not replaced by a
+higher young choice: source, publisher identity, advisories and malware checks still apply.
+
+The gate independently identifies all rule-picked security roots from replaced versions and the shared advisory
+snapshot before reconstructing their joint closure. Ordinary head upgrades stay at their base versions in the proof;
+they cannot manufacture a stricter requirement. The gate then reads dependency and peer requirements from registry manifests, including aliases, new packages and recursive requirements through
+aged dependencies. Direct peer companions stay in their existing compatible line. It resolves actual lockfile
+locations and checks exact landing. Direct peer companions are solved jointly, including reciprocal requirements;
+an outgoing peer requirement constrains only the copy its root actually resolves. Complete assignments are ordered
+by package name (then location), preferring aged versions and then lowest versions; an eligible aged locked version
+is preserved. Each young choice is checked against the rest of its selected assignment for aged alternatives and
+the lowest satisfying version. Installed optional dependencies
+replace same-key ordinary requirements; optional dependencies absent from the lock are not introduced. Baseline overrides
+constrain the proof; PR annotations, narrowed root declarations and new overrides cannot grant exemptions.
+The proof is limited per root to depth 8, 128 visited package/location/version nodes and 2,048 satisfying versions per
+requirement; a limit hit is an explicit blocker, never a partial exemption. Cycles stop at already visited nodes.
+Peer components are limited to 128 companions, 2,048 candidate versions each and 4,096 attempted assignments per
+search; exhaustion blocks the proof. Required targets must land in head and use the comparison's one advisory
+snapshot. Ordinary bumps do not qualify, and this extension
+applies only to npm; Maven/Gradle and Actions keep their existing age rules.
+
+## The cooldown: young versions are held, however justified
+
+Passing the release-age rule makes a young version *acceptable*, not *trusted*. Whoever controls a publisher (a
+stolen token, a hijacked release workflow) can put malware inside a real fix, and an advisory's severity says how bad
+the hole is, not how trustworthy its fix is: urgency is exactly what such an attack would lean on. So every version
+a PR adds or changes that is younger than `releaseAgeDays` is **held**, whether the rule picked it, a security fix
+requires it, or a `releaseAge` exception names it:
+
+- The `supply-chain` verdict is unchanged: it says whether the change is right.
+- The separate `cooldown` job stays red while anything is held (and whenever it can't tell: a comparison that didn't
+  pass, a missing report, a report for another head). Its log and step summary list each held version and when it
+  turns old enough. Require it next to `supply-chain` (see GitHub settings below).
+- The policy that judges a PR is the stricter of base's and head's: the longer `releaseAgeDays`, and own packages
+  only where both list them. A PR can't loosen the cooldown that judges it; change the policy in a PR of its own
+  first. A base whose settings don't parse leaves the cooldown unevaluated (red).
+- Exceptions don't clear a hold. Taking a held version before its time is a person's decision: every other check
+  green, the reason written on the PR, then an admin merge past the red `cooldown` check. Where nothing enforces
+  the check (no ruleset, e.g. a private repository on the free plan), the same: a merge with the reason written.
+- The daily rescan doesn't re-judge the cooldown. secure-it retires its held PRs once everything aged and opens a
+  fresh one; for a person's PR, re-run the **whole** workflow on the current revision after the time it gives (a
+  re-run of the `cooldown` job alone reads the old report and stays red).
+
+`compare` writes the held versions into its report (`cooldown`, report schema 2); `supply-chain cooldown --report
+<file> --head <sha>` reads it, refusing anything but a complete, passing comparison of that exact head.
 
 ## Release age (Maven)
 
@@ -200,13 +251,13 @@ jobs:
 
 What runs where:
 
-- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check.
+- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check. The `cooldown` job then reads the verdict's report: red while it holds young versions, and red when the comparison didn't pass (also `if: always()`, so it's never skipped on a PR).
 - **On pushes to the default branch and daily:** the full `scan`.
 - **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures in clean temporary projects only when comparison passes, and posts the verdict as a commit status on the PR's head, named like the required check, unless a newer status of that name exists. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
 
 **GitHub settings**
 
-- A ruleset (or branch protection) on the default branch requiring the check `supply-chain / supply-chain` (`<your job id> / supply-chain`; pass `required-check` if you call the job something else), from GitHub Actions. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
+- A ruleset (or branch protection) on the default branch requiring the checks `supply-chain / supply-chain` and `supply-chain / cooldown` (`<your job id> / …`; pass `required-check` if you call the job something else), from GitHub Actions. secure-it and bump-it recognise the cooldown hold by those job names and the job's steps. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
 - Actions enabled, allowing the actions this workflow uses (actions/checkout, setup-node, setup-java, upload-artifact, download-artifact).
 - The dependency graph and Dependabot **alerts** on; Dependabot version and security updates off (secure-it and bump-it make those PRs, with this gate's rules).
 

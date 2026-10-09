@@ -1,10 +1,10 @@
 // Copied from leanish/leanish-development agents/bump-it/test/ci-state.test.ts at e4f8a1e.
-// Local changes: imports; uses actions-jobs source; failingCheckNames regression for Actions job and commit status failures.
+// Local changes: imports; uses actions-jobs source; failingCheckNames regression for Actions job and commit status failures; onlyCooldownHolds.
 import { describe, expect, it } from "vitest";
 
 import type { GitHubCheckRun, GitHubCommitStatus } from "../../agent-basics/src/types/clients.ts";
 
-import { classifyCi, failingCheckNames } from "../src/ci-state.ts";
+import { classifyCi, COOLDOWN_STEPS, failingCheckNames, onlyCooldownHolds } from "../src/ci-state.ts";
 
 function run(status: string, conclusion: string | null, name = "check"): GitHubCheckRun {
   return { name, status, conclusion };
@@ -51,5 +51,33 @@ describe("failingCheckNames", () => {
   it("includes failed jobs and statuses, with the classifier's failure rules", () => {
     expect(failingCheckNames({ source: "actions-jobs", checkRuns: [run("completed", "failure", "job"), run("completed", "skipped"), run("in_progress", null), run("completed", "mystery")],
       statuses: [status("failure", "legacy"), status("error", "job"), status("pending"), status("success")] })).toEqual(["job", "legacy"]);
+  });
+});
+
+describe("onlyCooldownHolds", () => {
+  const step = (name: string, conclusion: string) => ({ name, status: "completed", conclusion });
+  const held = (name = "supply-chain / cooldown", evaluate = "success", hold = "failure", conclusion = "failure"): GitHubCheckRun => ({
+    ...run("completed", conclusion, name), steps: [step(COOLDOWN_STEPS.evaluate, evaluate), step(COOLDOWN_STEPS.hold, hold)],
+  });
+  const verdict = run("completed", "success", "supply-chain / supply-chain");
+  const checks = (checkRuns: GitHubCheckRun[], statuses: GitHubCommitStatus[] = []) => ({ source: "actions-jobs" as const, checkRuns, statuses });
+
+  it("is a hold when the cooldown failed its hold step after evaluating, and the comparison passed", () => {
+    expect(onlyCooldownHolds(checks([verdict, held(), run("completed", "success", "check")]))).toBe(true);
+    expect(onlyCooldownHolds(checks([run("completed", "success", "gate / supply-chain"), held("gate / cooldown")]))).toBe(true);
+  });
+
+  it.each([
+    ["the evaluation failed (missing report, another head)", checks([verdict, held(undefined, "failure", "skipped")])],
+    ["the cooldown was cancelled", checks([verdict, held(undefined, "success", "failure", "cancelled")])],
+    ["the cooldown job lists no steps", checks([verdict, run("completed", "failure", "supply-chain / cooldown")])],
+    ["another check failed too", checks([verdict, held(), run("completed", "failure", "check")])],
+    ["a status failed too", checks([verdict, held()], [status("failure")])],
+    ["the comparison didn't pass", checks([run("completed", "failure", "supply-chain / supply-chain"), held()])],
+    ["no comparison ran", checks([held()])],
+    ["a job merely named like it", checks([verdict, held("cooldown-ish")])],
+    ["nothing failed", checks([verdict])],
+  ])("isn't a hold when %s", (_name, value) => {
+    expect(onlyCooldownHolds(value)).toBe(false);
   });
 });

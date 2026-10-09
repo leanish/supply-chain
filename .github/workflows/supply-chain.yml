@@ -5,7 +5,9 @@ name: supply-chain
 # out from that same commit (`job.workflow_sha`), so there's one pin.
 #
 #   pull_request        `compare`: base and head inventories, one advisory snapshot; the `supply-chain` job's result
-#                       is the verdict (no write access needed, so fork PRs work too).
+#                       is the verdict (no write access needed, so fork PRs work too). The `cooldown` job stays red
+#                       while the PR adds or changes a version younger than the release-age wait, however justified
+#                       (packages/ci/src/cooldown.ts): require it too.
 #   push to the default branch, schedule
 #                       `scan`: every finding fails unless excepted.
 #   schedule, workflow_dispatch
@@ -34,6 +36,13 @@ on:
         description: The name the `supply-chain` job's check shows as (`<calling job id> / supply-chain`); the daily rescan posts its statuses under it.
         type: string
         default: supply-chain / supply-chain
+    outputs:
+      comparison-passed:
+        description: "`true` once the `supply-chain` job passed, whatever the cooldown says."
+        value: ${{ jobs.supply-chain.outputs.passed }}
+      cooldown-held:
+        description: "`true` when the `cooldown` job evaluated a passing comparison and holds young versions."
+        value: ${{ jobs.cooldown.outputs.held }}
 
 permissions:
   contents: read
@@ -142,6 +151,8 @@ jobs:
     needs: [plan, inventory]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-26.04
+    outputs:
+      passed: ${{ steps.passed.outputs.passed }}
     steps:
       - name: Require the inventories
         env:
@@ -186,6 +197,9 @@ jobs:
           fi
       - name: Verify registry signatures and provenance attestations
         run: node tool/packages/ci/src/cli.ts npm-signatures --repo repo
+      - id: passed
+        name: Record the pass
+        run: echo "passed=true" >> "$GITHUB_OUTPUT"
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -193,6 +207,45 @@ jobs:
           name: supply-chain-report
           path: ${{ runner.temp }}/supply-chain.json
           if-no-files-found: ignore
+
+  # Red while the comparison holds a young version, and whenever it can't tell (the comparison didn't pass, or its
+  # report is missing or for another head): never green without an evaluation. Remediation tools read its two steps
+  # by name: a failed "Hold the young versions" after a successful "Evaluate the cooldown" means waiting, not broken.
+  cooldown:
+    needs: [plan, supply-chain]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    outputs:
+      held: ${{ steps.evaluate.outputs.held }}
+    steps:
+      - name: Require a passing comparison
+        env:
+          PLAN: ${{ needs.plan.result }}
+          COMPARISON: ${{ needs.supply-chain.result }}
+        run: |
+          if [ "$PLAN" != "success" ] || [ "$COMPARISON" != "success" ]; then
+            echo "::error title=supply-chain cooldown not evaluated::the comparison ended with '$COMPARISON' (plan '$PLAN'), so the cooldown can't be evaluated"
+            exit 1
+          fi
+      - *tool-checkout
+      - *node
+      - *tool-install
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: supply-chain-report
+          path: ${{ runner.temp }}/report
+      - id: evaluate
+        name: Evaluate the cooldown
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: node tool/packages/ci/src/cli.ts cooldown --report "$RUNNER_TEMP/report/supply-chain.json" --head "$HEAD_SHA"
+      - name: Hold the young versions
+        if: steps.evaluate.outputs.held == 'true'
+        env:
+          UNTIL: ${{ steps.evaluate.outputs.until }}
+        run: |
+          echo "::error title=supply-chain cooldown::this PR adds or changes versions younger than the release-age wait; held until $UNTIL (see the step above). Taking it earlier is a person's decision: every other check green, the reason written on the PR, then an admin merge."
+          exit 1
 
   # Daily, one job per open PR: the Gradle inventories of its base (uploaded before any PR code runs) and of its head
   # merged onto that base (which runs the PR's build). Read-only; its outputs are data to the rescan job.

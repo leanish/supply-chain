@@ -16,8 +16,8 @@ import type { ToolRunContext } from "../../remediation/src/command.ts";
 import { parseToolConfig } from "../../remediation/src/config.ts";
 import { MemoryJournal } from "../../remediation/src/journal.ts";
 import { stateOf, withMarker } from "../../remediation/src/own-pr.ts";
-import { BASE_SHA, FakeGitHub, HEAD_SHA, ownPr, PUSHED_SHA, RED } from "../../remediation/test/fake-github.ts";
-import { planOf, planSection } from "../src/plan-block.ts";
+import { BASE_SHA, FakeGitHub, GREEN, HEAD_SHA, ownPr, PUSHED_SHA, RED } from "../../remediation/test/fake-github.ts";
+import { planOf, planSection, withPlanSection } from "../src/plan-block.ts";
 import { planFor } from "../src/plan.ts";
 import type { VerifyInputs } from "../src/verify.ts";
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
@@ -57,7 +57,7 @@ function vite(overrides: Partial<SecurityFix> = {}): SecurityFix {
     unfixable: [],
     malicious: false,
     severity: "MODERATE",
-    to: { version: "8.3.3", line: "8", aged: false, major: false, blockers: [] },
+    to: { version: "8.3.3", line: "8", aged: true, major: false, blockers: [] },
     problem: undefined,
     ...overrides,
   };
@@ -103,6 +103,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     }) as ToolRunContext["agent"],
   };
   const deps: SecureItDeps = {
+    requiredNpm: async (_base, plan) => plan,
     materializeNpm: async () => new Map(),
     floorProbe: async () => ({ files: new Map(), findings: [], problems: [] }),
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
@@ -223,7 +224,7 @@ describe("secure-it run", () => {
     expect(await secureIt(same.deps).run(same.context)).toMatchObject({ outcome: "already-open", pullRequest: "https://github.com/leanish/widget/pull/7" });
     expect(same.agentCalls).toEqual([]);
 
-    const changed = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } }))] });
+    const changed = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: true, major: false, blockers: [] } }))] });
     changed.workspace.setRemoteHead("secure-it/2026-10-05-security", HEAD_SHA);
     expect(await secureIt(changed.deps).run(changed.context)).toMatchObject({ outcome: "updated", pullRequest: "https://github.com/leanish/widget/pull/7" });
     // The base merged in and the old plan's edits reverted before the agent applies the new one.
@@ -233,7 +234,7 @@ describe("secure-it run", () => {
   });
 
   it("stops reconciling when the default branch moved while the run computed its plan", async () => {
-    const h = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } }))] });
+    const h = harness({ prs: [await vitePr({}, vite({ to: { version: "8.3.2", line: "8", aged: true, major: false, blockers: [] } }))] });
     h.workspace.setRemoteHead("secure-it/2026-10-05-security", HEAD_SHA);
     const prepare = h.workspace.prepareBranch.bind(h.workspace);
     h.workspace.prepareBranch = async (workingCopy, args) => prepare({ ...workingCopy, headSha: "f".repeat(40) }, args);
@@ -249,7 +250,7 @@ describe("secure-it run", () => {
   });
 
   it("opens a separate PR for a changed plan when someone else pushed to the package's PR", async () => {
-    const older = vite({ to: { version: "8.3.2", line: "8", aged: false, major: false, blockers: [] } });
+    const older = vite({ to: { version: "8.3.2", line: "8", aged: true, major: false, blockers: [] } });
     const h = harness({ prs: [await vitePr({ headSha: "9".repeat(40), headRef: "secure-it/2026-10-07-security" }, older)] });
     expect(await secureIt(h.deps).run(h.context)).toMatchObject({ outcome: "published" });
     expect(h.github.prs.get(42)?.headRef).toBe("secure-it/2026-10-07-security-2");
@@ -740,5 +741,108 @@ describe("secure-it floor-removal units", () => {
     expect(await secureIt({ ...h.deps, floorProbe: f.probe }).review(h.context)).toMatchObject({ reviewed: [{ outcome: "adaptation-unchanged" }] });
     expect(h.agentCalls).toEqual([]);
     expect(h.workspace.publications).toEqual([]);
+  });
+});
+
+describe("the cooldown hold", () => {
+  const YOUNG_VITE = () => vite({ to: { version: "8.3.3", line: "8", aged: false, major: false, blockers: [] } });
+  const HELD = {
+    ecosystem: "npm" as const, name: "vite", version: "8.3.3", replaced: ["8.3.1"],
+    published: "2026-10-06T00:00:00.000Z", eligibleAt: "2026-10-13T00:00:00.000Z", justification: "security-fix" as const,
+  };
+  /** The comparison holds `vite` in the plan that moves it, nothing elsewhere. */
+  const holdingVerify = async (inputs: VerifyInputs) => {
+    inputs.cooldown?.({ evaluated: true, releaseAgeDays: 7, held: inputs.plan.packages.includes("npm|vite") ? [HELD] : [] });
+    return [];
+  };
+
+  it("opens young fixes in a held PR of their own, warned, while the aged ones go out as usual", async () => {
+    const h = harness({ fixes: [YOUNG_VITE(), leftPad()] });
+    const result = await secureIt({ ...h.deps, verify: holdingVerify }).run(h.context);
+    expect(result).toMatchObject({ outcome: "completed", units: [{ topic: "security", outcome: "published" }, { topic: "security-cooldown", outcome: "published" }] });
+    expect(h.agentCalls.map((call) => (call.input["moves"] as Array<{ name: string }>).map((move) => move.name))).toEqual([["left-pad"], ["vite"]]);
+    const [aged, held] = [...h.github.prs.values()];
+    expect(aged!.body).not.toContain("[!WARNING]");
+    expect(planOf(aged!.body)?.cooldown).toBeUndefined();
+    expect(held!.body.startsWith("<!-- secure-it cooldown warning -->\n> [!WARNING]\n> **Release-age cooldown bypassed.**")).toBe(true);
+    expect(held!.body).toContain("> | npm `vite` | 8.3.1 → 8.3.3 | 2026-10-06 00:00 | 2026-10-13 00:00 | the security fix the version rule picks | registry metadata unreadable |");
+    expect(held!.isDraft).toBe(true);
+    expect(planOf(held!.body)?.cooldown).toEqual([{ ...HELD, signals: ["registry metadata unreadable"] }]);
+  });
+
+  it("holds whatever the comparison holds, even in a PR planned as aged", async () => {
+    const h = harness({ fixes: [vite()] });
+    expect(await secureIt({ ...h.deps, verify: holdingVerify }).run(h.context)).toMatchObject({ topic: "security", outcome: "published" });
+    expect(planOf(h.github.prs.get(42)!.body)?.cooldown).toHaveLength(1);
+  });
+
+  it("doesn't publish when the comparison couldn't evaluate the cooldown", async () => {
+    const h = harness();
+    const verify = async (inputs: VerifyInputs) => {
+      inputs.cooldown?.({ evaluated: false, reason: "base's settings don't parse" });
+      return [];
+    };
+    expect(await secureIt({ ...h.deps, verify }).run(h.context)).toMatchObject({ outcome: "verification-failed", problems: ["the cooldown can't be evaluated: base's settings don't parse"] });
+    expect(h.github.prs.size).toBe(0);
+  });
+
+  it("moves a fix whose required dependency is young into the held PR, with its coupled packages", async () => {
+    const h = harness({ fixes: [vite(), leftPad()] });
+    const requiredNpm: SecureItDeps["requiredNpm"] = async (_base, plan) => plan.packages.includes("npm|vite")
+      ? { ...plan, requiredNpm: [{ exempt: true, name: "postcss", version: "8.5.29", root: { name: "vite", version: "8.3.3", path: "node_modules/vite" } }] as never }
+      : plan;
+    const result = await secureIt({ ...h.deps, requiredNpm, verify: holdingVerify }).run(h.context);
+    expect(result).toMatchObject({ units: [{ topic: "security", packages: ["npm|left-pad"] }, { topic: "security-cooldown", packages: ["npm|vite"] }] });
+  });
+
+  it("keeps a waiting held PR a draft on green CI, and retires it once everything has aged", async () => {
+    const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
+      { kind: "routine", topic: "security-cooldown" });
+    const heldPr = (eligibleAt: string) => ownPr({
+      headRef: "secure-it/2026-10-05-security-cooldown",
+      body: withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, eligibleAt, signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }),
+    });
+    const waiting = harness({ prs: [heldPr("2026-10-13T00:00:00.000Z")] });
+    waiting.github.checks = GREEN;
+    expect(await secureIt(waiting.deps).review(waiting.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "held" }] });
+    expect(waiting.github.prs.get(7)?.isDraft).toBe(true);
+    const aged = harness({ prs: [heldPr("2026-10-07T05:00:00.000Z")] });
+    expect(await secureIt(aged.deps).review(aged.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "graduated" }] });
+    expect(aged.github.prs.get(7)?.state).toBe("closed");
+    expect(aged.agentCalls).toEqual([]);
+  });
+
+  it("keeps a held PR on a moved base when its aged fix still requires a young dependency", async () => {
+    const plan = await planFor([vite()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
+      { kind: "routine", topic: "security-cooldown" });
+    const pr = ownPr({
+      headRef: "secure-it/2026-10-05-security-cooldown",
+      body: withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }),
+    });
+    const h = harness({ prs: [pr], baseSha: "f".repeat(40), fixes: [vite()] });
+    h.workspace.setRemoteHead(pr.headRef, HEAD_SHA);
+    let requiredPlanned = 0;
+    const requiredNpm: SecureItDeps["requiredNpm"] = async (_base, planned) => {
+      requiredPlanned++;
+      return planned.packages.includes("npm|vite")
+        ? { ...planned, requiredNpm: [{
+          exempt: true, name: "postcss", version: "8.5.29", path: "node_modules/postcss", lockfile: "package-lock.json", key: "postcss", range: "^8.5.29",
+          reason: "vite@8.3.3 requires postcss ^8.5.29", parent: { name: "vite", version: "8.3.3", path: "node_modules/vite" }, root: { name: "vite", version: "8.3.3", path: "node_modules/vite" },
+        }] }
+        : planned;
+    };
+    expect(await secureIt({ ...h.deps, requiredNpm, verify: holdingVerify }).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "rebased" }] });
+    expect(requiredPlanned).toBeGreaterThan(0);
+    expect(h.github.prs.get(7)?.state).not.toBe("closed");
+    expect(planOf(h.github.prs.get(7)!.body)?.cooldown).toHaveLength(1);
+  });
+
+  it("refuses a held PR whose recorded hold doesn't read", async () => {
+    const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
+    const body = withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, eligibleAt: "soon", signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 });
+    const h = harness({ prs: [ownPr({ headRef: "secure-it/2026-10-05-security", body })] });
+    h.github.checks = GREEN;
+    expect(await secureIt(h.deps).review(h.context)).toMatchObject({ reviewed: [{ number: 7, outcome: "error" }] });
+    expect(h.github.prs.get(7)?.isDraft).toBe(true);
   });
 });

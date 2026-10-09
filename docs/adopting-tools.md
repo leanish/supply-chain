@@ -183,7 +183,10 @@ updates or verify an agent's edits. The first actual tool run below can publish.
 
 Run one opted-in repository interactively before installing schedules. These
 commands may open/update draft PRs. Review may also mark them ready or close them;
-neither merges them.
+neither merges them. A secure-it PR that takes versions younger than the release-age
+wait stays a draft, with a warning on top, until secure-it retires it once they've
+aged; require the gate's `supply-chain / cooldown` check too (see the gate's
+[adoption steps](../packages/ci/README.md)).
 
 ```bash
 cd "$HOME/dev/supply-chain"

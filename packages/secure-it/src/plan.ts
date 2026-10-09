@@ -22,6 +22,7 @@ import semver from "semver";
 
 import { type SecurityFix, severityRank } from "../../ci/src/candidates.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
+import type { HeldVersion } from "../../ci/src/release-age.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
 import type { Ecosystem } from "../../ci/src/versions.ts";
 
@@ -54,7 +55,21 @@ export interface OmittedMoves {
   readonly problems: ReadonlyArray<string>;
 }
 
+/** A version the plan takes before the release-age wait ends, as the gate's final comparison held it. */
+export interface PlannedHold extends HeldVersion {
+  /** For people only (`releaseSignals`): provenance, publisher, install scripts. */
+  readonly signals: ReadonlyArray<string>;
+}
+
 export interface ChangePlan {
+  /**
+   * Set from the verifying comparison, never from planning: what the gate's
+   * cooldown holds. Non-empty, the PR stays a draft with a warning until the
+   * last one ages, then it's retired (`cooldown.ts` in the gate).
+   */
+  readonly cooldown?: ReadonlyArray<PlannedHold>;
+  readonly requiredNpm?: ReadonlyArray<import("./npm-required-plan.ts").PlannedRequirement>;
+  readonly notes?: ReadonlyArray<string>;
   readonly floorRemoval?: FloorRemoval;
   /** Absent in plans published before batching; those PRs retain per-package reviews. */
   readonly kind?: PlanKind;
@@ -86,10 +101,46 @@ export interface SecurityUnit {
   readonly topic: string;
   readonly work: ReadonlyArray<SecurityFix>;
   readonly coupled?: ReadonlyArray<ReadonlyArray<string>>;
+  /** Predicted to take a version younger than the wait (the verifying comparison decides). */
+  readonly held?: boolean;
 }
 
-/** Complete each unit's direct-peer set before an agent sees it; an unsatisfiable set is reported. */
+/** The routine batch's topic for the fixes that can't wait: their own PR, so they don't hold the others back. */
+export const HELD_TOPIC = "security-cooldown";
+
+/**
+ * Complete each unit's direct-peer set before an agent sees it (an
+ * unsatisfiable set is reported), then split the routine batch: fixes whose
+ * target is younger than the wait, with every package coupled to them, go to
+ * a held unit of their own.
+ */
 export async function coupledWork(fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner): Promise<Selection> {
+  const completed = await completedWork(fixes, peers);
+  return { ...completed, units: completed.units.flatMap(splitByAge) };
+}
+
+/** Young fixes and their coupled closure apart from the rest; majors and malware stay whole, held if anything is young. */
+export function splitByAge(unit: SecurityUnit): SecurityUnit[] {
+  const young = new Set(unit.work.filter(isYoungTarget).map(packageKey));
+  if (unit.kind !== "routine" || young.size === 0) return [{ ...unit, held: young.size > 0 }];
+  for (;;) {
+    const size = young.size;
+    for (const set of unit.coupled ?? []) if (set.some((key) => young.has(key))) for (const key of set) young.add(key);
+    if (young.size === size) break;
+  }
+  const part = (held: boolean): SecurityUnit | undefined => {
+    const work = unit.work.filter((fix) => young.has(packageKey(fix)) === held);
+    if (work.length === 0) return undefined;
+    const coupled = unit.coupled?.filter((set) => set.some((key) => young.has(key)) === held);
+    return { kind: "routine", topic: held ? HELD_TOPIC : unit.topic, work, held, ...(coupled === undefined ? {} : { coupled }) };
+  };
+  return [part(false), part(true)].filter((entry): entry is SecurityUnit => entry !== undefined);
+}
+
+/** A fix whose target the rule took though it's younger than the wait. */
+export const isYoungTarget = (fix: SecurityFix) => fix.to !== undefined && !fix.to.aged;
+
+async function completedWork(fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerPlanner): Promise<Selection> {
   const selected = selectWork(fixes);
   if (peers === undefined) return selected;
   const units: SecurityUnit[] = [];

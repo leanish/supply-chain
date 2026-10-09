@@ -32,11 +32,14 @@ export function retryWithoutNamed(plan: ChangePlan, problems: ReadonlyArray<stri
   }));
   const moves = plan.moves.filter((move) => !keys.has(moveKey(move)));
   if (moves.length === 0) return { plan: undefined, named, leftOut };
-  return { plan: { ...plan, moves, packages: plan.packages.filter((key) => !keys.has(key)), leftOut: [...(plan.leftOut ?? []), ...leftOut] }, named, leftOut };
+  const requiredNpm = plan.requiredNpm?.filter((target) => !keys.has(`npm|${target.root.name}`));
+  const notes = requiredNpm?.map((target) => target.reason);
+  return { plan: { ...plan, moves, requiredNpm, notes, packages: plan.packages.filter((key) => !keys.has(key)), leftOut: [...(plan.leftOut ?? []), ...leftOut] }, named, leftOut };
 }
 
 export function namedProblems(plan: ChangePlan, problems: ReadonlyArray<string>): ProblemMoves[] {
-  return problems.map((problem) => ({ problem, moves: plan.moves.filter((move) => namesMove(problem, move)) }));
+  return problems.map((problem) => ({ problem, moves: plan.moves.filter((move) => namesMove(problem, move) || plan.requiredNpm?.some((target) =>
+    target.root.name === move.name && target.root.version === move.to && namesMove(problem, { ...move, name: target.name }))) }));
 }
 
 const moveKey = (move: PlannedMove) => `${move.ecosystem}|${move.name}`;

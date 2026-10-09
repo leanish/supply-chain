@@ -1,6 +1,6 @@
 // Copied from leanish/leanish-development agents/bump-it/src/ci-state.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations.
-import type { GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
+// Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations; onlyCooldownHolds tells the gate's cooldown hold from a failure.
+import type { GitHubCheckRun, GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
 
 /** What a PR head's CI says. */
 export type CiConclusion = "success" | "failure" | "pending" | "none";
@@ -62,4 +62,29 @@ export function failingCheckNames(checks: GitHubHeadChecks): string[] {
     .map((run) => run.name);
   const statuses = checks.statuses.filter((status) => FAILED_STATUSES.has(status.state)).map((status) => status.context);
   return [...new Set([...jobs, ...statuses])].sort();
+}
+
+/** The steps of the gate's `cooldown` job (`.github/workflows/supply-chain.yml`); a hold fails the second after the first passed. */
+export const COOLDOWN_STEPS = { evaluate: "Evaluate the cooldown", hold: "Hold the young versions" } as const;
+
+/** A gate job, as the caller names it: `<job>` or `<calling job> / <job>`. */
+const isGateJob = (run: GitHubCheckRun, job: string) => run.name === job || run.name.endsWith(` / ${job}`);
+
+/**
+ * Whether the head's only failures are the gate's cooldown holding young
+ * versions after a passing comparison: waiting, not broken. A cooldown job
+ * that failed any other way (no evaluation, a missing report, cancelled) is
+ * an ordinary failure, and so is a hold next to any other failure.
+ */
+export function onlyCooldownHolds(checks: GitHubHeadChecks): boolean {
+  if (checks.statuses.some((status) => FAILED_STATUSES.has(status.state))) return false;
+  const failed = checks.checkRuns.filter((run) => run.status === "completed" && run.conclusion !== null && FAILED_CONCLUSIONS.has(run.conclusion));
+  if (failed.length === 0 || !failed.every(heldByCooldown)) return false;
+  return checks.checkRuns.some((run) => isGateJob(run, "supply-chain") && run.status === "completed" && run.conclusion === "success");
+}
+
+function heldByCooldown(run: GitHubCheckRun): boolean {
+  if (!isGateJob(run, "cooldown") || run.conclusion !== "failure") return false;
+  const step = (name: string) => run.steps?.find((candidate) => candidate.name === name);
+  return step(COOLDOWN_STEPS.evaluate)?.conclusion === "success" && step(COOLDOWN_STEPS.hold)?.conclusion === "failure";
 }

@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/types/clients.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: only the GitHub client's types; headChecks uses Actions jobs and commit statuses, with an actions-jobs source.
+// Local changes: only the GitHub client's types; headChecks uses Actions jobs and commit statuses, with an actions-jobs source; a job's steps.
 /**
  * Narrow GitHub REST/GraphQL client for handler-side, model-free work (see
  * `github/github-client.ts`): the decisions a handler settles without a skill,
@@ -82,6 +82,14 @@ export interface GitHubCheckRun {
   /** `queued`, `in_progress`, `completed`, … as GitHub reports it. */
   readonly status: string;
   /** Set once completed: `success`, `failure`, `neutral`, `skipped`, …; `null` otherwise. */
+  readonly conclusion: string | null;
+  /** An Actions job's steps, in order, when GitHub listed them. */
+  readonly steps?: ReadonlyArray<GitHubCheckStep>;
+}
+
+export interface GitHubCheckStep {
+  readonly name: string;
+  readonly status: string;
   readonly conclusion: string | null;
 }
 

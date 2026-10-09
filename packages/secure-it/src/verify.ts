@@ -25,6 +25,7 @@
  *   5. only dependency files changed, unless a move is a major.
  */
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
+import type { CooldownEvaluation } from "../../ci/src/cooldown.ts";
 import { type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
@@ -55,6 +56,8 @@ export interface VerifyInputs {
   readonly gradle: GradleInputs;
   /** Paths the edit changed, added or removed in the working copy. */
   readonly changedFiles: ReadonlyArray<string>;
+  /** Told what the verifying comparison's cooldown holds, whenever the comparison runs. */
+  readonly cooldown?: (evaluation: CooldownEvaluation) => void;
 }
 
 /** What's wrong with the edit; empty when it can be published. */
@@ -74,6 +77,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
 
   const compared = await runCompare(base, head, env, gradle);
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));
+  inputs.cooldown?.(compared.cooldown);
 
   problems.push(...(await landed(plan, head, gradle.head)));
   problems.push(...(await pinsLanded(pins, head)));
