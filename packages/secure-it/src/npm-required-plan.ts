@@ -32,7 +32,7 @@ export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnv
   const { config, exceptions } = await readSettings(base);
   const registry = new NpmRegistry(env.fetch);
   const { proofs, targets } = await collectRequirements(base, plan, locks, registry, config, env.now());
-  if (targets.length === 0) return plan;
+  if (targets.length === 0) return withCoupling(plan, proofs, plan.packages);
   assertConsistentTargets(targets);
   const baseline = [...locks.values()].flatMap(lockedPackages);
   const snapshot = await takeSnapshot(baseline.map((pkg) => ({ ...pkg, ecosystem: "npm" as const })), snapshotOptions(config, env, new ActionsGitHub(env.fetch, env.githubToken)), requiredVersions(proofs));
@@ -41,9 +41,16 @@ export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnv
   const distinctAdditions = companionMoves(targets, plan, locks);
   const moves = [...plan.moves, ...distinctAdditions];
   const packages = [...new Set(moves.map((move) => `${move.ecosystem}|${move.name}`))].sort();
-  const coupled = [...plan.coupled ?? [], ...proofs.map((proof) =>
-    [...new Set([proof.root.name, ...proof.targets.map((target) => target.name)].map((name) => `npm|${name}`))].filter((key) => packages.includes(key)))];
-  return { ...plan, moves, packages, coupled, requiredNpm: targets, notes };
+  return withCoupling({ ...plan, moves, packages, requiredNpm: targets, notes }, proofs, packages);
+}
+
+/** Each root travels with its required targets and the other security roots it requires, so a retry drops them together. */
+function withCoupling(plan: ChangePlan, proofs: ReadonlyArray<RequiredProof>, packages: ReadonlyArray<string>): ChangePlan {
+  const sets = proofs.map((proof) =>
+    [...new Set([proof.root.name, ...proof.targets.map((target) => target.name), ...proof.reached.map((root) => root.name)].map((name) => `npm|${name}`))].filter((key) => packages.includes(key)));
+  // Without required targets only a root requiring another root couples anything; such plans otherwise stay as they were.
+  const added = plan.requiredNpm === undefined ? sets.filter((set) => set.length > 1) : sets;
+  return added.length === 0 ? plan : { ...plan, coupled: [...plan.coupled ?? [], ...added] };
 }
 
 export function requirementLocation(target: PlannedRequirement): string {

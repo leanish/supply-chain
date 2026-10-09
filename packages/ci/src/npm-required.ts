@@ -26,6 +26,8 @@ export interface RequiredTarget extends RequiredNode {
 export interface RequiredProof {
   readonly root: RequiredNode;
   readonly targets: ReadonlyArray<RequiredTarget>;
+  /** Other verified security roots this root's requirements reach: no targets, but the root depends on their versions. */
+  readonly reached: ReadonlyArray<RequiredNode>;
   readonly problems: ReadonlyArray<string>;
 }
 
@@ -49,6 +51,7 @@ export interface RequiredInputs {
 /** Gather before the advisory snapshot; the caller must establish that the root really is a rule-picked fix. */
 export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs): Promise<RequiredProof> {
   const targets: RequiredTarget[] = [];
+  const reached: RequiredNode[] = [];
   const problems: string[] = [];
   const seen = new Set<string>();
   const limits = inputs.limits ?? REQUIRED_LIMITS;
@@ -76,6 +79,7 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
       if (inputs.verifiedRoot?.(path) === true) {
         const version = inputs.installed?.(path);
         if (version === undefined || !semver.satisfies(version, spec.range)) throw new Error(`${node.name}@${node.version} requires ${edge.key} ${edge.spec}, but the verified security fix at ${path} is ${spec.name}@${version ?? "missing"}`);
+        reached.push({ name: spec.name, version, path });
         continue;
       }
       const ranges = [spec.range, ...await inputs.constraints?.(path, spec.name) ?? []];
@@ -98,7 +102,7 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
   } catch (error) {
     problems.push(`${root.name}@${root.version}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { root, targets, problems };
+  return { root, targets, reached, problems };
 }
 
 /** An alias keeps its installed key but reads versions/dates of the real package. Tags and non-registry specs cannot prove absence. */
