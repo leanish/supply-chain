@@ -1,19 +1,20 @@
 /** Per-declaration versions, including several versions of one package in one inherited configuration. */
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
-import { gradleSourceIndex } from "../../ci/src/gradle-sources.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { declaredAt } from "../../remediation/src/edit-checks.ts";
 import type { PlannedMove } from "./plan.ts";
 
 /**
  * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
- * through: the repository's Gradle sources name it neither before nor after (see `gradleSourceIndex`), the plan moves a
- * plugin of that build (a move on a buildscript or settings classpath), and only its version changed (as many
- * declarations before as after: nothing added or removed). bump-it never plans such dependencies (updating the
- * Kotlin plugin moves the stdlib it adds), and the gate still judges every version that changes. Anything else keeps
- * the strict checks: a declaration the index can't read changes only with a plugin update in its build.
+ * through: the plan moves a plugin of that build (a move on a buildscript or settings classpath), only its version
+ * changed (as many declarations before as after: nothing added or removed), and every file the unit changed, outside
+ * `checkedElsewhere` (files verified exactly by their own checks), differs from base only by planned version swaps
+ * (`from` to `to`, each a whole version string). Nothing but the planned edits changed, so the planned plugin update
+ * moved it (updating the Kotlin plugin moves the stdlib it adds); the gate still judges every version that changes.
+ * A swap is recognised by its text alone, so a dependency written with a planned move's exact `from` version may move
+ * to its `to` with it, as one sharing a version variable with the plugin does.
  */
-export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>): Promise<(name: string, location: string) => boolean> {
+export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>, changedFiles: ReadonlyArray<string>, checkedElsewhere: ReadonlySet<string>): Promise<(name: string, location: string) => boolean> {
   const buildOf = new Map<string, string>();
   const classpath = new Set<string>();
   for (const build of [inventories.base, inventories.head].flatMap((inventory) => inventory?.builds ?? [])) {
@@ -26,16 +27,37 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   const planned = moves.filter((move) => move.mechanism === "gradle-declared");
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
   if (pluginBuilds.size === 0) return () => false;
-  const [before, after] = await Promise.all([gradleSourceIndex(base), gradleSourceIndex(head)]);
+  for (const path of changedFiles.filter((file) => !checkedElsewhere.has(file))) {
+    if (!onlySwaps(await base.read(path) ?? "", await head.read(path) ?? "", planned)) return () => false;
+  }
   return (name, location) => {
     const build = buildOf.get(location);
     if (build === undefined || !pluginBuilds.has(build)) return false;
     if (planned.some((move) => move.name === name && move.locations.includes(location))) return false;
-    const [group, artifact] = name.split(":") as [string, string];
-    if (before.named(group, artifact) || after.named(group, artifact)) return false;
     const was = declaredAt(inventories.base, location, name);
     return was.length > 0 && was.length === declaredAt(inventories.head, location, name).length;
   };
+}
+
+/** Whether `after` is `before` with some whole version strings swapped as planned, and nothing else changed. */
+function onlySwaps(before: string, after: string, moves: ReadonlyArray<PlannedMove>): boolean {
+  const versionChar = (text: string, index: number) => /[\w.+-]/.test(text[index] ?? "");
+  let i = 0;
+  let j = 0;
+  while (i < before.length || j < after.length) {
+    const swap = moves.find((move) => before.startsWith(move.from, i) && after.startsWith(move.to, j)
+      && !versionChar(before, i - 1) && !versionChar(before, i + move.from.length) && !versionChar(after, j + move.to.length));
+    if (swap !== undefined) {
+      i += swap.from.length;
+      j += swap.to.length;
+    } else if (before[i] === after[j] && i < before.length) {
+      i++;
+      j++;
+    } else {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, base: GradleInventory | undefined, head: GradleInventory | undefined, driven: (name: string, location: string) => boolean = () => false): string[] {

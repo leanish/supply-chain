@@ -142,10 +142,10 @@ describe("bump verification", () => {
       { id: ":buildscript.classpath", kind: "buildscript", unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin.jvm", name: "org.jetbrains.kotlin.jvm.gradle.plugin", version: kotlin, reason: undefined }] },
       { id: ":compileClasspath", kind: "project", unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: kotlin, reason: undefined }, { group: "g", name: "lib", version: lib, reason: undefined }] },
     ] }] });
-    const script = (kotlin: string) => ({ "build.gradle.kts": `plugins { id("org.jetbrains.kotlin.jvm") version "${kotlin}" }\ndependencies { implementation("g:lib:1.0") }` });
+    const script = (kotlin: string, lib = "1.0") => ({ "build.gradle.kts": `plugins { id("org.jetbrains.kotlin.jvm") version "${kotlin}" }\ndependencies { implementation("g:lib:${lib}") }` });
     const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("2.0.0")), head: tree("head", script("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
-    expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("2.1.0", "1.1") } })).toContainEqual(expect.stringContaining("g:lib"));
+    expect(await verifyPlan({ ...input, head: tree("head", script("2.1.0", "1.1")), gradle: { ...input.gradle, head: inventory("2.1.0", "1.1") } })).toContainEqual(expect.stringContaining("g:lib"));
     // The plugin move itself must still land exactly.
     expect(await verifyPlan({ ...input, gradle: { base: inventory("2.0.0"), head: { ...inventory("2.1.0"), builds: [{ ...inventory("2.1.0").builds[0]!, configurations: [
       { ...inventory("2.2.0").builds[0]!.configurations[0]! }, inventory("2.1.0").builds[0]!.configurations[1]!] }] } } })).toContainEqual(expect.stringContaining("exactly 2.1.0"));
@@ -155,27 +155,30 @@ describe("bump verification", () => {
     expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), true), head: withReflect(inventory("2.1.0"), false) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
     expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
   });
-  it("lets a plugin-driven change through only when no build file anywhere names it, before or after, and the plugin is its build's", async () => {
+  it("lets a plugin-driven change through only when the unit's files differ from base by the planned version swaps alone", async () => {
     const marker = "org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin";
     const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: marker, from: "2.0.0", minor: { version: "2.1.0", line: "2" }, major: undefined, locations: [":buildscript.classpath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
-    const other = { group: "com.acme.other", name: "com.acme.other.gradle.plugin" };
-    const inventory = (kotlin: string, stdlibBuild = ".", otherPlugin = "1.0"): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [".", "tools"].map((build) => ({ build, configurations: [
-      { id: ":buildscript.classpath", kind: "buildscript" as const, unresolved: [], error: undefined, resolved: [], declared: build === "." ? [{ group: "org.jetbrains.kotlin.jvm", name: "org.jetbrains.kotlin.jvm.gradle.plugin", version: kotlin, reason: undefined }, { ...other, version: otherPlugin, reason: undefined }] : [] },
-      { id: ":compileClasspath", kind: "project" as const, unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: build === stdlibBuild ? kotlin : "2.0.0", reason: undefined }] },
+    const inventory = (kotlin: string, { stdlibBuild = ".", reflect = "1.9.0" } = {}): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [".", "tools"].map((build) => ({ build, configurations: [
+      { id: ":buildscript.classpath", kind: "buildscript" as const, unresolved: [], error: undefined, resolved: [], declared: build === "." ? [{ group: "org.jetbrains.kotlin.jvm", name: "org.jetbrains.kotlin.jvm.gradle.plugin", version: kotlin, reason: undefined }] : [] },
+      { id: ":compileClasspath", kind: "project" as const, unresolved: [], error: undefined, resolved: [], declared: [
+        { group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: build === stdlibBuild ? kotlin : "2.0.0", reason: undefined },
+        { group: "org.jetbrains.kotlin", name: "kotlin-reflect", version: reflect, reason: undefined },
+      ] },
     ] })) });
-    const script = (kotlin: string) => `plugins {\n  id("org.jetbrains.kotlin.jvm") version "${kotlin}"\n  id /* ours */ ("com.acme.other") version "1.0"\n}`;
-    const files = (kotlin: string, extra: Record<string, string> = {}) => ({ "build.gradle.kts": script(kotlin), "tools/build.gradle.kts": "plugins { java }", ...extra });
+    const script = (kotlin: string, reflect = "1.9.0", other = "12.0.0") => `plugins { id("org.jetbrains.kotlin.jvm") version "${kotlin}" }\ndependencies { implementation(kotlin("reflect", "${reflect}")) }\n// other: ${other}`;
+    const files = (kotlin: string, rest: Parameters<typeof script> extends [string, ...infer R] ? R : never = []) => ({ "build.gradle.kts": script(kotlin, ...rest), "tools/build.gradle.kts": "plugins { java }" });
     const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", files("2.0.0")), head: tree("head", files("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
-    // Named in a comment, in another build's file, before only or after only: strict.
-    const named = { "tools/build.gradle.kts": '// "org.jetbrains.kotlin:kotlin-stdlib" comes from the plugin' };
-    for (const sides of [{ base: tree("base", files("2.0.0", named)) }, { head: tree("head", files("2.1.0", named)) }]) {
-      expect(await verifyPlan({ ...input, ...sides })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
-    }
-    // A plugin id split by a comment still counts as named, so its unplanned move is refused.
-    expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("2.1.0", ".", "1.1") } })).toContainEqual(expect.stringContaining("com.acme.other"));
+    // An unplanned edit next to the plugin update, in notation nothing reads: the text shows it.
+    expect(await verifyPlan({ ...input, head: tree("head", files("2.1.0", ["1.8.0"])), gradle: { ...input.gradle, head: inventory("2.1.0", { reflect: "1.8.0" }) } }))
+      .toContainEqual(expect.stringContaining("kotlin-reflect"));
+    // A swap must be a whole version: 12.0.0 holds 2.0.0, but isn't it.
+    expect(await verifyPlan({ ...input, head: tree("head", files("2.1.0", ["1.9.0", "12.1.0"])) })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    // Any other changed file turns the exemption off.
+    expect(await verifyPlan({ ...input, head: tree("head", { ...files("2.1.0"), "gradle.properties": "kotlin.code.style=official" }), changedFiles: ["build.gradle.kts", "gradle.properties"] }))
+      .toContainEqual(expect.stringContaining("kotlin-stdlib"));
     // The plugin moved in the root build; the stdlib changing in tools isn't its doing.
-    const problems = await verifyPlan({ ...input, gradle: { base: inventory("2.0.0", "tools"), head: inventory("2.1.0", "tools") } });
+    const problems = await verifyPlan({ ...input, gradle: { base: inventory("2.0.0", { stdlibBuild: "tools" }), head: inventory("2.1.0", { stdlibBuild: "tools" }) } });
     expect(problems).not.toEqual([]);
     expect(problems).toEqual(problems.map(() => expect.stringContaining("tools/:compileClasspath")));
   });

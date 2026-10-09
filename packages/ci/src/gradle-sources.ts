@@ -5,8 +5,8 @@
  * plugin's embedded Kotlin, for one): Gradle can't tell who added a dependency. A bump moves a
  * declaration, so it needs one in the repository's files. The evidence is deliberately coarse and
  * errs toward "named": comments count, and a coordinate named anywhere in the repository counts
- * for every build. A false "named" only plans a move bump-it may fail to make, visibly; a false
- * "unnamed" would skip an update and widen verification's plugin-driven exemption.
+ * for every build. A false "named" plans a move bump-it may fail to make, visibly; a false
+ * "unnamed" skips an update, with a note. Verification doesn't use it.
  *
  * Files read: every `*.gradle`, `*.gradle.kts` and `*.toml`, and the code under `buildSrc/` and
  * `build-logic/` (convention plugins), anywhere in the repository. In each, as raw text:

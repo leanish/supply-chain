@@ -52,7 +52,9 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...await floorProblems(base, head, gradle));
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves);
+  // Each of these is verified exactly by its own check.
+  const checkedElsewhere = new Set([...plan.npmFiles.map((file) => file.path), ...wrapperMoves.length > 0 ? WRAPPER_FILES : [], ...inputs.changedFiles.filter((path) => isNpmLock(path) || path.startsWith(".github/"))]);
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves, inputs.changedFiles, checkedElsewhere);
   const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
   problems.push(...directChangesOutside(before, after, planned));
   problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));
