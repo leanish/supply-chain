@@ -38,6 +38,8 @@
 
 ### Fixed
 
+- This repository's tests run on a held PR too: the `check` job no longer skips
+  when only `gate / cooldown` failed.
 - bump-it's CLI is committed executable, like the other `bin` targets. npm marks
   it executable on install, which showed up as a change in secure-it's own
   working copy of this repository and failed its verification.
