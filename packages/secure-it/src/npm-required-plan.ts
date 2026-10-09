@@ -80,6 +80,7 @@ async function collectRequirements(base: Tree, plan: ChangePlan, locks: Readonly
             return isObject(actual) && typeof actual["version"] === "string" ? actual["version"] : undefined;
           },
           isOwn: (name) => isOwnPackage(config.ownPackages, { ecosystem: "npm", name }),
+          verifiedRoot: (path) => fixed.has(path),
           registry, days: config.releaseAgeDays, now,
           placement: (parent, key, peer, optional) => {
             const existing = requiredPath(packages, parent.path, key, peer);

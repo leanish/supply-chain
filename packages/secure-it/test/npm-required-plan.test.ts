@@ -69,6 +69,16 @@ describe("security-required npm planning and exact materialization", () => {
     expect(JSON.parse(result.get("package-lock.json")!).packages["node_modules/postcss"].version).toBe("8.5.29");
   });
 
+  it("keeps a second security root's own target where the first root's requirement reaches it", async () => {
+    // 8.5.29 satisfies vite's ^8.5.29 but is vulnerable; postcss's own fix, 8.5.30, stands and needs no required target.
+    const affected = { "vite@8.3.2": [FIXED], "postcss@8.5.28": ["GHSA-postcss"], "postcss@8.5.29": ["GHSA-postcss"] };
+    const joint: ChangePlan = { ...plan, packages: ["npm|postcss", "npm|vite"], moves: [plan.moves[0]!,
+      { ...plan.moves[0]!, name: "postcss", from: "8.5.28", to: "8.5.30", mechanism: "npm-lock", locations: ["node_modules/postcss"], advisories: ["GHSA-postcss"] }] };
+    const h = environment({ affected });
+    expect(await requiredNpmPlan(tree(files()), joint, h.env)).toEqual(joint);
+    expect((await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), h.env)).failures).toEqual([]);
+  });
+
   it("does not exempt PostCSS when an aged version satisfies the security root", async () => {
     const doc = { ...vite, versions: { ...vite.versions, "8.3.3": { ...metadata, dependencies: { postcss: "^8.5.28" } } } };
     expect(await requiredNpmPlan(tree(files()), plan, environment({ docs: { vite: doc } }).env)).toEqual(plan);
