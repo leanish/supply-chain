@@ -35,7 +35,7 @@ describe("the existing required supply-chain check", () => {
 
   it("runs the tests whenever the bridge passed, a held PR's failed cooldown included", () => {
     expect(workflow.jobs.check.needs).toBe("supply-chain");
-    expect(workflow.jobs.check.if).toBe("always() && needs.supply-chain.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'push')");
+    expect(workflow.jobs.check.if).toBe("${{ !cancelled() && needs.supply-chain.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'push') }}");
   });
 
   it.each([
