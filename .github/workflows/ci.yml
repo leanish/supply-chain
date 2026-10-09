@@ -44,9 +44,10 @@ jobs:
           COOLDOWN_HELD: ${{ needs.gate.outputs.cooldown-held }}
         run: test "$GATE_RESULT" = "success" || { test "$COMPARISON_PASSED" = "true" && test "$COOLDOWN_HELD" = "true"; }
 
+  # always(): a held PR's failed `gate / cooldown` would otherwise skip the tests, though `supply-chain` passed.
   check:
     needs: supply-chain
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    if: always() && needs.supply-chain.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'push')
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
