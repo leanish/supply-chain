@@ -51,7 +51,7 @@ describe("gradleSourceIndex", () => {
   it("nests block comments only in Kotlin", async () => {
     const groovy = '/* Include files using src/* patterns. */\ndependencies { implementation "com.acme:lib:1.0" }';
     expect(await named({ "build.gradle": groovy }, "com.acme:lib")).toBe(true);
-    expect(await named({ "buildSrc/src/main/java/Logic.java": groovy.replace("dependencies", "add") }, "com.acme:lib")).toBe(true);
+    expect(await named({ "buildSrc/src/main/java/Logic.java": groovy.replace("dependencies", "add") }, "com.acme:lib", ".", [".", "buildSrc"])).toBe(true);
     // In Kotlin the same `/*` opens a nested comment, so the whole rest is still inside it.
     expect(await named({ "build.gradle.kts": '/* a /* b */ implementation("com.acme:lib:1.0")' }, "com.acme:lib")).toBe(false);
   });
@@ -143,9 +143,16 @@ describe("gradleSourceIndex", () => {
     }
   });
 
-  it("decodes TOML escapes, and refuses a catalog Gradle couldn't read either", async () => {
+  it("decodes TOML escapes, and takes no evidence from a catalog Gradle couldn't read either", async () => {
     expect(await named({ "gradle/libs.versions.toml": '[libraries]\nlib = "com.acme:\\u006Cib:1.0"' }, "com.acme:lib")).toBe(true);
-    await expect(named({ "gradle/libs.versions.toml": "[libraries]\nlib = { module = " }, "com.acme:lib")).rejects.toThrow("gradle/libs.versions.toml isn't a readable version catalog");
+    const broken = { "gradle/libs.versions.toml": "[libraries]\nlib = { module = ", "build.gradle.kts": 'implementation("com.acme:other:1.0")' };
+    expect([await named(broken, "com.acme:lib"), await named(broken, "com.acme:other")]).toEqual([false, true]);
+  });
+
+  it("reads a convention build's sources only when it's in the inventory", async () => {
+    const files = { "build-logic/gradle/libs.versions.toml": "[libraries]\nlib = { module = ", "build-logic/src/main/kotlin/c.gradle.kts": 'implementation("com.acme:logic:1.0")', "build-logic/build.gradle.kts": 'implementation("com.acme:logic-script:1.0")', "build.gradle.kts": 'implementation("com.acme:root:1.0")' };
+    expect([await named(files, "com.acme:root"), await named(files, "com.acme:logic"), await named(files, "com.acme:logic-script")]).toEqual([true, false, false]);
+    expect(await named(files, "com.acme:logic", ".", [".", "build-logic"])).toBe(true);
   });
 
   it("counts a catalog the build's settings import from elsewhere in the repository", async () => {
@@ -188,7 +195,7 @@ describe("gradleSourceIndex", () => {
       "src/app/build.gradle": "dependencies { implementation 'com.acme:src-project:1.0' }",
       "build/generated/leftover.gradle.kts": 'implementation("com.acme:generated:1.0")',
     };
-    const builds = [".", "buildSrc", "included"];
+    const builds = [".", "buildSrc", "build-logic", "included"];
     const index = await gradleSourceIndex(tree(files), builds);
     const at = (build: string, name: string) => index.named(build, "com.acme", name);
     expect([at(".", "root"), at(".", "convention"), at(".", "logic"), at(".", "src-project")]).toEqual([true, true, true, true]);
