@@ -12,6 +12,18 @@
   plugin-added dependencies as declared, so bump-it asked its agent, on every
   run, to move declarations that don't exist.
 
+### Changed
+
+- The `ci` package depends on `smol-toml` (1.9.0, zero dependencies) to read
+  Gradle version catalogs, and on `fast-xml-parser` (5.11.2, with seven
+  dependencies of its own, all from its author) to read POMs and Maven
+  metadata, under size, nesting and entity budgets. Both run in the gate and
+  the tools only.
+- POMs and `maven-metadata.xml` are read as XML, not with patterns: only the
+  project's own `<scm>`, `<url>`, `<properties>` and `<parent>` count (not a
+  profile's or a plugin's), CDATA and entities are decoded, and a commented-out
+  `<version>` no longer counts as a published version.
+
 ## 0.2.1 - 2026-10-09
 
 ### Fixed

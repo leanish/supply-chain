@@ -9,7 +9,8 @@
  *   `buildSrc`/`build-logic` code (`implementation("g:n:1.0")`, `dependencies.add(.., "g:n:1.0")`);
  * - `group = "g", name = "n"` (or `group: 'g', name: 'n'`, either order, other named arguments
  *   between them) in one argument list;
- * - a version catalog library: `"g:n:v"`, `{ module = "g:n" }` or `{ group = "g", name = "n" }`;
+ * - a version catalog library (read with a TOML parser): `"g:n:v"`, `{ module = "g:n" }` or
+ *   `{ group = "g", name = "n" }`, in any TOML form;
  * - a plugin, which resolves as its marker `id:id.gradle.plugin`: `id("x")`/`id 'x'` in a script, or
  *   a catalog plugin, `"x:v"` or `{ id = "x" }`.
  * Comments don't count (Kotlin's nested block comments included). Shorthands such as
@@ -22,6 +23,8 @@
  * import by path (`from(files("../gradle/libs.versions.toml"))`) counts too, wherever it lives.
  */
 import { posix } from "node:path";
+
+import { parse } from "smol-toml";
 
 import type { Tree } from "./tree.ts";
 
@@ -41,7 +44,7 @@ export async function gradleSourceIndex(tree: Tree, builds: ReadonlyArray<string
     for (const path of [...await ownSources(tree, build, builds), ...await importedCatalogs(tree, build)]) {
       const text = await tree.read(path);
       if (text === undefined) throw new Error(`${path} disappeared while reading it`);
-      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(text) : scriptCoordinates(text)) found.add(coordinate);
+      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(path, text) : scriptCoordinates(text)) found.add(coordinate);
     }
     coordinates.set(build, found);
   }
@@ -113,133 +116,37 @@ function pluginMarker(id: string): string {
   return `${id}:${id}.gradle.plugin`;
 }
 
-/** Libraries and plugins of a version catalog, from its string values (see `catalogStrings`). */
-function catalogCoordinates(text: string): string[] {
-  const entries = new Map<string, Map<string, string>>();
-  for (const [path, value] of catalogStrings(text)) {
-    const [section, alias, ...field] = path;
-    if ((section !== "libraries" && section !== "plugins") || alias === undefined) continue;
-    const key = `${section}\0${alias}`;
-    if (!entries.has(key)) entries.set(key, new Map());
-    entries.get(key)!.set(field.join("."), value);
+/** Libraries and plugins of a version catalog: a library's `"g:n:v"`, `module` or `group`/`name`; a plugin's `"id:v"` or `id`. */
+function catalogCoordinates(path: string, text: string): string[] {
+  let catalog: Record<string, unknown>;
+  try {
+    catalog = parse(text);
+  } catch (error) {
+    // Gradle can't read it either; a dependency it declares can't be told apart from a plugin's.
+    throw new Error(`${path} isn't a readable version catalog: ${error instanceof Error ? error.message : String(error)}`);
   }
   const found: string[] = [];
-  for (const [key, fields] of entries) {
-    const literal = fields.get("");
-    if (key.startsWith("plugins\0")) {
-      const id = literal === undefined ? fields.get("id") : /^([\w.-]+):/.exec(literal)?.[1];
-      if (id !== undefined && /^[\w.-]+$/.test(id)) found.push(pluginMarker(id));
-      continue;
-    }
-    const coordinate = literal ?? fields.get("module") ?? (fields.has("group") && fields.has("name") ? `${fields.get("group")}:${fields.get("name")}` : undefined);
+  for (const entry of Object.values(tableOf(catalog["libraries"]))) {
+    const fields = tableOf(entry);
+    const group = textOf(fields["group"]);
+    const name = textOf(fields["name"]);
+    const coordinate = textOf(entry) ?? textOf(fields["module"]) ?? (group !== undefined && name !== undefined ? `${group}:${name}` : undefined);
     const parts = /^([\w.-]+):([\w.-]+)(?::.*)?$/.exec(coordinate ?? "");
     if (parts !== null) found.push(`${parts[1]}:${parts[2]}`);
   }
-  return found;
-}
-
-/**
- * Every string value of a TOML document with its key path, inline tables flattened: the subset version
- * catalogs use (tables, dotted and quoted keys, basic and literal strings, nested inline tables). Lines it
- * can't read (multi-line arrays or strings, which catalogs keep to `[bundles]`) are skipped.
- */
-function catalogStrings(text: string): Array<[string[], string]> {
-  const found: Array<[string[], string]> = [];
-  let table: string[] = [];
-  for (const raw of text.split("\n")) {
-    const line = raw.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    if (line.startsWith("[[")) {
-      table = ["\0array"];
-      continue;
-    }
-    if (line.startsWith("[")) {
-      const header = readKey(line, 1);
-      table = header !== undefined && line.slice(header.end).trim().startsWith("]") ? header.parts : ["\0unreadable"];
-      continue;
-    }
-    readPair(line, 0, table, found);
+  for (const entry of Object.values(tableOf(catalog["plugins"]))) {
+    const id = textOf(entry)?.split(":")[0] ?? textOf(tableOf(entry)["id"]);
+    if (id !== undefined && /^[\w.-]+$/.test(id)) found.push(pluginMarker(id));
   }
   return found;
 }
 
-/** `key = value` at `pos`, recording string values under `prefix`; returns where it ended, or undefined. */
-function readPair(text: string, pos: number, prefix: string[], found: Array<[string[], string]>): number | undefined {
-  const key = readKey(text, pos);
-  if (key === undefined) return undefined;
-  let at = skipSpace(text, key.end);
-  if (text[at] !== "=") return undefined;
-  at = skipSpace(text, at + 1);
-  const path = [...prefix, ...key.parts];
-  const string = readString(text, at);
-  if (string !== undefined) {
-    found.push([path, string.value]);
-    return string.end;
-  }
-  if (text[at] === "{") {
-    at = skipSpace(text, at + 1);
-    while (text[at] !== "}") {
-      const next = readPair(text, at, path, found);
-      if (next === undefined) return undefined;
-      at = skipSpace(text, next);
-      if (text[at] === ",") at = skipSpace(text, at + 1);
-      else if (text[at] !== "}") return undefined;
-    }
-    return at + 1;
-  }
-  if (text[at] === "[") return skipArray(text, at);
-  // Numbers and booleans: nothing a coordinate lives in.
-  const rest = /^[^,}#]*/.exec(text.slice(at))![0];
-  return at + rest.length;
+function tableOf(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-/** Past a one-line array (`reject = ["1.1", "1.2"]`), strings and nested arrays included; undefined if it doesn't close. */
-function skipArray(text: string, pos: number): number | undefined {
-  let depth = 0;
-  for (let at = pos; at < text.length; at++) {
-    const string = readString(text, at);
-    if (string !== undefined) {
-      at = string.end - 1;
-      continue;
-    }
-    if (text[at] === "[") depth++;
-    else if (text[at] === "]" && --depth === 0) return at + 1;
-  }
-  return undefined;
-}
-
-/** A dotted key of bare and quoted parts. */
-function readKey(text: string, pos: number): { parts: string[]; end: number } | undefined {
-  const parts: string[] = [];
-  let at = skipSpace(text, pos);
-  for (;;) {
-    const quoted = readString(text, at);
-    const bare = quoted === undefined ? /^[\w-]+/.exec(text.slice(at))?.[0] : undefined;
-    if (quoted === undefined && bare === undefined) return undefined;
-    parts.push(quoted?.value ?? bare!);
-    at = skipSpace(text, quoted?.end ?? at + bare!.length);
-    if (text[at] !== ".") return { parts, end: at };
-    at = skipSpace(text, at + 1);
-  }
-}
-
-/** A one-line basic (`"..."`) or literal (`'...'`) string. A basic string's escapes keep their character (`\\u` escapes aren't decoded: coordinates never need them). */
-function readString(text: string, pos: number): { value: string; end: number } | undefined {
-  const quote = text[pos];
-  if (quote !== '"' && quote !== "'") return undefined;
-  let value = "";
-  for (let at = pos + 1; at < text.length; at++) {
-    const char = text[at]!;
-    if (char === quote) return { value, end: at + 1 };
-    if (char === "\\" && quote === '"') value += text[++at] ?? "";
-    else value += char;
-  }
-  return undefined;
-}
-
-function skipSpace(text: string, pos: number): number {
-  while (text[pos] === " " || text[pos] === "\t") pos++;
-  return pos;
+function textOf(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 /** Drops `//` and `/* *\/` comments outside string literals, keeping line breaks. */
