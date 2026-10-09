@@ -27,7 +27,7 @@ export interface GradleSourceIndex {
 }
 
 const BUILD_FILE = /(?:^|\/)[^/]*(?:\.gradle|\.gradle\.kts|\.toml)$/;
-const CONVENTION_CODE = /(?:^|\/)(?:buildSrc|build-logic)\/(?:.*\/)?[^/]*\.(?:kt|kts|java|groovy)$/;
+const CONVENTION_CODE = /(?:^|\/)(?:buildSrc|build-logic)\/(?:.*\/)?[^/]*\.(?:kt|kts|java|groovy)$/s;
 const PLUGIN_MARKER = /^([^:]+):\1\.gradle\.plugin$/;
 
 export async function gradleSourceIndex(tree: Tree): Promise<GradleSourceIndex> {

@@ -18,6 +18,8 @@
   whose plugin the plan moves, and never an addition or removal. Everything
   else must still change only as planned, and the gate judges every version
   that changes.
+- A working tree lists symlinked files (those leading to a file), as a commit's
+  tree already did, so both sides of a comparison see the same files.
 
 ### Changed
 

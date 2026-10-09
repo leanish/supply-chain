@@ -51,13 +51,14 @@ describe("gradleSourceIndex", () => {
       "settings.gradle.kts": 'includeBuild("tools")',
       "tools/app/build.gradle.kts": 'implementation("com.acme:nested:1.0")',
       "buildSrc/src/main/kotlin/Conventions.kt": 'add("implementation", "com.acme:convention:1.0")',
+      "build-logic/src/main/kotlin/odd\nname/Logic.kt": 'add("implementation", "com.acme:odd:1.0")',
       "build-logic/src/main/kotlin/acme.gradle.kts": 'plugins { id("com.acme.precompiled") }',
       "out/tools/build.gradle": "implementation 'com.acme:out:1.0'",
       "src/main/kotlin/shipped.gradle.kts": 'dependencies { "implementation"("com.acme:shipped:1.0") }',
       "deps/other.toml": '[libraries]\nlib = { module = "com.acme:imported" }',
       "src/main/java/App.java": 'String s = "com.acme:application:1.0";',
     };
-    for (const coordinate of ["com.acme:nested", "com.acme:convention", marker("com.acme.precompiled"), "com.acme:out", "com.acme:shipped", "com.acme:imported"]) {
+    for (const coordinate of ["com.acme:nested", "com.acme:convention", "com.acme:odd", marker("com.acme.precompiled"), "com.acme:out", "com.acme:shipped", "com.acme:imported"]) {
       expect(await named(files, coordinate), coordinate).toBe(true);
     }
     // Application code isn't a build source.

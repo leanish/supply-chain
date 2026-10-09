@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,17 @@ describe("the working tree", () => {
     expect(await tree.read(".github/workflows/ci.yml/action.yml")).toBeUndefined();
     expect(await tree.read("missing/action.yml")).toBeUndefined();
     expect(await tree.list(".github/workflows/ci.yml")).toEqual([]);
+  });
+
+  it("lists symlinks that lead to files, as git does, but not links to directories or broken ones", async () => {
+    await mkdir(join(root, "gradle"), { recursive: true });
+    await writeFile(join(root, "catalog-data.txt"), "[libraries]\n");
+    await symlink("../catalog-data.txt", join(root, "gradle/tools.toml"));
+    await symlink("../.github", join(root, "gradle/linked-dir"));
+    await symlink("../missing.txt", join(root, "gradle/broken.toml"));
+    const tree = workingTree(root);
+    expect(await tree.list("gradle")).toEqual(["gradle/tools.toml"]);
+    expect(await tree.read("gradle/tools.toml")).toBe("[libraries]\n");
   });
 });
 
