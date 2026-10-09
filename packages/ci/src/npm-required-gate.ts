@@ -37,6 +37,7 @@ export async function gatherRequiredProofs(changes: ReadonlyArray<ChangedVersion
             return isObject(previous) && typeof previous["version"] === "string" ? previous["version"] : undefined;
           },
           isOwn: (name) => isOwnPackage(config.ownPackages, { ecosystem: "npm", name }),
+          verifiedRoot: (path) => fixed.has(path),
           registry, days: config.releaseAgeDays, now,
           placement: (parent, key, peer) => requiredPath(packages, parent.path, key, peer),
           selected: (target) => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { runCompare } from "../src/gate.ts";
-import { environment, files, json, metadata, OLD, postcss, tree, vite, locked, YOUNG, securityBatch } from "./required-fixture.ts";
+import { environment, files, FIXED, json, metadata, OLD, postcss, tree, vite, locked, YOUNG, securityBatch } from "./required-fixture.ts";
 
 describe("independently gated security requirements", () => {
   it("accepts synthetic Vite 8.3.3 and its lowest required young PostCSS on one snapshot", async () => {
@@ -30,6 +30,14 @@ describe("independently gated security requirements", () => {
     const outcome = await runCompare(tree(batch.base), tree(batch.head, "head"), env);
     expect(outcome.failures.join()).toContain("postcss");
     expect(outcome.notes.join()).not.toContain("lowest satisfying version");
+  });
+
+  it("keeps another verified security root's version where a fix's requirement reaches it", async () => {
+    // vite's fix requires postcss ^8.5.29, but 8.5.29 is vulnerable too: postcss's own fix, 8.5.30, must stand.
+    const affected = { "vite@8.3.2": [FIXED], "postcss@8.5.28": ["GHSA-postcss"], "postcss@8.5.29": ["GHSA-postcss"] };
+    const outcome = await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), environment({ affected }).env);
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.notes.join()).not.toContain("postcss@8.5.29");
   });
 
   it("lets an installed optional dependency replace its same-key ordinary declaration", async () => {
