@@ -19,7 +19,8 @@
  * the whole build, without checking which configurations it controls.
  *
  * Each build owns its directory, minus the builds nested in it; its `buildSrc` and `build-logic`
- * count as its own when they're in the inventory, since their convention plugins declare its dependencies. A catalog its settings
+ * count as its own when they're builds in the inventory, since their convention plugins declare its dependencies
+ * (a build nested inside one still owns its own directory). A catalog its settings
  * import by path (`from(files("../gradle/libs.versions.toml"))`) counts too, wherever it lives.
  */
 import { posix } from "node:path";
@@ -60,14 +61,14 @@ export async function gradleSourceIndex(tree: Tree, builds: ReadonlyArray<string
 /** The build's scripts and catalogs, and its convention builds' scripts, catalogs and main code. */
 async function ownSources(tree: Tree, build: string, builds: ReadonlyArray<string>): Promise<string[]> {
   const prefix = build === "." ? "" : `${build}/`;
-  // A convention build counts only when Gradle uses it (it's in the inventory); an unused one counts not at all.
+  // `buildSrc`/`build-logic` are convention builds only when they're builds in the inventory; otherwise such a
+  // directory is an ordinary one of this build (a subproject, say).
   const conventions = CONVENTION_BUILDS.map((dir) => `${prefix}${dir}`).filter((dir) => builds.includes(dir)).map((dir) => `${dir}/`);
-  const inactive = CONVENTION_BUILDS.map((dir) => `${prefix}${dir}/`).filter((dir) => !conventions.includes(dir));
-  const isConvention = (dir: string) => conventions.some((convention) => dir.startsWith(convention));
+  // Every other build nested here owns its directory, including one nested inside a convention build.
   const nested = builds.filter((other) => other !== build && (build === "." || other.startsWith(prefix)))
-    .map((other) => `${other}/`).filter((dir) => !isConvention(dir));
+    .map((other) => `${other}/`).filter((dir) => !conventions.includes(dir));
   return (await tree.list(build)).filter((path) => {
-    if (nested.some((dir) => path.startsWith(dir)) || inactive.some((dir) => path.startsWith(dir))) return false;
+    if (nested.some((dir) => path.startsWith(dir))) return false;
     const convention = conventions.find((dir) => path.startsWith(dir));
     const relative = path.slice((convention ?? prefix).length);
     const segments = relative.split("/");
