@@ -100,6 +100,11 @@ describe("gradleSourceIndex", () => {
     expect(await named(files, "com.acme.single-plugin:com.acme.single-plugin.gradle.plugin")).toBe(true);
   });
 
+  it("decodes TOML escapes, and refuses a catalog Gradle couldn't read either", async () => {
+    expect(await named({ "gradle/libs.versions.toml": '[libraries]\nlib = "com.acme:\\u006Cib:1.0"' }, "com.acme:lib")).toBe(true);
+    await expect(named({ "gradle/libs.versions.toml": "[libraries]\nlib = { module = " }, "com.acme:lib")).rejects.toThrow("gradle/libs.versions.toml isn't a readable version catalog");
+  });
+
   it("counts a catalog the build's settings import from elsewhere in the repository", async () => {
     const files = {
       "gradle/libs.versions.toml": '[libraries]\nshared = "com.acme:shared:1.0"',

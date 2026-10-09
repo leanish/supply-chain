@@ -12,6 +12,11 @@
   plugin-added dependencies as declared, so bump-it asked its agent, on every
   run, to move declarations that don't exist.
 
+### Changed
+
+- The `ci` package depends on `smol-toml` (1.9.0, zero dependencies) to read
+  Gradle version catalogs.
+
 ## 0.2.1 - 2026-10-09
 
 ### Fixed
