@@ -9,7 +9,7 @@ import { plannedFiles, verifyPlan, type VerifyInputs } from "../src/verify.ts";
 import { candidate } from "./fixtures.ts";
 
 vi.mock("../../ci/src/gate.ts", async (original) => ({ ...await original<object>(), runCompare: vi.fn(async () => ({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } })) }));
-const tree = (id: string, files: Record<string, string>): Tree => ({ id, read: async (path) => files[path], list: async (dir) => Object.keys(files).filter((path) => path.startsWith(`${dir}/`)) });
+const tree = (id: string, files: Record<string, string>): Tree => ({ id, read: async (path) => files[path], list: async (dir) => Object.keys(files).filter((path) => dir === "." || path.startsWith(`${dir}/`)) });
 const manifest = (lib = "^1.0.0", scripts: object = {}) => JSON.stringify({ dependencies: { lib }, scripts });
 const lock = (lib = "1.0.0", other = "1.0.0") => JSON.stringify({ packages: { "": { dependencies: { lib: `^${lib}`, other: "^1" } }, "node_modules/lib": { version: lib }, "node_modules/other": { version: other } } });
 const env: GateEnvironment = { run: async () => { throw new Error("must not execute"); }, fetch: async () => { throw new Error("must not fetch"); }, now: () => new Date(), osvScanner: "osv-scanner", githubToken: undefined };
@@ -128,10 +128,24 @@ describe("bump verification", () => {
   });
   it("protects every unplanned Gradle location of a planned package and declares planned ones exactly", async () => {
     const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: "g:lib", from: "1.0", locations: [":runtimeClasspath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
-    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", {}), head: tree("head", {}), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0", "1.0", "1.2.0") }, changedFiles: ["build.gradle.kts"] };
+    const script = (version: string) => ({ "build.gradle.kts": `dependencies { implementation("g:lib:${version}") }` });
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("1.0")), head: tree("head", script("1.1.0")), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0", "1.0", "1.2.0") }, changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle("1.1.0", "1.1.0") } })).toContainEqual(expect.stringContaining("outside the plan"));
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle("1.2.0") } })).toContain(":runtimeClasspath must declare g:lib exactly 1.1.0");
+  });
+  it("lets a plugin update move the dependencies the plugin declares, but nothing the build declares itself", async () => {
+    // Moving the Kotlin plugin moves the kotlin-stdlib it adds; no build file names kotlin-stdlib.
+    const marker = "org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin";
+    const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: marker, from: "2.0.0", minor: { version: "2.1.0", line: "2" }, major: undefined, locations: [":buildscript.classpath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
+    const inventory = (kotlin: string, lib = "1.0"): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":buildscript.classpath", kind: "buildscript", unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin.jvm", name: "org.jetbrains.kotlin.jvm.gradle.plugin", version: kotlin, reason: undefined }] },
+      { id: ":compileClasspath", kind: "project", unresolved: [], error: undefined, resolved: [], declared: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: kotlin, reason: undefined }, { group: "g", name: "lib", version: lib, reason: undefined }] },
+    ] }] });
+    const script = (kotlin: string) => ({ "build.gradle.kts": `plugins { id("org.jetbrains.kotlin.jvm") version "${kotlin}" }\ndependencies { implementation("g:lib:1.0") }` });
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("2.0.0")), head: tree("head", script("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, changedFiles: ["build.gradle.kts"] };
+    expect(await verifyPlan(input)).toEqual([]);
+    expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("2.1.0", "1.1") } })).toContainEqual(expect.stringContaining("g:lib"));
   });
   it("keeps floors and their declarations immutable even when a plan names them", async () => {
     const floor = JSON.stringify({ floors: [{ ecosystem: "Maven", package: "g:lib", version: "1.0", declaredIn: "build.gradle", selector: [":runtimeClasspath"], purpose: "compatibility", reason: "works", added: "2026-01-01" }] });

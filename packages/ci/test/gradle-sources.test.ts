@@ -132,6 +132,15 @@ describe("gradleSourceIndex", () => {
     expect([await named(files, "com.acme:default"), await named(files, "com.acme:imported")]).toEqual([true, true]);
     const { "settings.gradle.kts": _settings, ...unimported } = files;
     expect(await named(unimported, "com.acme:imported")).toBe(false);
+    // An import written inside a triple-quoted string is text, not a call: its broken catalog isn't read.
+    for (const [settings, text] of [
+      ["settings.gradle.kts", 'val example = """from(files("gradle/unused.versions.toml"))"""'],
+      ["settings.gradle.kts", "val example = \"from(files('gradle/unused.versions.toml'))\""],
+      ["settings.gradle", "def example = 'from files(\"gradle/unused.versions.toml\")'"],
+      ["settings.gradle", 'def example = """a \\""" from(files("gradle/unused.versions.toml")) """'],
+    ] as const) {
+      expect(await named({ ...unimported, [settings]: text }, "com.acme:default")).toBe(true);
+    }
   });
 
   it("decodes TOML escapes, and refuses a catalog Gradle couldn't read either", async () => {
