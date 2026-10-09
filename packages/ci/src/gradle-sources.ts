@@ -79,8 +79,8 @@ async function ownSources(tree: Tree, build: string, builds: ReadonlyArray<strin
   });
 }
 
-// One named argument, `key = "value"` or `key: 'value'`, and the separator before the next.
-const ARGUMENT = String.raw`\w+\s*[=:]\s*["'][^"'\n]*["']\s*,\s*`;
+// One named argument, `key = "value"`, `key: 'value'` or `key: expression` (no commas, brackets, braces or `;`), and the separator before the next.
+const ARGUMENT = String.raw`\w+\s*[=:]\s*(?:["'][^"'\n]*["']|[^,()[\]{};"'\n]+?)\s*,\s*`;
 const GROUP_FIRST = new RegExp(String.raw`\bgroup\s*[=:]\s*["']([\w.-]+)["']\s*,\s*(?:${ARGUMENT})*name\s*[=:]\s*["']([\w.-]+)["']`, "g");
 const NAME_FIRST = new RegExp(String.raw`\bname\s*[=:]\s*["']([\w.-]+)["']\s*,\s*(?:${ARGUMENT})*group\s*[=:]\s*["']([\w.-]+)["']`, "g");
 
@@ -150,7 +150,7 @@ function textOf(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Drops `//` and `/* *\/` comments outside string literals, keeping line breaks. Only Kotlin's block comments nest. */
+/** Drops `//` and `/* *\/` comments outside string literals (triple-quoted ones included), keeping line breaks. Only Kotlin's block comments nest. */
 function withoutComments(text: string, kotlin: boolean): string {
   let out = "";
   let quote: string | undefined;
@@ -162,7 +162,15 @@ function withoutComments(text: string, kotlin: boolean): string {
       else if (char === quote) quote = undefined;
       continue;
     }
-    if (char === '"' || char === "'") {
+    const triple = text.startsWith('"""', i) ? '"""' : !kotlin && text.startsWith("'''", i) ? "'''" : undefined;
+    if (triple !== undefined) {
+      // A triple-quoted string runs to the next triple quote: Kotlin's raw strings have no escapes, Groovy's do.
+      let end = i + 3;
+      while (end < text.length && !text.startsWith(triple, end)) end += !kotlin && text[end] === "\\" ? 2 : 1;
+      end = Math.min(text.length, end + 3);
+      out += text.slice(i, end);
+      i = end - 1;
+    } else if (char === '"' || char === "'") {
       quote = char;
       out += char;
     } else if (char === "/" && text[i + 1] === "/") {
