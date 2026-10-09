@@ -102,7 +102,7 @@ async function run(context: ToolRunContext, deps: BumpItDeps): Promise<Readonly<
   return {
     outcome: "completed",
     units: results,
-    notes: wrapper.notes ?? [],
+    notes: [...found.notes, ...wrapper.notes ?? []],
     gaps: found.gaps,
     waiting: found.bumps.flatMap((bump) => bump.problems.map((problem) => `${bump.name}@${bump.from}: ${problem}`)),
   };

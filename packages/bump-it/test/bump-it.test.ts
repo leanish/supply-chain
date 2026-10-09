@@ -47,7 +47,7 @@ async function prFor(unit: Unit, overrides: Partial<GitHubPullRequest> = {}): Pr
     ? { ...planned, wrapperFiles: wrapperArtifacts().map(({ bytes: _bytes, ...file }) => file) } : planned;
   return ownPr({ headRef: branchFor(RULES, new Date("2026-10-05T00:00:00Z"), unit.topic), labels: [RULES.label], body: withMarker(RULES, `Body.\n\n${planSection(plan)}`, { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }), ...overrides });
 }
-function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; baseSha?: string; problems?: string[]; incomplete?: string[]; deferred?: string[]; refuse?: boolean; npm?: (unit: Unit) => Promise<NpmResult> } = {}) {
+function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; baseSha?: string; problems?: string[]; incomplete?: string[]; candidateNotes?: string[]; deferred?: string[]; refuse?: boolean; npm?: (unit: Unit) => Promise<NpmResult> } = {}) {
   const github = new FakeGitHub(...options.prs ?? []);
   const workspace = new InMemoryWorkspace();
   const wc: WorkingCopy = { projectId: REPO, path: "/synthetic/widget", gitDir: "/synthetic/git", headSha: options.baseSha ?? BASE_SHA, branch: "main" };
@@ -83,7 +83,7 @@ function harness(options: { bumps?: BumpCandidate[]; prs?: GitHubPullRequest[]; 
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async (url) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => String(url).includes("/git/") ? { object: { type: "commit", sha: "1".repeat(40) } } : {}, text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
     gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => undefined }),
     trees: { commit: async (_wc, sha) => tree(sha, BASE_FILES), working: () => tree("worktree", files) },
-    candidates: async () => ({ bumps: options.bumps ?? [candidate()], incomplete: options.incomplete ?? [], gaps: [], osvScannerVersion: "2.6.0" }),
+    candidates: async () => ({ bumps: options.bumps ?? [candidate()], incomplete: options.incomplete ?? [], gaps: [], osvScannerVersion: "2.6.0", notes: options.candidateNotes ?? [] }),
     npm: async (_context, unit, base) => { computed.push({ topic: unit.topic, base: base.id }); return options.npm === undefined ? npmOf(unit) : options.npm(unit); },
     verify: async (input) => { verified.push(input.plan); return options.problems ?? []; },
     changedSince: async () => ["package.json", "package-lock.json"],
@@ -165,6 +165,13 @@ describe("bump-it run", () => {
     expect(h.verified[0]?.notes).toEqual(notes);
     expect([...h.github.prs.values()][0]?.body).toContain(notes[0]);
     expect(h.agentCalls).toEqual([]);
+  });
+  it("reports the candidates' notes beside the wrapper's", async () => {
+    const candidateNotes = ["org.jetbrains.kotlin:kotlin-stdlib@2.4.10: no supported declaration found in its build's sources (:compileClasspath)"];
+    const h = harness({ bumps: [candidate({ major: undefined })], candidateNotes });
+    const notes = ["Gradle wrapper left out: catalog unavailable"];
+    const result = await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ unavailable: true, notes }), verify: async () => [] }) }).run(h.context);
+    expect(result).toMatchObject({ notes: [...candidateNotes, ...notes] });
   });
   it("omits a failed wrapper generation while publishing other routine moves", async () => {
     const h = harness({ bumps: [candidate({ major: undefined })] });
