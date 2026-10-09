@@ -33,6 +33,15 @@ describe("npm security-required release age", () => {
     expect(proof.targets[0]?.reason).toContain("lowest satisfying version");
   });
 
+  it("keeps another verified security root where the requirement reaches it, if its version satisfies", async () => {
+    const at = (version: string) => ({ ...inputs(), verifiedRoot: (path: string) => path === "node_modules/postcss", installed: () => version });
+    const kept = await requiredClosure(root, at("8.5.30"));
+    expect(kept).toMatchObject({ targets: [], problems: [] });
+    const refused = await requiredClosure(root, at("8.5.28"));
+    expect(refused.targets).toEqual([]);
+    expect(refused.problems.join()).toContain("requires postcss ^8.5.29, but the verified security fix at node_modules/postcss is postcss@8.5.28");
+  });
+
   it("does not exempt the real Vite 8.3.3 requirement when an aged 8.5.28 satisfies ^8.5.28", async () => {
     const proof = await requiredClosure(root, inputs(registry({ vite: { ...baseDoc, versions: { ...baseDoc.versions, "8.3.3": { dependencies: { postcss: "^8.5.28" } } } } })));
     expect(proof.targets).toEqual([]);

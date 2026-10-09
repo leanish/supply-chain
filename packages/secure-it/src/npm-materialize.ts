@@ -161,7 +161,11 @@ function planOverrides(graph: NpmGraph, plannedTargets: ReadonlyMap<string, Plan
       if (current !== undefined && (typeof current !== "object" || current === null || Array.isArray(current))) throw new Error(`${key}: an existing override cannot be narrowed safely`);
       rule = (rule[segment] ??= {}) as Record<string, unknown>;
     }
-    rule[selector.at(-1)!] = copy.installedAs === copy.name ? move.to : `npm:${copy.name}@${move.to}`;
+    const spec = copy.installedAs === copy.name ? move.to : `npm:${copy.name}@${move.to}`;
+    const existing = rule[selector.at(-1)!];
+    // An object-form override keeps its own version under ".": replacing the object would drop its child rules.
+    if (typeof existing === "object" && existing !== null && !Array.isArray(existing)) (existing as Record<string, unknown>)["."] = spec;
+    else rule[selector.at(-1)!] = spec;
     texts.set("", formatManifest(texts.get("")!, manifest));
     floorsText = securityFloor(floorsText, move, join(root, "package.json"), selector, now);
   }

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { parseFloors } from "../../ci/src/floors.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
 import { materializeInCopy } from "../src/npm-materialize.ts";
@@ -147,6 +148,24 @@ describe("security npm materialization", () => {
       return { code: 0, stdout: "", stderr: "" };
     });
     expect(JSON.parse(files.get(".github/dependency-floors.json")!).floors).toEqual([{ ...floor, version: "8.3.3" }]);
+  });
+
+  it("updates an object-form security override's own version, keeping its child rules and their floors", async () => {
+    const root = { dependencies: { parent: "^1" }, overrides: { vite: { ".": "8.3.2", child: "2.0.0" } } };
+    const lock = { packages: { "": root, "node_modules/parent": { version: "1.0.0", dependencies: { vite: "^7" } }, "node_modules/vite": { version: "8.3.2" }, "node_modules/child": { version: "2.0.0" } } };
+    const security = { ecosystem: "npm", package: "vite", version: "8.3.2", declaredIn: "package.json", selector: ["vite"], purpose: "security", advisories: ["GHSA-rq7h-c2jc-7f22"], reason: "Original reason", added: "2026-09-01" };
+    const compatibility = { ecosystem: "npm", package: "child", version: "2.0.0", declaredIn: "package.json", selector: [["vite", "child"]], purpose: "compatibility", advisories: [], reason: "Compatibility", added: "2026-09-01" };
+    const h = await fixture({ "package.json": json(root), "package-lock.json": json(lock), ".github/dependency-floors.json": json({ floors: [security, compatibility] }) });
+    const files = await materializeInCopy({ releaseAgeDays: 7, now }, h.dir, h.base, plan([move("vite", "8.3.3", "npm-override")]), [], async (cwd) => {
+      const manifest = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+      expect(manifest.overrides.vite).toEqual({ ".": "8.3.3", child: "2.0.0" });
+      await writeFile(join(cwd, "package-lock.json"), json({ packages: { ...lock.packages, "": manifest, "node_modules/vite": { version: "8.3.3" } } }));
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    expect(JSON.parse(files.get("package.json")!).overrides).toEqual({ vite: { ".": "8.3.3", child: "2.0.0" } });
+    const floors = JSON.parse(files.get(".github/dependency-floors.json")!);
+    expect(floors.floors).toEqual([{ ...security, version: "8.3.3" }, compatibility]);
+    expect(parseFloors(floors).map((floor) => [floor.package, floor.overridePaths])).toEqual([["vite", [["vite"]]], ["child", [["vite", "child"]]]]);
   });
 
   it("permits planned Gradle records beside tool-written npm floors, but protects the npm records", async () => {

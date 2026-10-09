@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A security fix whose required dependency is another security fix in the same
+  batch keeps that fix's own version: the requirement proof no longer reselects
+  a lower (possibly still vulnerable) young version and rejects the right one.
+  The other fix must satisfy the requirement.
+- secure-it updates an object-form security override (`{ ".": "1.0.0", "child": … }`)
+  by its own `.` version, keeping its child rules and their floor records.
+
 ## 0.2.0 - 2026-10-09
 
 ### Changed
