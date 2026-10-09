@@ -38,6 +38,9 @@
 
 ### Fixed
 
+- bump-it's CLI is committed executable, like the other `bin` targets. npm marks
+  it executable on install, which showed up as a change in secure-it's own
+  working copy of this repository and failed its verification.
 - The gate, secure-it and bump-it retry transient GET/HEAD connection failures
   twice with bounded backoff and jitter, including interrupted response bodies.
   No overall timeout is added; caller cancellation and fetch timeouts still apply.
