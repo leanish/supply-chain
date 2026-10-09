@@ -24,6 +24,7 @@ describe("gradleSourceIndex", () => {
     ["named arguments", 'dependencies { implementation(group = "com.acme", name = "lib", version = "1.0") }'],
     ["a Groovy map", "dependencies { implementation group: 'com.acme', name: 'lib', version: '1.0' }"],
     ["named arguments, name first, another between", 'implementation(name = "lib", classifier = "x", group = "com.acme")'],
+    ["named arguments with an expression between", "implementation(group: 'com.acme', version: libVersion, name: 'lib')"],
     ["named arguments over several lines", 'implementation(\n  group = "com.acme",\n  name = "lib",\n)'],
   ])("finds %s in a build script", async (_name, script) => {
     expect(await named({ "build.gradle.kts": script }, "com.acme:lib")).toBe(true);
@@ -36,6 +37,7 @@ describe("gradleSourceIndex", () => {
     ["a longer group", 'implementation("com.acme.tools:lib:1.0")'],
     ["the Kotlin shorthand", 'implementation(kotlin("stdlib"))'],
     ["a nested block comment", '/* outer /* inner */ implementation("com.acme:lib:1.0") */'],
+    ["group and name from two different maps", "def a = [group: 'com.acme', version: libVersion]; def b = [extra: true, name: 'lib']"],
     ["a project group beside another dependency's name", 'group = "com.acme"; dependencies { implementation(group = "org.other", name = "lib", version = "1.0") }'],
   ])("doesn't count %s", async (_name, script) => {
     expect(await named({ "build.gradle.kts": script }, "com.acme:lib")).toBe(false);
@@ -52,6 +54,18 @@ describe("gradleSourceIndex", () => {
     expect(await named({ "buildSrc/src/main/java/Logic.java": groovy.replace("dependencies", "add") }, "com.acme:lib")).toBe(true);
     // In Kotlin the same `/*` opens a nested comment, so the whole rest is still inside it.
     expect(await named({ "build.gradle.kts": '/* a /* b */ implementation("com.acme:lib:1.0")' }, "com.acme:lib")).toBe(false);
+  });
+
+  it("reads past triple-quoted strings, backslashes included", async () => {
+    const kotlin = 'val path = """C:\\tools\\"""\n// implementation("com.acme:commented:1.0")\nval doc = """implementation("com.acme:in-string:1.0") /* not a comment """\nimplementation("com.acme:lib:1.0")';
+    const files = { "build.gradle.kts": kotlin };
+    expect(await named(files, "com.acme:commented")).toBe(false);
+    expect(await named(files, "com.acme:lib")).toBe(true);
+    expect(await named({ "build.gradle": "def doc = \'\'\'it's /* not a comment\'\'\'\nimplementation 'com.acme:lib:1.0'" }, "com.acme:lib")).toBe(true);
+    // Groovy escapes inside triple quotes: an escaped quote run doesn't end the string.
+    const groovy = 'def doc = """a \\""" b // still text"""\n// implementation "com.acme:commented:1.0"\nimplementation "com.acme:lib:1.0"';
+    expect(await named({ "build.gradle": groovy }, "com.acme:commented")).toBe(false);
+    expect(await named({ "build.gradle": groovy }, "com.acme:lib")).toBe(true);
   });
 
   it("keeps code after a nested block comment", async () => {
