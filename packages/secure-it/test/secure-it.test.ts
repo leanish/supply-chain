@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { ConsoleLogger } from "../../agent-basics/src/logger/console-logger.ts";
@@ -18,6 +20,9 @@ import { BASE_SHA, FakeGitHub, HEAD_SHA, ownPr, PUSHED_SHA, RED } from "../../re
 import { planOf, planSection } from "../src/plan-block.ts";
 import { planFor } from "../src/plan.ts";
 import type { VerifyInputs } from "../src/verify.ts";
+import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
+import { materializeInCopy } from "../src/npm-materialize.ts";
+import { preservedFloors } from "../src/floor-checks.ts";
 import { RULES, type SecureItDeps, secureIt } from "../src/secure-it.ts";
 
 const REPO = "leanish/widget";
@@ -98,6 +103,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     }) as ToolRunContext["agent"],
   };
   const deps: SecureItDeps = {
+    materializeNpm: async () => new Map(),
     floorProbe: async () => ({ files: new Map(), findings: [], problems: [] }),
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),
     gradle: () => ({ ofCommit: async () => undefined, ofWorkingTree: async () => undefined }),
@@ -133,6 +139,47 @@ async function vitePr(overrides: Partial<GitHubPullRequest> = {}, fix = vite()):
 }
 
 describe("secure-it run", () => {
+  it("writes computed npm before the agent and protects it through verification", async () => {
+    const h = harness();
+    const files = new Map([["package-lock.json", "computed lock"], ["package.json", "computed manifest"]]);
+    let checked = false;
+    const deps = {
+      ...h.deps,
+      materializeNpm: async () => files,
+      verify: async (inputs: VerifyInputs) => {
+        expect(inputs.npmFiles).toEqual(files);
+        checked = true;
+        return [];
+      },
+    };
+    const context = { ...h.context, agent: (async (call: { input: Record<string, unknown> }) => {
+      expect(h.written).toEqual(["package-lock.json=computed lock", "package.json=computed manifest"]);
+      expect(call.input["toolWritten"]).toEqual(["package-lock.json", "package.json"]);
+      return APPLIED;
+    }) as ToolRunContext["agent"] };
+    expect(await secureIt(deps).run(context)).toMatchObject({ outcome: "published" });
+    expect(checked).toBe(true);
+  });
+
+  it("preserves a major's existing manifest adaptation when rewriting exact npm fields", async () => {
+    const major = vite({ to: { version: "9.0.0", line: "9", aged: true, major: true, blockers: [] } });
+    const h = harness({ fixes: [major] });
+    const planned = '{"dependencies":{"vite":"^9.0.0"}}';
+    const current = '{"dependencies":{"vite":"^9.0.0"},"scripts":{"test":"adapted-check"}}';
+    const deps = { ...h.deps, materializeNpm: async () => new Map([["package.json", planned]]),
+      trees: { ...h.deps.trees, working: () => tree("worktree", { "package.json": current }) } };
+    expect(await secureIt(deps).run(h.context)).toMatchObject({ outcome: "published" });
+    expect(h.written).toContain(`package.json=${current}`);
+  });
+
+  it("reports unsupported npm materialization without running the agent or publishing", async () => {
+    const h = harness();
+    const result = await secureIt({ ...h.deps, materializeNpm: async () => { throw new Error("unsupported npm peer placement"); } }).run(h.context);
+    expect(JSON.stringify(result)).toContain("unsupported npm peer placement");
+    expect(h.agentCalls).toEqual([]);
+    expect(h.github.prs.size).toBe(0);
+  });
+
   it("recomputes and republishes a legacy journal head without same-plan suppression", async () => {
     const pr = await vitePr({ headSha: "9".repeat(40) });
     const h = harness({ prs: [pr] });
@@ -419,6 +466,58 @@ describe("secure-it run", () => {
 
 describe("secure-it review", () => {
   const NEW_BASE = "f".repeat(40);
+
+  it("writes a clean same-plan rebase's real materialization and preserves floor history without an agent", async () => {
+    const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+    const root = { dependencies: { parent: "^1.0.0" } };
+    const packages = { "": root, "node_modules/parent": { version: "1.0.0", dependencies: { vite: "8.3.1", child: "^1" } }, "node_modules/vite": { version: "8.3.1" }, "node_modules/child": { version: "1.0.0" } };
+    const baseFiles: Record<string, string> = { "package.json": json(root), "package-lock.json": json({ lockfileVersion: 3, packages }) };
+    const fix = vite();
+    const plan = await planFor([fix], { lockfiles: new Map([["package-lock.json", JSON.parse(baseFiles["package-lock.json"]!)]]), gradle: undefined, tagCommit: async () => undefined });
+    expect(plan.moves[0]?.mechanism).toBe("npm-override");
+    const floor = { ecosystem: "npm", package: "vite", version: "8.3.3", declaredIn: "package.json", selector: [["vite"]], purpose: "security", advisories: fix.targets, reason: "Original PR security reason", added: "2026-10-05" };
+    const compatibility = { ecosystem: "Maven", package: "a:b", version: "1.0.0", declaredIn: "build.gradle", selector: [":runtimeClasspath"], purpose: "compatibility", advisories: [], reason: "Keep compatible APIs", added: "2026-09-01" };
+    baseFiles[FLOORS_PATH] = json({ floors: [compatibility] });
+    const current: Record<string, string> = { ...baseFiles,
+      "package.json": json({ ...root, overrides: { vite: "8.3.3" } }),
+      "package-lock.json": json({ packages: { ...packages, "node_modules/vite": { version: "8.3.3" } } }),
+      [FLOORS_PATH]: json({ floors: [floor, compatibility] }),
+    };
+    const pr = ownPr({ headRef: "secure-it/2026-10-05-security", body: withMarker(RULES, planSection(plan), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }) });
+    const h = harness({ prs: [pr], baseSha: NEW_BASE, files: baseFiles, fixes: [fix] });
+    h.workspace.setRemoteHead(pr.headRef, HEAD_SHA);
+    const dir = await mkdtemp(join(process.cwd(), ".review-materialize-"));
+    try {
+      for (const [path, text] of Object.entries(baseFiles)) {
+        await mkdir(join(dir, path, ".."), { recursive: true });
+        await writeFile(join(dir, path), text);
+      }
+      const base = tree(NEW_BASE, baseFiles);
+      let verifications = 0;
+      const deps: SecureItDeps = { ...h.deps,
+        trees: { commit: async () => base, working: () => tree("merged", current) },
+        materializeNpm: async (context, source, recomputed, exclude) => materializeInCopy(context, dir, source, recomputed, exclude, async (cwd, args) => {
+          if (args[0] === "--version") return { code: 0, stdout: "11.19.1", stderr: "" };
+          const manifest = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+          await writeFile(join(cwd, "package-lock.json"), json({ packages: { ...packages, "": manifest, "node_modules/vite": { version: "8.3.3" }, "node_modules/child": { version: "1.1.0" } } }));
+          return { code: 0, stdout: "", stderr: "" };
+        }),
+        writeFile: async (_wc, path, text) => { current[path] = text; },
+        verify: async (inputs) => {
+          verifications++;
+          return [...await computedNpmProblems(inputs.npmFiles, inputs.head, false, inputs.base, await h.deps.changedSince(h.context.workingCopy, NEW_BASE)),
+            ...await preservedFloors(inputs.plan, inputs.base, inputs.head, {})];
+        },
+      };
+      expect(await secureIt(deps).review(h.context)).toMatchObject({ reviewed: [{ number: pr.number, outcome: "rebased" }] });
+      expect(verifications).toBe(1);
+      expect(JSON.parse(current["package-lock.json"]!).packages["node_modules/child"].version).toBe("1.1.0");
+      expect(JSON.parse(current[FLOORS_PATH]!).floors).toEqual([floor, compatibility]);
+      expect(h.agentCalls).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   it("recomputes on the moved base: retires a PR whose fix the base already has, before any agent", async () => {
     const fixedOnBase = harness({ prs: [await vitePr()], baseSha: NEW_BASE, fixes: [] });

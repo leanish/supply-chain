@@ -39,6 +39,13 @@ inputSchema:
     conflicted: { type: array, items: { type: string } }
 outputSchema:
   type: object
+  if:
+    properties:
+      outcome: { const: applied }
+  then:
+    required: [publication]
+    properties:
+      publication: { type: object }
   additionalProperties: false
   required: [outcome, summary]
   properties:
@@ -50,7 +57,7 @@ outputSchema:
       minLength: 1
       maxLength: 2000
     publication:
-      type: object
+      type: [object, "null"]
       additionalProperties: false
       required: [title, body, commitMessage]
       properties:
@@ -113,4 +120,4 @@ Commit statuses permissions, never the Checks API. Fix only what this major brok
 
 End with one fenced json block and nothing after it. For applied, include summary and publication (title, body,
 commitMessage): lower-case, concrete text about the update and any adaptation. The tool adds its table and plan block.
-For cannot-apply, give summary only. Never claim a check passed unless you ran it successfully.
+For cannot-apply, give summary and omit publication or set it to null. Never claim a check passed unless you ran it successfully.

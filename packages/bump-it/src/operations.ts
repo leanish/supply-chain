@@ -45,7 +45,7 @@ export interface Computed {
 interface SkillAnswer {
   readonly outcome: "applied" | "cannot-apply";
   readonly summary: string;
-  readonly publication?: PullRequestContent;
+  readonly publication?: PullRequestContent | null;
 }
 
 export async function compute(execution: Execution, unit: Unit, base: Tree, gradle: GradleInputs["head"], peers?: NpmPeerPlanner, wrapper: WrapperCandidates = {}): Promise<Computed> {
@@ -148,7 +148,7 @@ export async function edit(execution: Execution, computed: Computed, mode: "appl
     input: skillInput(context, plan, mode, [...computed.files.keys(), ...(computed.wrapperFiles ?? []).map((file) => file.path)], extra),
     effort: plan.kind === "major" ? context.config.agent.majorEffort : context.config.agent.effort,
   });
-  if (answer.outcome !== "applied" || answer.publication === undefined) {
+  if (answer.outcome !== "applied" || answer.publication == null) {
     throw new Error(`the agent couldn't apply the plan: ${answer.summary}`);
   }
   if (answer.publication.body.includes("<!-- leanish:plan")) {

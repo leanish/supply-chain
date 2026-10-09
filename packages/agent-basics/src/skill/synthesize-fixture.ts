@@ -1,4 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/src/skill/synthesize-fixture.ts at e4f8a1e; see PROVENANCE.md.
+// Local changes: synthesize nullable-object schemas and their restricted conditional object requirements.
 /**
  * Walk an entry-point skill's `outputSchema` (in the ADR-0004 minimal
  * structural subset) and produce a minimum value that satisfies it. Used
@@ -29,7 +30,7 @@ export function synthesizeFixture(schema: unknown): unknown {
     return first === undefined ? null : first;
   }
 
-  const type = s["type"];
+  const type = Array.isArray(s["type"]) ? s["type"][0] : s["type"];
   switch (type) {
     case "string":
       return placeholderString(typeof s["minLength"] === "number" ? s["minLength"] : 0);
@@ -49,6 +50,11 @@ export function synthesizeFixture(schema: unknown): unknown {
       const out: Record<string, unknown> = {};
       for (const key of required) {
         out[key] = synthesizeFixture(properties[key]);
+      }
+      const condition = s["if"] as { properties?: Record<string, { const?: unknown }> } | undefined;
+      const then = s["then"] as { required?: string[]; properties?: Record<string, unknown> } | undefined;
+      if (condition?.properties !== undefined && then !== undefined && Object.entries(condition.properties).every(([key, value]) => out[key] === value.const)) {
+        for (const key of then.required ?? []) out[key] = synthesizeFixture(properties[key] ?? then.properties?.[key]);
       }
       return out;
     }

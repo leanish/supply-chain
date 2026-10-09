@@ -1,5 +1,6 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/schema-subset.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: imports this package's modules from `../src/` instead of `../../src/`.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`; regressions for the
+// nullable-object union and restricted conditional required object (other unions/conditionals still fail).
 import { describe, expect, it } from "vitest";
 
 import { EntrypointSchemaError } from "../src/errors.ts";
@@ -61,5 +62,28 @@ describe("assertSubset (ADR-0004 schema subset)", () => {
         "ask",
       ),
     ).not.toThrow();
+  });
+});
+
+describe("narrow nullable answer schemas", () => {
+  it("allows only the object/null union", () => {
+    expect(() => assertSubset({ type: ["object", "null"], properties: { title: { type: "string" } } }, "tool")).not.toThrow();
+  });
+
+  it.each([["string", "null"], ["object", "string"], ["object", "null", "string"], ["null", "object"]])("rejects other type unions %s", (...types) => {
+    expect(() => assertSubset({ type: types }, "tool")).toThrow(EntrypointSchemaError);
+  });
+
+  it("allows a discriminator to require one non-null object", () => {
+    expect(() => assertSubset({ if: { properties: { outcome: { const: "applied" } } }, then: { required: ["publication"], properties: { publication: { type: "object" } } } }, "tool")).not.toThrow();
+  });
+
+  it.each([
+    { if: { properties: { outcome: { enum: ["applied"] } } }, then: { required: ["publication"], properties: { publication: { type: "object" } } } },
+    { if: { properties: { outcome: { const: "applied" } } } },
+    { then: { required: ["publication"], properties: { publication: { type: "object" } } } },
+    { if: { properties: { outcome: { const: "applied" } } }, then: { required: ["publication"], properties: { publication: { type: ["object", "null"] } } } },
+  ])("rejects general or incomplete conditionals %#", (schema) => {
+    expect(() => assertSubset(schema, "tool")).toThrow(EntrypointSchemaError);
   });
 });

@@ -29,6 +29,27 @@ async function fixture(script?: (dir: string, args: ReadonlyArray<string>, n: nu
   return { dir, inputs, calls };
 }
 describe("exact npm computation", () => {
+  it.each(["routine", "major"] as const)("preserves object-form self-overrides through %s npm computation", async (kind) => {
+    const h = await fixture();
+    const original = { ...manifest, overrides: { frozen: { ".": "^1.0.0", nested: "2.0.0" } } };
+    const base = { ...lock(), packages: { ...lock().packages, "": original } };
+    await writeFile(join(h.dir, "package.json"), json(original));
+    await writeFile(join(h.dir, "package-lock.json"), json(base));
+    let calls = 0;
+    const result = await computeNpm({ ...h.inputs, kind, baseLocks: new Map([["package-lock.json", base]]), npm: async (dir, args) => {
+      if (args[0] === "--version") return { code: 0, stdout: "11.20.0", stderr: "" };
+      const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      // npm rejects a direct edge whose applicable self-override differs from its raw spec.
+      if (root.overrides.frozen["."] !== root.dependencies.frozen) return { code: 1, stdout: "", stderr: "EOVERRIDE frozen" };
+      expect(root.overrides.frozen.nested).toBe("2.0.0");
+      if (++calls === 1) expect(root.dependencies.frozen).toBe("1.0.0");
+      await writeFile(join(dir, "package-lock.json"), json({ packages: { ...base.packages, "": root, "node_modules/parent": { version: "1.1.0", dependencies: { child: "^1" } }, "node_modules/child": { version: "1.1.0" } } }));
+      return { code: 0, stdout: "", stderr: "" };
+    } });
+    expect(JSON.parse(await readFile(join(h.dir, "package.json"), "utf8"))).toEqual({ ...original, dependencies: { ...original.dependencies, parent: "^1.1.0" } });
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages["node_modules/parent"].version).toBe("1.1.0");
+  });
+
   async function nodeTypesFixture(options: { kind: "routine" | "major"; runtime?: number; base?: string; range?: string; induced?: string; alias?: boolean; workspaceRuntime?: number }) {
     const h = await fixture();
     const key = options.alias ? "node-types" : "@types/node";
@@ -86,7 +107,7 @@ describe("exact npm computation", () => {
     expect(computed.packages[h.path].version).toBe("24.20.0");
     expect(result.changes).toContainEqual(expect.objectContaining({ name: "@types/node", from: "24.19.0", to: "24.20.0" }));
     expect(result.notes).toContainEqual(expect.stringContaining("lowest supported Node major (24"));
-    expect(h.calls.map((call) => call[0])).toEqual(kind === "routine" ? ["install", "update", "install", "install"] : ["install", "install", "install"]);
+    expect(h.calls.map((call) => call[0])).toEqual(kind === "routine" ? ["install", "update", "install", "install", "install"] : ["install", "install", "install", "install"]);
     expect(JSON.parse(await readFile(join(h.dir, "package.json"), "utf8")).overrides).toBeUndefined();
   });
 
@@ -121,7 +142,7 @@ describe("exact npm computation", () => {
     const result = await computeNpm({ ...h.inputs, sources: { ...h.inputs.sources, versions } });
     expect(JSON.parse(result.files.get("package-lock.json")!).packages[h.path].version).toBe("24.19.0");
     expect(versions).not.toHaveBeenCalled();
-    expect(h.calls.map((call) => call[0])).toEqual(["install"]);
+    expect(h.calls.map((call) => call[0])).toEqual(["install", "install"]);
   });
 
   it("caps aliased transitive types in a major-induced graph", async () => {
@@ -156,10 +177,11 @@ describe("exact npm computation", () => {
   it("runs install/update/pin/install/restore/install with every release-age flag, returning only changed files", async () => {
     const h = await fixture(async (dir, args, n) => {
       const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-      if (n <= 2) {
-        expect(manifest.dependencies.parent).toBe("^1.1.0");
+      if (n <= 3) {
+        expect(manifest.dependencies.parent).toBe(n <= 2 ? "1.1.0" : "^1.1.0");
+        expect(manifest.dependencies.frozen).toBe(n <= 2 ? "1.0.0" : "^1.0.0");
         await writeFile(join(dir, "package-lock.json"), json(lock("1.2.0", "1.0.0", "1.2.0")));
-      } else if (n === 3) {
+      } else if (n === 4) {
         expect(manifest.dependencies).toEqual({ parent: "1.1.0", frozen: "1.0.0" });
         expect(manifest.overrides).toEqual({ "child@1.0.0": "1.1.0" });
         await writeFile(join(dir, "package-lock.json"), json(lock("1.1.0", "1.1.0", "1.0.0")));
@@ -173,7 +195,7 @@ describe("exact npm computation", () => {
       expect(args).toContain("--ignore-scripts");
     });
     const result = await computeNpm(h.inputs);
-    expect(h.calls.map((call) => call[0])).toEqual(["install", "update", "install", "install"]);
+    expect(h.calls.map((call) => call[0])).toEqual(["install", "update", "install", "install", "install"]);
     expect([...result.files.keys()]).toEqual(["package.json", "package-lock.json"]);
     expect(result.changes.map((change) => [change.name, change.to])).toEqual([["child", "1.1.0"], ["parent", "1.1.0"]]);
   });
@@ -182,12 +204,12 @@ describe("exact npm computation", () => {
       await writeFile(join(dir, "package-lock.json"), json(n === 1 ? lock("2.1.0", "1.0.0", "1.1.0") : lock("2.0.0", "1.0.0")));
     });
     await computeNpm({ ...h.inputs, kind: "major", moves: h.inputs.moves.map((move) => ({ ...move, to: "2.0.0" })) });
-    expect(h.calls.map((call) => call[0])).toEqual(["install", "install", "install"]);
+    expect(h.calls.map((call) => call[0])).toEqual(["install", "install"]);
   });
   it("fails after MAX_PASSES when npm keeps undoing the exact targets", async () => {
     const h = await fixture(async (dir) => { await writeFile(join(dir, "package-lock.json"), json(lock())); });
     await expect(computeNpm(h.inputs)).rejects.toThrow(`after ${MAX_PASSES} passes`);
-    expect(h.calls).toHaveLength(2 + MAX_PASSES * 2);
+    expect(h.calls).toHaveLength(3 + MAX_PASSES * 2);
   });
   it("refuses npm's unplanned manifest rewrite", async () => {
     const h = await fixture(async (dir) => {
@@ -223,7 +245,8 @@ describe("exact npm computation", () => {
         return { code: 0, stdout: "11.20.0", stderr: "" };
       }
       expect(cwd).toBe(root); expect(args[0]).toBe("install");
-      expect(JSON.parse(await readFile(join(root, "ws/package.json"), "utf8")).dependencies.compat).toBe("npm:lib@^2.0.0");
+      expect(JSON.parse(await readFile(join(root, "ws/package.json"), "utf8")).dependencies.compat).toBe(h.calls.length === 0 ? "npm:lib@2.0.0" : "npm:lib@^2.0.0");
+      h.calls.push([...args]);
       await writeFile(join(root, "package-lock.json"), json({ packages: { ...base.packages, ws: { dependencies: { compat: "npm:lib@^2.0.0" } }, "node_modules/compat": { name: "lib", version: "2.0.0" } } }));
       return { code: 0, stdout: "", stderr: "" };
     };
@@ -276,7 +299,7 @@ describe("exact npm computation", () => {
         return { code: 1, stdout: "", stderr: "notarget No matching version found for child@1.0.0 with a date before the window" };
       }
       const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-      const pinned = root.overrides?.["child@1.3.0"] === "1.2.0" || h.calls.length === 4;
+      const pinned = root.overrides?.["child@1.3.0"] === "1.2.0" || h.calls.length === 5;
       await writeFile(join(dir, "package-lock.json"), json(lock("1.0.0", pinned ? "1.2.0" : "1.3.0")));
       return { code: 0, stdout: "", stderr: "" };
     };
@@ -286,7 +309,7 @@ describe("exact npm computation", () => {
       npm,
       sources: { ...h.inputs.sources, published, versions: async () => ["1.0.0", "1.2.0", "1.3.0"] },
     });
-    expect(h.calls.map((args) => args[0])).toEqual(["install", "update", "install", "install"]);
+    expect(h.calls.map((args) => args[0])).toEqual(["install", "update", "install", "install", "install"]);
     for (const args of h.calls) {
       expect(args.filter((arg) => arg.startsWith("--min-release-age-exclude=")))
         .toEqual(["--min-release-age-exclude=@other/*", "--min-release-age-exclude=@own/*", "--min-release-age-exclude=child"]);
@@ -376,11 +399,70 @@ describe("exact npm computation", () => {
       expect(result.notes).toEqual(["child: its locked 1.1.0 is younger than the window, so npm's own window skips it; bump-it's targets still require the age"]);
       expect(published.mock.calls.filter(([name, version]) => name === "child" && version === "1.1.0")).toHaveLength(1);
     } else {
-      expect(invocations).toHaveLength(1);
+      expect(invocations).toHaveLength(2);
       expect(installs[0]?.cwd).toBe(h.dir);
       expect(installs[0]?.args.some((arg) => arg.startsWith("--min-release-age-exclude="))).toBe(false);
       expect(result.notes).toEqual([]);
       expect(published.mock.calls.some(([, version]) => version === "1.1.0")).toBe(false);
     }
+  });
+});
+
+describe("exact targets before npm's first resolution", () => {
+  it.each(["routine", "major"] as const)("prevents excluded-name drift for %s, with simultaneous frozen directs", async (kind) => {
+    let selected = "1.0.0";
+    const h = await fixture(async (dir, args, n) => {
+      const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      if (n === 1 || args[0] === "update") {
+        // A name exemption with a range would select 1.9.0 before the target loop can run.
+        expect(root.dependencies).toEqual({ parent: "1.1.0", frozen: "1.0.0" });
+        selected = root.dependencies.parent;
+      }
+      await writeFile(join(dir, "package-lock.json"), json(lock(selected, kind === "routine" ? "1.1.0" : "1.0.0")));
+    });
+    const result = await computeNpm({ ...h.inputs, kind, window: { days: 7, exclude: ["parent"] } });
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages["node_modules/parent"].version).toBe("1.1.0");
+    expect(JSON.parse(await readFile(join(h.dir, "package.json"), "utf8")).dependencies).toEqual({ parent: "^1.1.0", frozen: "^1.0.0" });
+  });
+
+  it("materializes multiple planned direct companions together before any install", async () => {
+    const h = await fixture(async (dir, _args, n) => {
+      const root = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      if (n === 1) expect(root.dependencies).toEqual({ parent: "1.1.0", frozen: "1.1.0" });
+      await writeFile(join(dir, "package-lock.json"), json(lock("1.1.0", "1.1.0", "1.1.0")));
+    });
+    const moves = [...h.inputs.moves, { ...h.inputs.moves[0]!, name: "frozen", declaredAs: "frozen", to: "1.1.0" }];
+    const result = await computeNpm({ ...h.inputs, kind: "major", moves });
+    const final = JSON.parse(result.files.get("package-lock.json")!);
+    expect(final.packages["node_modules/parent"].version).toBe("1.1.0");
+    expect(final.packages["node_modules/frozen"].version).toBe("1.1.0");
+    expect(JSON.parse(result.files.get("package.json")!).dependencies).toEqual({ parent: "^1.1.0", frozen: "^1.1.0" });
+  });
+
+  it("refreshes a peer-only copy through a declaration, even when npm ignores its overrides", async () => {
+    const h = await fixture();
+    const root = { devDependencies: { parent: "^1" } };
+    const base = { packages: { "": root, "node_modules/parent": { version: "1.0.0", peerDependencies: { vite: "^8" } }, "node_modules/vite": { version: "8.3.2", peer: true } } };
+    await writeFile(join(h.dir, "package.json"), json(root));
+    await writeFile(join(h.dir, "package-lock.json"), json(base));
+    let selected = "8.3.2";
+    const npm: NpmCommand = async (dir, args) => {
+      if (args[0] === "--version") return { code: 0, stdout: "11.19.1", stderr: "" };
+      const manifest = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+      selected = manifest.devDependencies.vite ?? selected;
+      await writeFile(join(dir, "package-lock.json"), json({ packages: { ...base.packages, "": manifest, "node_modules/vite": { version: selected, peer: true } } }));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const result = await computeNpm({ ...h.inputs, moves: [], npm, baseLocks: new Map([["package-lock.json", base]]), sources: { ...h.inputs.sources, versions: async () => ["8.3.2", "8.3.3"] } });
+    expect(JSON.parse(result.files.get("package-lock.json")!).packages["node_modules/vite"].version).toBe("8.3.3");
+    expect(await readFile(join(h.dir, "package.json"), "utf8")).toBe(json(root));
+  });
+
+  it("reports an unsupported nested peer before accepting computed npm bytes", async () => {
+    const h = await fixture();
+    const base = { packages: { "": manifest, "node_modules/parent": { version: "1.0.0", peerDependencies: { vite: "^8" } }, "node_modules/parent/node_modules/vite": { version: "8.3.2" }, "node_modules/frozen": { version: "1.0.0" } } };
+    await writeFile(join(h.dir, "package-lock.json"), json(base));
+    await expect(computeNpm({ ...h.inputs, baseLocks: new Map([["package-lock.json", base]]), sources: { ...h.inputs.sources, versions: async () => ["8.3.2", "8.3.3"] } })).rejects.toThrow("unsupported npm peer placement");
+    expect(h.calls.map((args) => args[0])).toEqual(["install", "update", "install"]);
   });
 });

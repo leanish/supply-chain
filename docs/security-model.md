@@ -52,7 +52,7 @@ Both tools are in this tree: [`secure-it`](../packages/secure-it) and [`bump-it`
 - **Secrets live in the macOS Keychain.** Only the tool's own process reads them, and it never puts them in an environment variable.
 - **Repository code never runs in the tool's process.** The Gradle inventory runs the build under `codex sandbox` with the agent's write profile. Under that profile, checked on macOS, the Keychain isn't reachable, the sensitive home paths (`~/.ssh`, `~/.aws`, the Codex and Claude logins, shell startup files…) can't be read, and writes land only in the working copy, the temp dirs and the build cache. bump-it computes npm changes in exported scratch copies under the same sandbox, with `--package-lock-only --ignore-scripts`, explicit release-age flags and own-scope exclusions. The tool protects exact lockfile bytes and manifest dependency fields; only major migrations may adapt other manifest fields.
 - **The Codex login source stays unreadable.** When a tool reuses a file-backed login, the sandbox denies the resolved `auth.json` and its canonical target when it is a symlink, including with a custom `CODEX_HOME`.
-- **npm's age exclusions do not waive verification.** secure-it excludes planned young or unreadable targets, plus young or unreadable versions already locked in the affected base lockfiles, retaining configured own-scope exclusions. This lets npm keep unrelated locked security fixes. It checks sandboxed npm >= 11.17.0 before the agent uses these flags in any editing mode. Every exclusion is reported; exact target verification and `compare` still judge all induced changes, including their age and identity.
+- **npm's age exclusions do not waive verification.** secure-it excludes planned young or unreadable targets, plus young or unreadable versions already locked in the affected base lockfiles, retaining configured own-scope exclusions. This lets npm keep unrelated locked security fixes. It checks sandboxed npm >= 11.17.0 before tool-run npm uses these flags; agent check commands receive the same exclusions in every mode. Every exclusion is reported; exact target verification and `compare` still judge all induced changes, including their age and identity.
 - **PR CI reads use Actions and commit statuses.** The tools read workflow runs/jobs for the head SHA and the combined commit status, including their failure names for adaptation. No Checks API permission is required. Results from other apps must be published as commit statuses to be visible.
 - **Tool-run Gradle builds never reuse an existing daemon.** Every inventory and tool-run wrapper task passes `--no-daemon` (CI, exported base and working tree): any required daemon is single-use. A sandboxed inventory starts it inside the current build's sandbox; a reused daemon would retain the permissions of the sandbox that started it. Neither inventories nor wrapper generation connects to daemons left in the shared `GRADLE_USER_HOME` by an agent or another build. Agent commands may still start or reuse daemons; tool-run Gradle commands never connect to them. This uses the explicit Gradle flag rather than changing `GRADLE_OPTS`, `org.gradle.jvmargs` or repository properties.
 - **Gradle wrapper generation stays in the tool's sandbox.** bump-it reads services.gradle.org's release metadata
@@ -77,3 +77,16 @@ Both tools are in this tree: [`secure-it`](../packages/secure-it) and [`bump-it`
   Gradle still runs repository code and can misrepresent its own inventory, as documented above; this proof does
   not create an independent Gradle resolver.
 - **A push and its plan recover together.** Before updating a PR branch, the tool journals the intended head/base, title, full body (including the plan), and adaptation count. If the body update fails after the push, the next run or review restores that exact content with a guarded re-read. A legacy head/base-only recovery forces recomputation and verified republication in a run; review refuses readiness or adaptation until then.
+
+
+The tools' npm resolution phase writes all exact declarations together in an exported base, runs sandboxed npm
+with `--package-lock-only --ignore-scripts` and the window/exclusions, restores planned manifest bytes, and installs
+again. It asserts exact target landing before handing files to an agent; final verification protects lock bytes and
+manifest dependency fields (other manifest fields may change only for a major). Exempting a package name from npm's
+window cannot authorize a different explicit target. Peer copies use temporary declarations only when their
+root/workspace placement is representable; unsupported placements fail the unit with a reason. secure-it retains
+npm-induced transitives subject to compare; bump-it additionally selects routine transitive targets in code.
+
+The copied skill runtime allows only the nullable-object type union and a restricted constant-property `if`/`then`
+requiring a non-null object. Both tool schemas use it so `cannot-apply` can omit publication or return null, while
+`applied` must provide a complete publication object. Unknown fields and malformed non-null objects still fail.

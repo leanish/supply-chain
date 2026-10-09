@@ -46,13 +46,13 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `src/skill/output-parse.ts` | `core/runtime/src/skill/output-parse.ts` | copied | — |
 | `src/skill/run-skill.ts` | `core/runtime/src/skill/run-skill.ts` | copied | the agent descriptor, `needs` and the target-credentials resolver are replaced by `SkillContext` (the tool's entrypoints and support skills) and `SkillCall` (coding agent, model, effort, access and the credential env, all from the tool's config) |
 | `src/skill/runner.ts` | `core/runtime/src/skill/runner.ts` | copied | `Access` from `types/access.ts` instead of the agent descriptor |
-| `src/skill/schema-subset.ts` | `core/runtime/src/skill/schema-subset.ts` | copied | — |
+| `src/skill/schema-subset.ts` | `core/runtime/src/skill/schema-subset.ts` | copied | allow only the `[object, null]` type union and constant-property `if`/`then` requiring one non-null object; general unions and conditionals remain rejected |
 | `src/skill/skill-loader.ts` | `core/runtime/src/skill/skill-loader.ts` | copied | — |
 | `src/skill/skill.ts` | `core/runtime/src/skill/skill.ts` | copied | — |
 | `src/skill/slash-command-prompt.ts` | `core/runtime/src/skill/slash-command-prompt.ts` | copied | — |
 | `src/skill/spawn-capture.ts` | `core/runtime/src/skill/spawn-capture.ts` | copied | — |
 | `src/skill/stage-skills.ts` | `core/runtime/src/skill/stage-skills.ts` | copied | — |
-| `src/skill/synthesize-fixture.ts` | `core/runtime/src/skill/synthesize-fixture.ts` | copied | — |
+| `src/skill/synthesize-fixture.ts` | `core/runtime/src/skill/synthesize-fixture.ts` | copied | synthesize nullable-object schemas and their restricted conditional object requirements |
 | `src/skill/tail.ts` | `core/runtime/src/skill/tail.ts` | copied | — |
 | `src/skill/validator.ts` | `core/runtime/src/skill/validator.ts` | copied | — |
 | `src/skill/wc-mount.ts` | `core/runtime/src/skill/wc-mount.ts` | copied | — |
@@ -96,10 +96,12 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/quota.test.ts` | `core/runtime/test/unit/quota.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/run-report.test.ts` | signal cases from `core/runtime/test/unit/run-local-cli.test.ts` | new | on a bare command instead of run-local |
 | `test/run-skill.test.ts` | `core/runtime/test/unit/run-skill-usage.test.ts`, `run-skill-invocation.test.ts` | adapted | the same cases against `SkillContext`/`SkillCall` |
-| `test/schema-subset.test.ts` | `core/runtime/test/unit/schema-subset.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
+| `test/schema-subset.test.ts` | `core/runtime/test/unit/schema-subset.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`; regression cases for nullable-object types and restricted conditional required objects, with other unions/conditionals still rejected |
 | `test/skill-loader.test.ts` | `core/runtime/test/unit/skill-loader.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/spawn-capture-env.test.ts` | `core/runtime/test/unit/spawn-capture-env.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/stage-skills.test.ts` | `core/runtime/test/unit/stage-skills.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/synthesize-fixture.test.ts` | `core/runtime/test/unit/synthesize-fixture.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/usage-totals.test.ts` | `core/runtime/test/unit/usage-totals.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
 | `test/wc-mount.test.ts` | `core/runtime/test/unit/wc-mount.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
+
+The nullable answer-schema and fixture-synthesis changes need mirroring into leanish-development's runtime under the manual-copy rule. `test/tool-answers.test.ts` is new here: it validates both tools' actual skills through `runSkill`; it is not a copied upstream test.

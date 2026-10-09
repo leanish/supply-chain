@@ -13,8 +13,8 @@
  *     (`gradle-floor`). Actions — the `uses:` is pinned to the tag's commit
  *     (`action-pin`).
  *
- * The agent applies version moves and Gradle floor removals; the tool writes
- * proved npm floor removals and verifies every edit (verify.ts).
+ * The tool materializes exact npm moves and proved npm floor removals; the
+ * agent applies Gradle/Actions edits and major adaptations. Every edit is verified.
  */
 import { dirname } from "node:path";
 

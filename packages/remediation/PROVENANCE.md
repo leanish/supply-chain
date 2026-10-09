@@ -12,3 +12,7 @@ Parts of this package are adapted from [leanish/leanish-development](https://git
 | `test/fake-github.ts` | `agents/bump-it/test/fake-github.ts` | adapted | secure-it's rules and PR state; no Dependabot PR factory; CI fixtures use actions-jobs source |
 | `test/run-sh.test.ts` | `agents/bump-it/test/local-run.test.ts` | adapted | the lock, the final-line handshake and the phases, with a fake tool command |
 | `src/config.ts`, `src/review.ts`, `src/command.ts`, `src/journal.ts`, `src/sandboxed.ts`, `src/git-copies.ts`, `src/osv-scanner.ts`, `src/npm-version.ts` and their tests | — | new | — |
+
+The npm graph, repository-override, temporary-pin and manifest-format helpers were moved here from bump-it within supply-chain, with bump-it re-exports preserving its imports. `npm-exact.ts`, `manifest-spec.ts` and `npm-file-checks.ts` are shared materialization/protection code written here, not upstream runtime copies. The secure-it npm phase uses these helpers without bump-it's transitive refresh selector.
+
+Temporary pins align both string and object-form root self-overrides with exact declarations, preserving child rules and `$` references; repository override bytes are restored after resolution.
