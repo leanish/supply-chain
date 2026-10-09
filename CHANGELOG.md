@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The gate counts each unpinned (or unverified) action use: a use of another
+  action in the same repository (`acme/actions/unsafe@main` next to
+  `acme/actions/safe@main`), a second copy of an existing use, or a step
+  repeated through a YAML alias is new and must be pinned, while the unchanged
+  ones stay reported gaps. Before, the subdirectory was ignored, copies were
+  merged, and an aliased step was read once.
+
 ## 0.2.2 - 2026-10-09
 
 ### Fixed
