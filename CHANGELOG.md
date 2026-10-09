@@ -12,6 +12,10 @@
   plugin-added dependencies as declared, so bump-it asked its agent, on every
   run, to move declarations that don't exist. Of the version catalogs, it reads the default
   `gradle/libs.versions.toml` and those the settings import, as Gradle does.
+  When a planned plugin update moves the dependencies that plugin adds (the
+  Kotlin plugin's stdlib), verification lets them change; dependencies the
+  build declares itself must still change only as planned, and the gate judges
+  every version that changes.
 
 ### Changed
 

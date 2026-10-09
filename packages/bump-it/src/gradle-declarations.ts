@@ -1,9 +1,31 @@
 /** Per-declaration versions, including several versions of one package in one inherited configuration. */
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
+import { gradleSourceIndex } from "../../ci/src/gradle-sources.ts";
+import type { Tree } from "../../ci/src/tree.ts";
 import { declaredAt } from "../../remediation/src/edit-checks.ts";
 import type { PlannedMove } from "./plan.ts";
 
-export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, base: GradleInventory | undefined, head: GradleInventory | undefined): string[] {
+/**
+ * Whether a declared dependency at a Gradle location is plugin-driven: named in its build's own sources neither
+ * before nor after (see `gradleSourceIndex`). bump-it never plans those (a plugin update moves them, the Kotlin
+ * plugin's stdlib for one), so verification lets them change; the gate still judges every version that changes.
+ */
+export async function pluginDriven(base: Tree, head: Tree, inventories: ReadonlyArray<GradleInventory | undefined>): Promise<(name: string, location: string) => boolean> {
+  const buildOf = new Map<string, string>();
+  for (const build of inventories.flatMap((inventory) => inventory?.builds ?? [])) {
+    for (const configuration of build.configurations) buildOf.set(gradleLocation(build.build, configuration.id), build.build);
+  }
+  if (buildOf.size === 0) return () => false;
+  const builds = [...new Set(buildOf.values())];
+  const [before, after] = await Promise.all([gradleSourceIndex(base, builds), gradleSourceIndex(head, builds)]);
+  return (name, location) => {
+    const build = buildOf.get(location);
+    const [group, artifact] = name.split(":") as [string, string];
+    return build !== undefined && !before.named(build, group, artifact) && !after.named(build, group, artifact);
+  };
+}
+
+export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, base: GradleInventory | undefined, head: GradleInventory | undefined, driven: (name: string, location: string) => boolean = () => false): string[] {
   const planned = moves.filter((move) => move.mechanism === "gradle-declared");
   const entries = new Map<string, { location: string; name: string }>();
   for (const inventory of [base, head]) {
@@ -22,6 +44,7 @@ export function gradleDeclarationProblems(moves: ReadonlyArray<PlannedMove>, bas
   }
   const problems: string[] = [];
   for (const { location, name } of entries.values()) {
+    if (driven(name, location)) continue;
     const before = declaredAt(base, location, name);
     const after = declaredAt(head, location, name).sort();
     const selected = planned.filter((move) => move.name === name && move.locations.includes(location));

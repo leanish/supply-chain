@@ -91,10 +91,14 @@ async function importedCatalogs(tree: Tree, build: string): Promise<string[]> {
   for (const settings of ["settings.gradle", "settings.gradle.kts"].map((file) => posix.join(build, file))) {
     const text = await tree.read(settings);
     if (text === undefined) continue;
-    for (const match of withoutComments(text, settings.endsWith(".kts")).matchAll(/\bfrom\s*\(?\s*files\s*\(\s*["']([^"']+\.toml)["']\s*\)/g)) {
+    // Only a call counts: each string literal becomes `"#n"`, so an import written inside a string isn't one.
+    const { code, strings } = lexed(text, settings.endsWith(".kts"), (_raw, index) => `"#${index}"`);
+    for (const match of code.matchAll(/\bfrom\s*\(?\s*files\s*\(\s*"#(\d+)"\s*\)/g)) {
+      const file = strings[Number(match[1])]!;
+      if (!file.endsWith(".toml")) continue;
       // One outside the repository can't be read: its entries just don't count.
-      if (posix.isAbsolute(match[1]!)) continue;
-      const path = posix.normalize(posix.join(build, match[1]!));
+      if (posix.isAbsolute(file)) continue;
+      const path = posix.normalize(posix.join(build, file));
       if (path.startsWith("../") || path === "..") continue;
       if (await tree.read(path) !== undefined) found.push(path);
     }
@@ -153,38 +157,39 @@ function textOf(value: unknown): string | undefined {
 
 /** Drops `//` and `/* *\/` comments outside string literals (triple-quoted ones included), keeping line breaks. Only Kotlin's block comments nest. */
 function withoutComments(text: string, kotlin: boolean): string {
-  let out = "";
-  let quote: string | undefined;
+  return lexed(text, kotlin, (literal) => literal).code;
+}
+
+/**
+ * The code without comments, with each string literal (quotes included) replaced by what `literal` returns for it;
+ * `strings` holds each literal's contents, in order. Strings: `"..."`, `'...'` (escapes skipped) and triple-quoted
+ * ones (Kotlin's raw strings have no escapes, Groovy's do). Only Kotlin's block comments nest.
+ */
+function lexed(text: string, kotlin: boolean, literal: (raw: string, index: number) => string): { code: string; strings: string[] } {
+  let code = "";
+  const strings: string[] = [];
   for (let i = 0; i < text.length; i++) {
     const char = text[i]!;
+    const quote = text.startsWith('"""', i) ? '"""' : !kotlin && text.startsWith("'''", i) ? "'''" : char === '"' || char === "'" ? char : undefined;
     if (quote !== undefined) {
-      out += char;
-      if (char === "\\") out += text[++i] ?? "";
-      else if (char === quote) quote = undefined;
-      continue;
-    }
-    const triple = text.startsWith('"""', i) ? '"""' : !kotlin && text.startsWith("'''", i) ? "'''" : undefined;
-    if (triple !== undefined) {
-      // A triple-quoted string runs to the next triple quote: Kotlin's raw strings have no escapes, Groovy's do.
-      let end = i + 3;
-      while (end < text.length && !text.startsWith(triple, end)) end += !kotlin && text[end] === "\\" ? 2 : 1;
-      end = Math.min(text.length, end + 3);
-      out += text.slice(i, end);
+      const escapes = quote.length === 1 || !kotlin;
+      let end = i + quote.length;
+      while (end < text.length && !text.startsWith(quote, end) && !(quote.length === 1 && text[end] === "\n")) end += escapes && text[end] === "\\" ? 2 : 1;
+      end = Math.min(text.length, end + (text.startsWith(quote, end) ? quote.length : 0));
+      strings.push(text.slice(i + quote.length, Math.max(i + quote.length, end - (text.startsWith(quote, end - quote.length) ? quote.length : 0))));
+      code += literal(text.slice(i, end), strings.length - 1);
       i = end - 1;
-    } else if (char === '"' || char === "'") {
-      quote = char;
-      out += char;
     } else if (char === "/" && text[i + 1] === "/") {
       while (i < text.length && text[i] !== "\n") i++;
-      out += "\n";
+      code += "\n";
     } else if (char === "/" && text[i + 1] === "*") {
       let depth = 0;
       for (; i < text.length; i++) {
-        if (text[i] === "/" && text[i + 1] === "*" && (kotlin || depth === 0)) { depth++; i++; } else if (text[i] === "*" && text[i + 1] === "/") { depth--; i++; } else if (text[i] === "\n") out += "\n";
+        if (text[i] === "/" && text[i + 1] === "*" && (kotlin || depth === 0)) { depth++; i++; } else if (text[i] === "*" && text[i + 1] === "/") { depth--; i++; } else if (text[i] === "\n") code += "\n";
         if (depth === 0) break;
       }
-    } else out += char;
+    } else code += char;
   }
-  return out;
+  return { code, strings };
 }
 
