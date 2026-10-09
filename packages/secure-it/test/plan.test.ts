@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SecurityFix } from "../../ci/src/candidates.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
-import { coupledWork, planFor, selectWork } from "../src/plan.ts";
+import { coupledWork, planFor, selectWork, splitByAge } from "../src/plan.ts";
 
 function fix(overrides: Partial<SecurityFix> & Pick<SecurityFix, "name" | "from">): SecurityFix {
   return {
@@ -173,5 +173,32 @@ describe("planFor", () => {
     const lockfiles = new Map([["package-lock.json", { packages: { "": { name: "app", dependencies: { a: "^1", b: "^1" } }, "node_modules/a": { version: "1.0.1" }, "node_modules/b": { version: "1.0.1" } } }]]);
     const plan = await planFor([fix({ name: "a", from: "1.0.1", malicious: true }), fix({ name: "b", from: "1.0.1", malicious: true })], { lockfiles, gradle: undefined, tagCommit: NO_TAGS });
     expect(plan).toMatchObject({ topic: "malware", malware: true, packages: ["npm|a", "npm|b"] });
+  });
+});
+
+describe("splitByAge", () => {
+  const young = (name: string, major = false) => fix({ name, from: "1.0.0", to: { version: major ? "2.0.0" : "1.0.1", line: major ? "2" : "1", aged: false, major, blockers: [] } });
+
+  it("moves young routine fixes and everything coupled to them into a held unit", async () => {
+    const companion = { name: "peer", from: "1.0.0", to: "1.0.2", locations: ["node_modules/peer"], line: "1", aged: true, declarations: [] };
+    const peers = { resolve: async () => ({ additions: [companion], blocked: [], sets: [["vite", "peer"]] }) };
+    const selected = await coupledWork([young("vite"), fix({ name: "left-pad", from: "1.0.0" })], peers);
+    expect(selected.units.map((unit) => [unit.topic, unit.held, names(unit.work), unit.coupled])).toEqual([
+      ["security", false, ["left-pad"], []],
+      ["security-cooldown", true, ["vite", "peer"], [["npm|vite", "npm|peer"]]],
+    ]);
+  });
+
+  it("keeps an all-aged batch whole, and holds a young major or malware unit whole", () => {
+    const aged = { kind: "routine" as const, topic: "security", work: [fix({ name: "a", from: "1.0.0" })] };
+    expect(splitByAge(aged)).toEqual([{ ...aged, held: false }]);
+    const major = { kind: "major" as const, topic: "lib-major", work: [young("lib", true)] };
+    expect(splitByAge(major)).toEqual([{ ...major, held: true }]);
+    const malware = { kind: "malware" as const, topic: "malware", work: [young("bad"), fix({ name: "ok", from: "1.0.0", malicious: true })] };
+    expect(splitByAge(malware)).toEqual([{ ...malware, held: true }]);
+  });
+
+  it("holds the whole batch when every fix is young", () => {
+    expect(splitByAge({ kind: "routine", topic: "security", work: [young("a"), young("b")] }).map((unit) => [unit.topic, names(unit.work)])).toEqual([["security-cooldown", ["a", "b"]]]);
   });
 });

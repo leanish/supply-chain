@@ -1,8 +1,9 @@
 // Copied from leanish/leanish-development core/runtime/src/needs/github-client.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them.
+// Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them; keeps each job's steps.
 import { RuntimeError } from "../errors.ts";
 import type {
   GitHubCheckRun,
+  GitHubCheckStep,
   GitHubClient,
   GitHubCommitStatus,
   GitHubHeadChecks,
@@ -120,7 +121,7 @@ export function createGitHubClient(options: CreateGitHubClientOptions): GitHubCl
       else if (jobs.length === 0 && latestRunByGroup.get(group)?.id === run.id) keep(`jobless run ${group}`, run);
       for (const job of jobs) keep(`job ${group}/${job.name}`, job);
     }
-    return [...newest.values()].map(({ name, status, conclusion }) => ({ name, status, conclusion }));
+    return [...newest.values()].map(({ name, status, conclusion, steps }) => (steps === undefined ? { name, status, conclusion } : { name, status, conclusion, steps }));
   }
 
   /** Every page of a `{ total_count, <field>: [...] }` listing. */
@@ -370,7 +371,20 @@ function toWorkflowRun(operation: string, value: unknown): WorkflowRun {
 }
 
 function toJob(operation: string, value: unknown): IdentifiedRun {
-  return identifiedRun(operation, value, "malformed workflow job");
+  const job = identifiedRun(operation, value, "malformed workflow job");
+  const steps = record(operation, value)["steps"];
+  if (steps === undefined || steps === null) return job;
+  if (!Array.isArray(steps)) throw new GitHubApiError(operation, "malformed workflow job steps");
+  return { ...job, steps: steps.map((step) => toStep(operation, step)) };
+}
+
+function toStep(operation: string, value: unknown): GitHubCheckStep {
+  const step = record(operation, value);
+  const conclusion = step["conclusion"];
+  if (typeof step["name"] !== "string" || typeof step["status"] !== "string" || (conclusion !== null && typeof conclusion !== "string")) {
+    throw new GitHubApiError(operation, "malformed workflow job step");
+  }
+  return { name: step["name"], status: step["status"], conclusion };
 }
 
 function identifiedRun(operation: string, value: unknown, malformed: string): IdentifiedRun {

@@ -4,7 +4,9 @@
  *     snapshot for both, and the checks on what head adds or changes;
  *   - `scan` (the default branch, on push and daily): every finding in one
  *     tree fails unless excepted.
- * Config and exceptions come from head: they're part of what would land.
+ * Config and exceptions come from head: they're part of what would land;
+ * the release-age wait and own packages are the stricter of base's and
+ * head's (`cooldown.ts`), so a PR can't loosen what judges it.
  * Gradle inventories come in as data, made by whoever ran the build; actions
  * are read from the workflows and resolved with GitHub.
  */
@@ -25,10 +27,11 @@ import { sourceProblems } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { osvScannerVersion } from "./osv-scanner.ts";
 import { versionKey } from "./package-version.ts";
+import { type CooldownEvaluation, strictestPolicy } from "./cooldown.ts";
 import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
 import { gatherRequiredProofs, verifiedRequiredProofs, verifiedSecurityRoots } from "./npm-required-gate.ts";
-import { type ChangedVersion, isYoung, releaseAgeProblems } from "./release-age.ts";
+import { type ChangedVersion, isYoung, reviewReleaseAge } from "./release-age.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { type SnapshotOptions, takeSnapshot } from "./take-snapshot.ts";
 import type { Tree } from "./tree.ts";
@@ -59,6 +62,7 @@ export interface GateOutcome {
 /** Head findings from the same snapshot that judged the comparison, including inherited and excepted ones. */
 export interface CompareOutcome extends GateOutcome {
   readonly headFindings: ReadonlyArray<Finding>;
+  readonly cooldown: CooldownEvaluation;
 }
 
 export interface Settings {
@@ -78,6 +82,15 @@ export async function readSettings(head: Tree): Promise<Settings> {
     exceptions: exceptionsText === undefined ? NO_EXCEPTIONS : parseExceptions(parseJson(exceptionsText, EXCEPTIONS_PATH)),
     floors: floorsText === undefined ? [] : parseFloors(parseJson(floorsText, FLOORS_PATH)),
   };
+}
+
+/** Base's config for the stricter policy; the defaults, with the reason, when it doesn't parse (the PR may fix it). */
+async function baseConfig(base: Tree): Promise<{ readonly config: Config; readonly problem: string | undefined }> {
+  try {
+    return { config: (await readSettings(base)).config, problem: undefined };
+  } catch (err) {
+    return { config: DEFAULT_CONFIG, problem: `base's settings don't parse, so its cooldown policy is unknown: ${(err as Error).message}` };
+  }
 }
 
 /** What head has to inventory under its own settings: the CLI uses it to know which Gradle builds to run. */
@@ -148,8 +161,10 @@ export interface GradleInputs {
 
 export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, gradle: GradleInputs = {}): Promise<CompareOutcome> {
   const version = await osvScannerVersion({ binary: env.osvScanner, run: env.run });
-  const { config, configText, exceptions, floors } = await readSettings(head);
-  const sources = await sourcesOf(head, config);
+  const { config: headConfig, configText, exceptions, floors } = await readSettings(head);
+  const basePolicy = await baseConfig(base);
+  const config = strictestPolicy(headConfig, basePolicy.config);
+  const sources = await sourcesOf(head, headConfig);
   const headInventory = await readInventory(head, sources, { gradle: gradle.head });
   if (isEmpty(headInventory)) throw new Error(`${head.id} has no lockfile, Gradle build or workflow for the gate to check`);
   const baseInventory = await readInventory(base, await baseSources(base, sources), { missingLockfilesAreEmpty: true, gradle: gradle.base });
@@ -198,10 +213,14 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   const proved = await verifiedRequiredProofs(required, rootChanges, candidates, snapshot, catalogs.npm, config, now);
   problems.push(...proved.problems);
-  problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange, required: proved.versions })));
+  const age = await reviewReleaseAge(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange, required: proved.versions });
+  problems.push(...age.problems);
   const floorCheck = await checkFloors(floors, headInventory, head);
   return {
     headFindings,
+    cooldown: basePolicy.problem === undefined
+      ? { evaluated: true, releaseAgeDays: config.releaseAgeDays, held: age.held }
+      : { evaluated: false, reason: basePolicy.problem },
     failures: [...verdict.failures, ...problems, ...floorCheck.failures],
     warnings: verdict.warnings,
     notes: [...verdict.notes, ...floorCheck.notes, ...proved.notes],

@@ -142,6 +142,31 @@ search; exhaustion blocks the proof. Required targets must land in head and use 
 snapshot. Ordinary bumps do not qualify, and this extension
 applies only to npm; Maven/Gradle and Actions keep their existing age rules.
 
+## The cooldown: young versions are held, however justified
+
+Passing the release-age rule makes a young version *acceptable*, not *trusted*. Whoever controls a publisher (a
+stolen token, a hijacked release workflow) can put malware inside a real fix, and an advisory's severity says how bad
+the hole is, not how trustworthy its fix is: urgency is exactly what such an attack would lean on. So every version
+a PR adds or changes that is younger than `releaseAgeDays` is **held**, whether the rule picked it, a security fix
+requires it, or a `releaseAge` exception names it:
+
+- The `supply-chain` verdict is unchanged: it says whether the change is right.
+- The separate `cooldown` job stays red while anything is held (and whenever it can't tell: a comparison that didn't
+  pass, a missing report, a report for another head). Its log and step summary list each held version and when it
+  turns old enough. Require it next to `supply-chain` (see GitHub settings below).
+- The policy that judges a PR is the stricter of base's and head's: the longer `releaseAgeDays`, and own packages
+  only where both list them. A PR can't loosen the cooldown that judges it; change the policy in a PR of its own
+  first. A base whose settings don't parse leaves the cooldown unevaluated (red).
+- Exceptions don't clear a hold. Taking a held version before its time is a person's decision: every other check
+  green, the reason written on the PR, then an admin merge past the red `cooldown` check. Where nothing enforces
+  the check (no ruleset, e.g. a private repository on the free plan), the same: a merge with the reason written.
+- The daily rescan doesn't re-judge the cooldown. secure-it retires its held PRs once everything aged and opens a
+  fresh one; for a person's PR, re-run the **whole** workflow on the current revision after the time it gives (a
+  re-run of the `cooldown` job alone reads the old report and stays red).
+
+`compare` writes the held versions into its report (`cooldown`, report schema 2); `supply-chain cooldown --report
+<file> --head <sha>` reads it, refusing anything but a complete, passing comparison of that exact head.
+
 ## Release age (Maven)
 
 Every Maven version a change adds needs the same wait, own packages aside. Its publish time is the POM's `Last-Modified` in the first configured repository that has it (`maven.repositories`, default Maven Central and the Gradle Plugin Portal, both immutable, so a file's date is its upload; Renovate reads Maven release dates the same way). A version none of them has fails: the gate can't tell its age. A young security fix passes by the rule above, or by a `releaseAge` exception (with `"ecosystem": "Maven"`) checked against the snapshot like npm's. What a version replaces is read per configuration: upgraded at runtime while tests keep the old version, it still replaces the runtime one.
@@ -226,13 +251,13 @@ jobs:
 
 What runs where:
 
-- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check.
+- **On a PR:** two inventory jobs (base and head) run the Gradle builds with a read-only token; the `supply-chain` job compares their output and the lockfiles and workflows read from git, and its result is the verdict. It runs with `if: always()` and fails when an inventory job didn't succeed, so a skipped job never satisfies the required check. The `cooldown` job then reads the verdict's report: red while it holds young versions, and red when the comparison didn't pass (also `if: always()`, so it's never skipped on a PR).
 - **On pushes to the default branch and daily:** the full `scan`.
 - **Daily (and on `workflow_dispatch`):** every open PR's head is merged onto its base's current tip (the same commit in every job; the head itself, against its merge base, when the merge conflicts). One job per PR inventories the base, uploads it before any PR code runs, then inventories the merged PR. A single `rescan` job, the only one with write access and running no code from the repository, then goes through the PRs: re-reads each (still open, same head, same base), compares it with today's advisories, checks npm signatures in clean temporary projects only when comparison passes, and posts the verdict as a commit status on the PR's head, named like the required check, unless a newer status of that name exists. A PR whose inventories or comparison didn't complete gets a failure. Verdicts never leave that job, so nothing another job uploads can stand in for one; the tools it runs (npm, git) never get its token in their environment.
 
 **GitHub settings**
 
-- A ruleset (or branch protection) on the default branch requiring the check `supply-chain / supply-chain` (`<your job id> / supply-chain`; pass `required-check` if you call the job something else), from GitHub Actions. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
+- A ruleset (or branch protection) on the default branch requiring the checks `supply-chain / supply-chain` and `supply-chain / cooldown` (`<your job id> / …`; pass `required-check` if you call the job something else), from GitHub Actions. secure-it and bump-it recognise the cooldown hold by those job names and the job's steps. GitHub then requires both the check and the daily status of that name to pass: a red status blocks a PR whose own check was green, and the latest status wins. Required checks on private repositories need a paid plan.
 - Actions enabled, allowing the actions this workflow uses (actions/checkout, setup-node, setup-java, upload-artifact, download-artifact).
 - The dependency graph and Dependabot **alerts** on; Dependabot version and security updates off (secure-it and bump-it make those PRs, with this gate's rules).
 

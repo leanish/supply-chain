@@ -2,6 +2,7 @@
 import { basename } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
+import { type CooldownEvaluation, heldLines } from "../../ci/src/cooldown.ts";
 import { type GateEnvironment, type GradleInputs, readSettings, runCompare, treeSources } from "../../ci/src/gate.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, FLOORS_FILE, isDependencyFile, policyFence } from "../../remediation/src/edit-checks.ts";
@@ -66,7 +67,13 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     return problems;
   }
   const compared = await runCompare(base, head, inputs.env, gradle);
-  return compared.failures.map((failure) => `compare: ${failure}`);
+  return [...compared.failures.map((failure) => `compare: ${failure}`), ...cooldownProblems(compared.cooldown)];
+}
+
+/** bump-it never takes a version under the wait (own packages aside), so anything the cooldown holds is a mistake. */
+function cooldownProblems(cooldown: CooldownEvaluation): string[] {
+  if (!cooldown.evaluated) return [`the cooldown can't be evaluated: ${cooldown.reason}`];
+  return heldLines(cooldown.held).map((line) => `under the release-age wait: ${line}`);
 }
 
 export function wrapperFilesMatch(plan: BumpPlan, files: ReadonlyArray<WrapperFile>): boolean {

@@ -1,5 +1,5 @@
 // Copied from leanish/leanish-development core/runtime/test/unit/github-client.test.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures.
+// Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures, and job steps.
 import { describe, expect, it } from "vitest";
 
 import { createGitHubClient, GitHubApiError } from "../src/github/github-client.ts";
@@ -130,6 +130,25 @@ describe("createGitHubClient", () => {
       { name: "build", status: "completed", conclusion: "success" },
       { name: "lint", status: "completed", conclusion: "skipped" },
     ]);
+  });
+
+  it("keeps an Actions job's steps, so a caller can tell which step failed", async () => {
+    const steps = [
+      { name: "Evaluate the cooldown", status: "completed", conclusion: "success", number: 1 },
+      { name: "Hold the young versions", status: "completed", conclusion: "failure", number: 2 },
+    ];
+    const { checks } = await actionsChecks([wfRun(5, "CI", "completed", "failure")], [[{ ...job(50, "gate / cooldown", "completed", "failure"), steps }]]);
+    expect(checks.checkRuns).toEqual([{
+      name: "gate / cooldown", status: "completed", conclusion: "failure",
+      steps: [
+        { name: "Evaluate the cooldown", status: "completed", conclusion: "success" },
+        { name: "Hold the young versions", status: "completed", conclusion: "failure" },
+      ],
+    }]);
+  });
+
+  it("rejects malformed job steps", async () => {
+    await expect(actionsChecks([wfRun(5, "CI", "completed", "failure")], [[{ ...job(50, "c", "completed", "failure"), steps: [{ name: 1 }] }]])).rejects.toThrow("malformed workflow job step");
   });
 
   it("reads every page of workflow runs for the exact head SHA", async () => {

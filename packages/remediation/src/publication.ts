@@ -164,9 +164,17 @@ export async function markReady(context: PublicationContext, number: number, exp
  * and delete its branch unless someone pushed to it since (then it stays, for
  * a human to look at).
  */
-export async function closeAndDelete(context: PublicationContext, number: number, expectedHead: string, comment: string): Promise<void> {
+export async function closeAndDelete(
+  context: PublicationContext,
+  number: number,
+  expectedHead: string,
+  comment: string,
+  options: { readonly onlyDraft?: boolean } = {},
+): Promise<"closed" | "not-draft"> {
   const { github, repo, logger, rules } = context;
   const current = await reReadOwn(context, number, expectedHead);
+  // A person who marked it ready took the decision over; it stays open.
+  if (options.onlyDraft === true && !current.isDraft) return "not-draft";
   await github.closePullRequest({ repo, number });
   try {
     await github.createComment({ repo, number, body: comment });
@@ -178,6 +186,7 @@ export async function closeAndDelete(context: PublicationContext, number: number
   if (deleted.kind === "moved") {
     logger.warn(`${rules.tool}: kept the closed PR's branch — it moved after the check`, { repo, number, branch: current.headRef, found: deleted.found });
   }
+  return "closed";
 }
 
 async function createDraftPullRequest(

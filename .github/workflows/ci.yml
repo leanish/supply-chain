@@ -30,7 +30,8 @@ jobs:
       pull-requests: read
       statuses: write
 
-  # Keep the existing required check name; the reusable gate decides its result.
+  # Keep the existing required check name; the reusable gate decides its result. A cooldown hold alone doesn't fail
+  # it: `gate / cooldown` reports that (and is required too), so the tests below still run on a held PR.
   supply-chain:
     needs: gate
     if: always()
@@ -39,7 +40,9 @@ jobs:
       - name: Require a successful supply-chain gate
         env:
           GATE_RESULT: ${{ needs.gate.result }}
-        run: test "$GATE_RESULT" = "success"
+          COMPARISON_PASSED: ${{ needs.gate.outputs.comparison-passed }}
+          COOLDOWN_HELD: ${{ needs.gate.outputs.cooldown-held }}
+        run: test "$GATE_RESULT" = "success" || { test "$COMPARISON_PASSED" = "true" && test "$COOLDOWN_HELD" = "true"; }
 
   check:
     needs: supply-chain

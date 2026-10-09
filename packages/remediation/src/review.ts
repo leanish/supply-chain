@@ -15,6 +15,13 @@
  *      per PR, each attempt counted in its body before the agent starts (a
  *      failed attempt counts too); after that, close it with a comment.
  *
+ * A PR the cooldown holds (`steps.cooldown`: it takes versions younger than
+ * the release-age wait) never becomes ready on the tool's say: green CI, or
+ * only the gate's cooldown failing, leaves it a draft. Once every held version
+ * has aged, the draft is retired before anything else, and the tool's next run
+ * plans again from scratch, with fresh checks. A person who marked it ready
+ * owns it: the tick leaves it alone.
+ *
  * Steps 1 and 3 need no model.
  */
 import type { GitHubClient, GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
@@ -22,7 +29,7 @@ import type { Logger } from "../../agent-basics/src/types/logger.ts";
 import type { PreparedBranch, WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import type { Workspace } from "../../agent-basics/src/working-copy/workspace.ts";
 
-import { classifyCi } from "./ci-state.ts";
+import { classifyCi, onlyCooldownHolds } from "./ci-state.ts";
 import type { PublicationJournal } from "./journal.ts";
 import { type OwnPullRequests, type PullRequestState, stateOf } from "./own-pr.ts";
 import { closeAndDelete, markReady, ownOpenPullRequests, type PublicationContext, recordState, recoverPublication } from "./publication.ts";
@@ -42,6 +49,8 @@ export type ReviewOutcome =
   | "adapted"
   | "adaptation-unchanged"
   | "closed"
+  | "held"
+  | "graduated"
   | "error";
 
 export interface ReviewEntry {
@@ -64,6 +73,18 @@ export interface ReviewSteps {
   rebase(pr: GitHubPullRequest, merge: BaseMerge, context: PublicationContext): Promise<"retired" | "rebased">;
   /** CI failed: the agent adapts the change once (`attempt` from 1); whether a change was published. */
   adapt(pr: GitHubPullRequest, prepared: PreparedBranch, context: PublicationContext, attempt: number): Promise<boolean>;
+  /**
+   * Whether the PR's recorded plan takes versions younger than the wait, and
+   * whether they've all aged by now; undefined when it holds none. Throws on
+   * a recorded hold it can't read, so such a PR is never marked ready.
+   */
+  cooldown?(pr: GitHubPullRequest): CooldownState | undefined;
+}
+
+/** A held PR's versions: some still `waiting`, or all `aged`; `until` is when the last one turns old enough. */
+export interface CooldownState {
+  readonly kind: "waiting" | "aged";
+  readonly until: string;
 }
 
 /** The PR's branch with the new base merged in, or with the merge in progress and its conflicted paths. */
@@ -115,6 +136,19 @@ async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubP
     throw new Error(`${pr.url}: journal recovery did not restore the publication`);
   }
 
+  const cooldown = steps.cooldown?.(pr);
+  if (cooldown !== undefined && !pr.isDraft) return result("left-alone", "a person marked the held PR ready");
+  if (cooldown?.kind === "aged") {
+    const closed = await closeAndDelete(
+      publication,
+      pr.number,
+      pr.headSha,
+      `Every version this PR took before the release-age wait ended has now aged past it (the last on ${cooldown.until}). ${context.rules.tool} retires this draft instead of promoting it: its next run plans again from the current default branch and opens a PR with fresh checks, held again only if something in it is still young.`,
+      { onlyDraft: true },
+    );
+    return closed === "closed" ? result("graduated", `held until ${cooldown.until}`) : result("left-alone", "a person marked the held PR ready");
+  }
+
   const checkedOut = await context.workspace.prepareBranch(context.workingCopy, { branch: pr.headRef, start: "remote" });
   if (checkedOut.kind !== "prepared") throw new Error(`${pr.headRef} couldn't be checked out`);
   if (checkedOut.prepared.remoteHeadSha !== pr.headSha) {
@@ -134,9 +168,12 @@ async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubP
     return result(outcome, `base moved from ${state.base.slice(0, 12)} to ${checkedOut.prepared.baseSha.slice(0, 12)}`);
   }
 
-  const ci = classifyCi(await context.github.headChecks({ repo: context.repo, sha: pr.headSha }));
+  const checks = await context.github.headChecks({ repo: context.repo, sha: pr.headSha });
+  const ci = classifyCi(checks);
   if (ci === "pending") return result("pending");
   if (ci === "none") return result("no-checks", "no check has passed or failed on the head yet");
+  // Green, or red only because the gate's cooldown holds it: waiting, not ready and not broken.
+  if (cooldown !== undefined && (ci === "success" || onlyCooldownHolds(checks))) return result("held", `until ${cooldown.until}`);
   if (ci === "success") {
     if (!pr.isDraft) return result("already-ready");
     await markReady(publication, pr.number, pr.headSha);

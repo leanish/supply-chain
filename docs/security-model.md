@@ -9,6 +9,7 @@ What can run where, and which credential it can reach.
 | `plan` | no | `contents: read` | which mode and sides this run has |
 | `inventory` (every run: base and head on PRs, head otherwise) | yes: Gradle runs the build to learn what it resolves | `contents: read` (fork PRs: read-only regardless) | the inventory file, as an artifact |
 | `supply-chain` (the verdict) | no: lockfiles and workflows are read from git objects, the Gradle inventory as data | `contents: read` | its report |
+| `cooldown` (PRs) | no: it reads the verdict's report | `contents: read` | nothing; red while young versions are held |
 | `rescan-plan` (schedule, dispatch) | no | `contents: read`, `pull-requests: read` | the list of PRs |
 | `rescan-inventory` (one per open PR) | yes: the base's build, then the PR's | `contents: read`, passed only to the one `git fetch` that needs it | the two inventories (base first, uploaded before PR code runs) |
 | `rescan` | no | `contents: read`, `pull-requests: read`, `statuses: write` | commit statuses on PR heads |
@@ -30,6 +31,22 @@ The publisher runs the trusted runner's npm twice: `npm ci` followed by `npm aud
 Registry flags come only from the gate's `npm.registries` configuration (HTTP(S), without embedded credentials). The first allowed registry is the default; scoped packages use the allowed registry recorded in their lockfile sources. Conflicting registries for the same scope fail. Git dependencies, tarball URL dependency specifiers and external file dependencies are refused; local links are permitted only for staged workspaces. Locked registry sources are checked again before invoking npm. The fixed Git executable also refuses Git access if npm encounters a specifier not covered by those checks.
 
 Temporary projects, homes and caches are removed on success or failure. This boundary prevents repository-selected executable execution; it is not an operating-system sandbox for npm itself. It trusts the runner's Node/npm installation and the registry archive handling and signature-verification implementation in npm. Private registry credentials and repository-specific proxy settings are deliberately unavailable to this verifier.
+
+## Young versions: the cooldown
+
+The release-age wait exists because malicious releases (a stolen publishing token, a hijacked release workflow) tend
+to be noticed and pulled within days. A security fix younger than the wait is exactly what such an attacker would
+ship: the advisory creates urgency, and its severity, however high, says nothing about whether the fixing release
+is genuine. Proving that a version is the rule-picked fix, or the lowest version that fix requires, limits *which*
+young version comes in; it doesn't make that version safe, and the build, tests and CI run it either way.
+
+So the gate holds every young version a PR adds or changes, justified or not: the separate `cooldown` check stays
+red until the last one turns old enough, under the stricter of base's and head's policy, and no exception clears it.
+secure-it puts young fixes in a draft PR of their own (so the aged ones aren't held back), opens it with a warning
+and a table of what came early and why (with provenance, publisher changes and new install scripts, for
+information), never marks it ready, and retires it once everything aged, opening a freshly verified PR instead.
+Taking it earlier is a person's explicit decision: every other check green, the reason written on the PR, an admin
+merge.
 
 ## The gate itself
 

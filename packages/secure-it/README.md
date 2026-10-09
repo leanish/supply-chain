@@ -37,6 +37,9 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | Gradle | a declared dependency | change its version |
    | Gradle | a transitive one | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
    | Actions | any | pin to the tag's commit |
+   - **Young fixes go apart.** Fixes whose target is younger than the release-age wait, everything coupled to them,
+     and any fix whose required npm dependency is young form their own routine unit (topic `security-cooldown`), so
+     the aged fixes aren't held back. A major or malware unit with a young version stays whole and is held.
 5. **Looks at its open PRs first.**
    - An open PR for the same routine/major/malware unit, with an identical plan and a recognised head: nothing to do; its review owns it. The unit reports `already-open`. Other major units still proceed. An already-open malware unit is left to review without planning other work.
    - One with a different plan, while its head is still the tool's: that PR is reconciled. The default branch is merged into it, every file it changed goes back to the base's content, and the new plan is applied on top, so nothing the old plan did lingers. It's pushed as a normal commit.
@@ -132,6 +135,21 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - A clean merge with the same plan also refreshes npm files before verification, without an agent. Matching npm floors keep their recorded date and reason; merged Gradle floor records remain intact.
   - Either way the result is verified like a run (including the one routine retry and visible omissions) and pushed, with the plan in the PR. Fixes remained on the new base, so an edit that leaves the base as it was fails verification; it doesn't retire the PR.
 - **CI failed (version-fix units):** the agent adapts, at most twice, and the result is verified before it's pushed. CI and failing names come from the head SHA's Actions runs/jobs plus commit statuses; no Checks permission is needed.
+- **A held PR** (the verifying comparison held young versions; its plan records them) never becomes ready on the
+  tool's say. Green CI, or only the gate's `cooldown` job failing in its hold step after a passing comparison, is
+  `held`; any other failure is adapted as usual. Once the last held version has aged, the draft is closed with a
+  comment before anything else (`graduated`), and the next run plans again from the default branch with fresh checks.
+  A held PR a person marked ready is theirs: the tick leaves it alone.
+
+## The cooldown warning
+
+Whatever the verifying comparison holds goes into the plan, and the PR's description opens with a GitHub warning:
+the versions that came early (published, held until, and why: the rule-picked fix, required by it, an exception),
+plus provenance, publisher changes and new install scripts for npm, for information. It says that needing a version
+and passing every check doesn't rule out malware, that secure-it keeps the PR a draft and retires it once everything
+aged, and how a person takes it earlier: every other check green, the reason written on the PR, an admin merge. A PR
+planned as aged that the comparison holds anyway is held the same way. A cooldown the comparison couldn't evaluate
+fails verification.
 
 ## Isolation
 

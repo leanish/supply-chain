@@ -8,6 +8,9 @@
  *   - a `releaseAge` exception names an advisory that, in the comparison's
  *     snapshot, affects a version the change replaces and not this one (for
  *     fixes the proof can't make). Malware advisories can't justify it.
+ *
+ * Passing this rule isn't trusting the version: every young version, however
+ * justified, is also held by the cooldown (`cooldown.ts`) until it ages.
  */
 import { type Config, isOwnPackage } from "./config.ts";
 import type { Exceptions } from "./exceptions.ts";
@@ -43,19 +46,56 @@ export function isYoung(change: ChangedVersion, config: Config, now: Date): bool
   return (now.getTime() - change.published.getTime()) / DAY_MS < config.releaseAgeDays;
 }
 
-export async function releaseAgeProblems(changes: ReadonlyArray<ChangedVersion>, context: AgeContext): Promise<string[]> {
-  const problems: string[] = [];
-  for (const change of changes) {
-    if (!isYoung(change, context.config, context.now)) continue;
-    const problem = await youngProblem(change, context);
-    if (problem !== undefined) problems.push(problem);
-  }
-  return problems;
+/** What let a young version through: the fix proof, the required-dependency proof, an exception; or nothing. */
+export type YoungJustification = "security-fix" | "required" | "exception" | "unjustified";
+
+/** A version the change adds or changes that is still under the wait. */
+export interface HeldVersion {
+  readonly ecosystem: Ecosystem;
+  readonly name: string;
+  readonly version: string;
+  /** Versions of the package the change replaces. */
+  readonly replaced: ReadonlyArray<string>;
+  readonly published: string;
+  /** When it turns `releaseAgeDays` old. */
+  readonly eligibleAt: string;
+  readonly justification: YoungJustification;
 }
 
-async function youngProblem(change: ChangedVersion, context: AgeContext): Promise<string | undefined> {
+export interface ReleaseAgeReview {
+  readonly problems: ReadonlyArray<string>;
+  /** Every young version, justified or not. */
+  readonly held: ReadonlyArray<HeldVersion>;
+}
+
+export async function reviewReleaseAge(changes: ReadonlyArray<ChangedVersion>, context: AgeContext): Promise<ReleaseAgeReview> {
+  const problems: string[] = [];
+  const held: HeldVersion[] = [];
+  for (const change of changes) {
+    if (!isYoung(change, context.config, context.now)) continue;
+    const judged = await judgeYoung(change, context);
+    if (judged.problem !== undefined) problems.push(judged.problem);
+    held.push({
+      ecosystem: change.pkg.ecosystem,
+      name: change.pkg.name,
+      version: change.pkg.version,
+      replaced: change.replaced,
+      published: change.published.toISOString(),
+      eligibleAt: new Date(change.published.getTime() + context.config.releaseAgeDays * DAY_MS).toISOString(),
+      justification: judged.justification,
+    });
+  }
+  return { problems, held };
+}
+
+/** Just the problems: what fails the `supply-chain` verdict. */
+export async function releaseAgeProblems(changes: ReadonlyArray<ChangedVersion>, context: AgeContext): Promise<string[]> {
+  return [...(await reviewReleaseAge(changes, context)).problems];
+}
+
+async function judgeYoung(change: ChangedVersion, context: AgeContext): Promise<{ readonly justification: YoungJustification; readonly problem?: string }> {
   const { pkg } = change;
-  if (pkg.ecosystem === "npm" && context.required?.has(versionKey(pkg))) return undefined;
+  if (pkg.ecosystem === "npm" && context.required?.has(versionKey(pkg))) return { justification: "required" };
   const proof = await youngFixProblem(
     { pkg, replaced: change.replaced },
     context.candidates.get(versionKey(pkg)) ?? new Map(),
@@ -64,21 +104,24 @@ async function youngProblem(change: ChangedVersion, context: AgeContext): Promis
     context.config,
     context.now,
   );
-  if (proof === undefined) return undefined;
+  if (proof === undefined) return { justification: "security-fix" };
   const exception = context.exceptions.releaseAge.find(
     (entry) => (entry.ecosystem === undefined || entry.ecosystem === pkg.ecosystem) && entry.package === pkg.name && entry.version === pkg.version,
   );
   if (exception === undefined) {
     const ageDays = (context.now.getTime() - change.published.getTime()) / DAY_MS;
-    return `${label(pkg)} was published ${change.published.toISOString()} (${ageDays.toFixed(1)} days ago, under ${
-      context.config.releaseAgeDays
-    }), and it isn't the security fix the version rule would take: ${proof}`;
+    return {
+      justification: "unjustified",
+      problem: `${label(pkg)} was published ${change.published.toISOString()} (${ageDays.toFixed(1)} days ago, under ${
+        context.config.releaseAgeDays
+      }), and it isn't the security fix the version rule would take: ${proof}`,
+    };
   }
   if (exception.expires < context.now.toISOString().slice(0, 10)) {
-    return `${label(pkg)}: its release-age exception expired on ${exception.expires}`;
+    return { justification: "unjustified", problem: `${label(pkg)}: its release-age exception expired on ${exception.expires}` };
   }
   const why = advisoryEvidenceProblem(exception.advisory, pkg, change.replaced, context.snapshot);
-  return why === undefined ? undefined : `${label(pkg)}: ${why}`;
+  return why === undefined ? { justification: "exception" } : { justification: "unjustified", problem: `${label(pkg)}: ${why}` };
 }
 
 /**

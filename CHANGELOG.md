@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Changed
+
+- **Young versions are held.** Passing the release-age rule (the rule-picked
+  security fix, a version it requires, a `releaseAge` exception) no longer makes
+  a young version mergeable on green: whoever controls a publisher can ship
+  malware inside a real fix, whatever the advisory's severity. The reusable
+  workflow's new `cooldown` job stays red while a PR adds or changes a version
+  younger than the wait, and whenever it can't tell. Adopters should require
+  `supply-chain / cooldown` next to `supply-chain / supply-chain`. Taking a held
+  version earlier is a person's decision: the reason written on the PR, then an
+  admin merge. Exceptions don't clear a hold.
+- The release-age wait and own packages that judge a PR are the stricter of
+  base's and head's settings, so a PR can't loosen them for itself.
+- The gate's report is schema 2: comparisons record the held versions.
+- secure-it puts young fixes (and fixes whose required npm dependency is young)
+  in a draft PR of their own, topic `security-cooldown`, so the aged fixes go out
+  as usual. A held PR opens with a warning listing what came early, why, and npm
+  provenance, publisher and install-script signals. Review never marks it ready;
+  once everything aged it closes the draft, and the next run opens a freshly
+  verified PR. bump-it refuses any version the cooldown holds.
+
+### Added
+
+- `supply-chain cooldown --report <file> --head <sha>`, the `cooldown` job, and
+  the workflow outputs `comparison-passed` and `cooldown-held`.
+- secure-it proves and pins npm dependencies required by a rule-picked security
+  fix. When no aged version satisfies a requirement, only its lowest stable,
+  non-deprecated version gets the age exemption. The gate reconstructs the proof
+  from registry metadata, jointly for independently verified security roots and
+  reciprocal direct peers at their resolved locations, preserving complete
+  assignments even when their versions are crossed. Optional dependencies
+  replace same-key ordinary requirements. Missing data or proof/search bounds
+  block it explicitly. Ordinary bumps, Maven and Actions receive no new age exemption.
+
 ### Fixed
 
 - The gate, secure-it and bump-it retry transient GET/HEAD connection failures
@@ -11,14 +45,6 @@
   are not retried.
 - Concurrent metadata lookups stop scheduling after the first failure and wait
   for active requests to finish before reporting it. The POM limit stays at 16.
-- secure-it proves and pins npm dependencies required by a rule-picked security
-  fix. When no aged version satisfies a requirement, only its lowest stable,
-  non-deprecated version gets the age exemption. The gate reconstructs the proof
-  from registry metadata, jointly for independently verified security roots and
-  reciprocal direct peers at their resolved locations, preserving complete
-  assignments even when their versions are crossed. Optional dependencies
-  replace same-key ordinary requirements. Missing data or proof/search bounds
-  block it explicitly. Ordinary bumps, Maven and Actions receive no new age exemption.
 - Temporary exact npm declarations also align object-form self-overrides, keeping
   their child rules and restoring the repository's original overrides afterwards.
 - secure-it refreshes computed npm files before verifying a clean same-plan rebase,
