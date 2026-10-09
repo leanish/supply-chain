@@ -7,7 +7,8 @@
 - bump-it no longer plans Gradle dependencies a plugin adds (the Kotlin DSL
   plugin's embedded Kotlin, for one): it moves a Gradle dependency only where
   its build's own scripts, version catalogs or `buildSrc`/`build-logic` code
-  name it, and lists the rest as not moved automatically. Gradle reports
+  name it (plugins through `id(...)` or a catalog plugin), and lists the rest
+  as not moved automatically. Gradle reports
   plugin-added dependencies as declared, so bump-it asked its agent, on every
   run, to move declarations that don't exist.
 

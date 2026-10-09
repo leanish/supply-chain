@@ -68,11 +68,59 @@ describe("gradleSourceIndex", () => {
       'mixed-b = { group = "org.other", name = "mixed" }',
       '# commented = "com.acme:commented:1.0"',
       "[plugins]",
-      'plugin = { id = "com.acme:plugin", version = "1.0" }',
+      'plugin = { id = "com.acme.plugin", version = "1.0" }',
     ].join("\n");
     const files = { "gradle/libs.versions.toml": catalog };
     for (const coordinate of ["com.acme:literal", "com.acme:moduled", "com.acme:split"]) expect(await named(files, coordinate)).toBe(true);
     for (const coordinate of ["com.acme:mixed", "com.acme:commented", "com.acme:plugin"]) expect(await named(files, coordinate)).toBe(false);
+  });
+
+  it("reads every TOML form a catalog entry can take", async () => {
+    const catalog = [
+      "[libraries]",
+      '"quoted-key" = { module = "com.acme:quoted-key", version = "1.0" }',
+      "single = { module = 'com.acme:single', version = '1.0' }",
+      'literal-single = \'com.acme:literal-single:1.0\'',
+      'dotted.module = "com.acme:dotted"',
+      'dotted.version.ref = "x"',
+      'nested = { group = "com.acme", name = "nested", version = { strictly = "[1.0, 2.0[", prefer = "1.5" } } # trailing',
+      "[libraries.tabled]",
+      'group = "com.acme"',
+      'name = "tabled"',
+      "[bundles]",
+      "all = [",
+      '  "quoted-key",',
+      "]",
+      "[plugins]",
+      "'single-plugin' = { id = 'com.acme.single-plugin', version = '1.0' }",
+    ].join("\n");
+    const files = { "gradle/libs.versions.toml": catalog };
+    for (const name of ["quoted-key", "single", "literal-single", "dotted", "nested", "tabled"]) expect(await named(files, `com.acme:${name}`)).toBe(true);
+    expect(await named(files, "com.acme.single-plugin:com.acme.single-plugin.gradle.plugin")).toBe(true);
+  });
+
+  it("counts a catalog the build's settings import from elsewhere in the repository", async () => {
+    const files = {
+      "gradle/libs.versions.toml": '[libraries]\nshared = "com.acme:shared:1.0"',
+      "buildSrc/settings.gradle.kts": 'dependencyResolutionManagement { versionCatalogs { create("libs") { from(files("../gradle/libs.versions.toml")) } } }',
+      "outside/settings.gradle": "dependencyResolutionManagement { versionCatalogs { libs { from files('../../elsewhere/libs.versions.toml') } } }",
+    };
+    const index = await gradleSourceIndex(tree(files), ["buildSrc", "outside"]);
+    expect(index.named("buildSrc", "com.acme", "shared")).toBe(true);
+    expect(index.named("outside", "com.acme", "shared")).toBe(false);
+  });
+
+  it("names a plugin's marker where a plugins block or a catalog plugin declares it", async () => {
+    const marker = (id: string) => `${id}:${id}.gradle.plugin`;
+    const files = {
+      "build.gradle.kts": 'plugins {\n  id("com.acme.kts") version "1.0"\n  alias(libs.plugins.tabled)\n  `kotlin-dsl`\n}',
+      "settings.gradle": "plugins { id 'com.acme.groovy' version '1.0' }",
+      "gradle/libs.versions.toml": '[plugins]\ntabled = { id = "com.acme.tabled", version.ref = "x" }\nliteral = "com.acme.literal:1.0"\n[libraries]\nlib = "com.acme:lib:1.0"',
+    };
+    for (const id of ["com.acme.kts", "com.acme.groovy", "com.acme.tabled", "com.acme.literal"]) expect(await named(files, marker(id))).toBe(true);
+    // A library coordinate isn't a plugin, and the backtick shorthand isn't read.
+    expect(await named(files, marker("com.acme"))).toBe(false);
+    expect(await named(files, marker("org.gradle.kotlin.kotlin-dsl"))).toBe(false);
   });
 
   it("gives each build its own files, with buildSrc and build-logic main code counting for the build they serve", async () => {
