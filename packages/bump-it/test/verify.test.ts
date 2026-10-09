@@ -177,6 +177,13 @@ describe("bump verification", () => {
     // Any other changed file turns the exemption off.
     expect(await verifyPlan({ ...input, head: tree("head", { ...files("2.1.0"), "gradle.properties": "kotlin.code.style=official" }), changedFiles: ["build.gradle.kts", "gradle.properties"] }))
       .toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    // Under .github/ too (a script the build applies), and an added or deleted file, however empty.
+    const applied = (lib: string) => ({ ".github/dependencies.gradle.kts": `dependencies { implementation("com.acme:lib:${lib}") }` });
+    expect(await verifyPlan({ ...input, base: tree("base", { ...files("2.0.0"), ...applied("1.9.0") }), head: tree("head", { ...files("2.1.0"), ...applied("1.8.0") }),
+      changedFiles: ["build.gradle.kts", ".github/dependencies.gradle.kts"] })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    for (const sides of [{ head: tree("head", { ...files("2.1.0"), "legacy.gradle": "" }) }, { base: tree("base", { ...files("2.0.0"), "legacy.gradle": "" }) }]) {
+      expect(await verifyPlan({ ...input, ...sides, changedFiles: ["build.gradle.kts", "legacy.gradle"] })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
+    }
     // The plugin moved in the root build; the stdlib changing in tools isn't its doing.
     const problems = await verifyPlan({ ...input, gradle: { base: inventory("2.0.0", { stdlibBuild: "tools" }), head: inventory("2.1.0", { stdlibBuild: "tools" }) } });
     expect(problems).not.toEqual([]);

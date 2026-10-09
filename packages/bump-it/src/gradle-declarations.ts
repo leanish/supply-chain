@@ -8,7 +8,7 @@ import type { PlannedMove } from "./plan.ts";
  * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
  * through: the plan moves a plugin of that build (a move on a buildscript or settings classpath), only its version
  * changed (as many declarations before as after: nothing added or removed), and every file the unit changed, outside
- * `checkedElsewhere` (files verified exactly by their own checks), differs from base only by planned version swaps
+ * `checkedElsewhere` (files verified exactly by their own checks), exists on both sides and differs only by planned version swaps
  * (`from` to `to`, each a whole version string). Nothing but the planned edits changed, so the planned plugin update
  * moved it (updating the Kotlin plugin moves the stdlib it adds); the gate still judges every version that changes.
  * A swap is recognised by its text alone, so a dependency written with a planned move's exact `from` version may move
@@ -28,7 +28,9 @@ export async function pluginDriven(base: Tree, head: Tree, inventories: { readon
   const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
   if (pluginBuilds.size === 0) return () => false;
   for (const path of changedFiles.filter((file) => !checkedElsewhere.has(file))) {
-    if (!onlySwaps(await base.read(path) ?? "", await head.read(path) ?? "", planned)) return () => false;
+    // An added or deleted file is an edit, however empty.
+    const [before, after] = [await base.read(path), await head.read(path)];
+    if (before === undefined || after === undefined || !onlySwaps(before, after, planned)) return () => false;
   }
   return (name, location) => {
     const build = buildOf.get(location);
