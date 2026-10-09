@@ -88,6 +88,21 @@ window cannot authorize a different explicit target. Peer copies use temporary d
 root/workspace placement is representable; unsupported placements fail the unit with a reason. secure-it retains
 npm-induced transitives subject to compare; bump-it additionally selects routine transitive targets in code.
 
+The npm required-dependency age exception starts only at a security fix independently established by the gate's
+version rule and advisory snapshot. Registry requirements and publish times prove that no aged satisfying version
+exists; only the lowest stable non-deprecated target qualifies. The gate rebuilds the closure from actual lockfile
+placements, baseline overrides and registry manifests, rather than trusting secure-it's hidden plan or notes.
+Every security root is independently validated on the shared snapshot before its version can constrain the joint
+proof; ordinary head upgrades remain at base. Direct peer companions are solved jointly at their resolved locations,
+including reciprocal requirements. A deterministic complete assignment is selected, preferring aged then lowest
+versions; young choices must have no aged alternative and be lowest with the other assigned peers held fixed.
+Optional declarations replace same-key ordinary dependencies.
+Recursive required targets and aged bridges use the tools' exact-file protection. Depth 8, 128 visited nodes per root,
+2,048 satisfying versions per requirement, unknown metadata or unsupported placement fail explicitly. Optional
+absent dependencies are skipped. Peer searches additionally allow at most 128 companions, 2,048 candidate versions
+each and 4,096 attempted assignments per search; exhaustion grants no partial result. Source, identity, new advisory and malware checks remain in force. Ordinary bumps
+and other ecosystems get no exemption from this proof.
+
 The copied skill runtime allows only the nullable-object type union and a restricted constant-property `if`/`then`
 requiring a non-null object. Both tool schemas use it so `cannot-apply` can omit publication or return null, while
 `applied` must provide a complete publication object. Unknown fields and malformed non-null objects still fail.

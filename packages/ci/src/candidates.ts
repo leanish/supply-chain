@@ -40,7 +40,8 @@ import type { NpmLockfile } from "./inventory.ts";
 import { directDependencies, type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "./node-runtime.ts";
-import { type NpmPeerPlanner, prepareNpmPeers } from "./npm-peers.ts";
+import { requiredPeerTargets } from "./npm-required-peers.ts";
+import { type PeerMove, type NpmPeerPlanner, prepareNpmPeers } from "./npm-peers.ts";
 import { type PackageName, type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { takeSnapshot } from "./take-snapshot.ts";
@@ -118,7 +119,7 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
     candidates.push(...(moves ?? []).map((version) => ({ ...pkg, version })));
   }
   const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
-  const peers = await preparePeers(head, state, registry, catalogs.npm, candidates, identity, now);
+  const peers = await preparePeers(head, state, registry, catalogs.npm, candidates, identity, now, true);
   // Direct-peer candidates join the security candidates: one snapshot decides the entire batch.
   const bases = [...failing.values()].map(({ pkg }) => pkg);
   const snapshot = await takeSnapshot([...bases, ...peers.bases], snapshotOptions(config, env, state.github), [...candidates, ...peers.candidates]);
@@ -441,7 +442,7 @@ async function nodeVersionsFor(head: Tree, pkg: Direct, listed: ReadonlyArray<st
   return allowed;
 }
 
-async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry, catalog: VersionCatalog, seeds: ReadonlyArray<PackageVersion>, identity: IdentityCheck, now: Date) {
+async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry, catalog: VersionCatalog, seeds: ReadonlyArray<PackageVersion>, identity: IdentityCheck, now: Date, security = false) {
   const locks = new Map<string, unknown>();
   for (const lock of state.inventory.npm) {
     const text = await head.read(lock.path);
@@ -450,6 +451,8 @@ async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry,
   }
   const config = state.settings.config;
   return prepareNpmPeers(locks, seeds, {
+    ...(security ? { requiredYoung: (_name: string, _from: string, lockfile: string, path: string, anchors: ReadonlyArray<PeerMove>) =>
+      forcedPeerVersion(locks, lockfile, path, anchors, registry, config, now) } : {}),
     versions: (name) => catalog.versions({ ecosystem: "npm", name }),
     manifest: async (name, version) => (await registry.packument(name)).versions[version],
     published: (name, version) => catalog.published({ ecosystem: "npm", name, version }),
@@ -459,6 +462,27 @@ async function preparePeers(head: Tree, state: ScanState, registry: NpmRegistry,
     now,
     releaseAgeDays: config.releaseAgeDays,
   });
+}
+
+async function forcedPeerVersion(locks: ReadonlyMap<string, unknown>, lockfile: string, path: string, anchors: ReadonlyArray<PeerMove>, registry: NpmRegistry, config: Config, now: Date): Promise<string | undefined> {
+  const lock = locks.get(lockfile) as { packages: Record<string, unknown> };
+  const original = lock.packages;
+  const chosen = structuredClone(original);
+  const dir = lockfile.includes("/") ? lockfile.slice(0, lockfile.lastIndexOf("/")) : "";
+  const inLock = (location: string) => dir === "" ? location : location.startsWith(`${dir}/`) ? location.slice(dir.length + 1) : undefined;
+  const roots = anchors.flatMap((anchor) => anchor.locations.flatMap((location) => {
+    const key = inLock(location);
+    const entry = key === undefined ? undefined : chosen[key];
+    if (key === undefined || entry === null || typeof entry !== "object") return [];
+    chosen[key] = { ...entry, version: anchor.to };
+    return [{ name: anchor.name, version: anchor.to, path: key }];
+  }));
+  for (const root of roots) {
+    const required = await requiredPeerTargets(root, original, chosen, registry, config, now, new Set(roots.map((root) => root.path)));
+    const target = required.find((target) => target.path === path);
+    if (target !== undefined) return target.version;
+  }
+  return undefined;
 }
 
 /** The highest of `lines` (consumed from the front) with a version old enough to weigh, or none left. */

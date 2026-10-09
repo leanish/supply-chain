@@ -3,6 +3,8 @@
  * or changes must be at least `releaseAgeDays` old, unless
  *   - it's an own package (own packages skip only this wait), or
  *   - it's the security fix the version rule picks (`young-fixes.ts`), or
+ *   - npm needs it for that fix and no aged version satisfies the requirement
+ *     (only the lowest satisfying version, independently proved), or
  *   - a `releaseAge` exception names an advisory that, in the comparison's
  *     snapshot, affects a version the change replaces and not this one (for
  *     fixes the proof can't make). Malware advisories can't justify it.
@@ -29,6 +31,8 @@ export interface AgeContext {
   readonly config: Config;
   readonly now: Date;
   readonly catalogs: Readonly<Record<Ecosystem, VersionCatalog>>;
+  /** Independently reconstructed required versions; never read from a PR plan. */
+  readonly required?: ReadonlySet<string>;
   /** `versionKey` of a young version → replaced version → its candidates, all in the snapshot. */
   readonly candidates: ReadonlyMap<string, ReadonlyMap<string, ReadonlyArray<string>>>;
 }
@@ -51,6 +55,7 @@ export async function releaseAgeProblems(changes: ReadonlyArray<ChangedVersion>,
 
 async function youngProblem(change: ChangedVersion, context: AgeContext): Promise<string | undefined> {
   const { pkg } = change;
+  if (pkg.ecosystem === "npm" && context.required?.has(versionKey(pkg))) return undefined;
   const proof = await youngFixProblem(
     { pkg, replaced: change.replaced },
     context.candidates.get(versionKey(pkg)) ?? new Map(),

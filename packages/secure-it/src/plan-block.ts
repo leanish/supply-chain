@@ -19,7 +19,7 @@ export function planDigest(plan: ChangePlan): string {
     .map((move) => ({ ...move, locations: [...move.locations].sort(), advisories: [...move.advisories].sort() }))
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const removal = plan.floorRemoval;
-  const identity = removal === undefined ? moves : {
+  const identity = removal === undefined ? { moves, requiredNpm: [...plan.requiredNpm ?? []].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))) } : {
     floors: removal.floors.map(floorIdentity).sort(),
     files: [...removal.files].sort((a, b) => a.path.localeCompare(b.path)),
   };
@@ -33,18 +33,21 @@ export function planSection(plan: ChangePlan): string {
     (move) =>
       `| ${move.ecosystem} | \`${move.name}\` | ${move.from} → ${move.to}${move.major ? " (major)" : ""} | ${move.mechanism} | ${fixesLabel(plan, move)} | ${move.locations.map((location) => `\`${location}\``).join(", ")} |`,
   );
-  return [
+  const section = [
     HEADING,
     "",
     "| Ecosystem | Package | Version | How | Fixes | Where |",
     "|---|---|---|---|---|---|",
     ...rows,
     ...omittedSection(plan),
+    ...(plan.notes ?? []).map((note) => `- ${note.replace(/\s+/g, " ")}`),
     "",
     "Security targets are the versions the supply-chain gate's rule picks (`supply-chain candidates --rule security`); code chose any required direct-peer companions at their lowest safe compatible versions. The gate verified the change before it was published.",
     "",
     planBlock(plan),
   ].join("\n");
+  if (section.length > 43000) throw new Error("security plan is too large for a PR body");
+  return section;
 }
 
 function removalSection(plan: ChangePlan): string {
@@ -61,6 +64,7 @@ function removalSection(plan: ChangePlan): string {
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
 function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
+  if (plan.requiredNpm?.some((target) => target.name === move.name && target.version === move.to)) return "required dependency compatibility";
   const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
   return coupled ? "direct peer compatibility" : "";
 }
@@ -95,6 +99,9 @@ export function planOf(body: string): ChangePlan | undefined {
 function validMetadata(plan: ChangePlan): boolean {
   if (plan.kind === "floor-removal") return plan.topic === "floor-removal" && plan.malware === false && plan.moves.length === 0 && validRemoval(plan.floorRemoval);
   if (plan.floorRemoval !== undefined) return false;
+  if (plan.notes !== undefined && (!Array.isArray(plan.notes) || !plan.notes.every((note) => typeof note === "string"))) return false;
+  if (plan.requiredNpm !== undefined && (!Array.isArray(plan.requiredNpm) || !plan.requiredNpm.every((target) =>
+    target !== null && typeof target === "object" && typeof target.exempt === "boolean" && [target.name, target.version, target.path, target.lockfile, target.key, target.range, target.reason, target.parent?.name, target.parent?.version, target.parent?.path, target.root?.name, target.root?.version, target.root?.path].every((value) => typeof value === "string")))) return false;
   if (plan.kind !== undefined && !["routine", "major", "malware"].includes(plan.kind)) return false;
   if (plan.coupled !== undefined && (!Array.isArray(plan.coupled) || !plan.coupled.every((set) => Array.isArray(set) && set.every((name: unknown) => typeof name === "string")))) return false;
   if (plan.leftOut === undefined) return true;

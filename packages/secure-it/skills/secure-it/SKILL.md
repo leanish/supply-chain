@@ -214,7 +214,8 @@ End with one fenced `json` block, nothing after it:
 
 - `applied`, with `publication`: a title like `moving snappy-java to 1.1.10.10 for 7 advisories` (lower case, what
   changes); a body that says why (the advisories, in a sentence or two) and, for a major, what you adapted (secure-it
-  adds the table of moves itself). Also mention required transitive changes npm made and why; their versions are
-  npm's resolution, not explicit rule-picked targets. The tool verifies them before publishing. Use a commit message
+  adds the table of moves itself). Also mention required transitive changes npm made and why. The tool may have
+  pinned them through an independently gated required-dependency age proof; otherwise they are npm's induced
+  resolution. Leave all tool-written bytes unchanged. The tool verifies them before publishing. Use a commit message
   in the repository's style.
 - `cannot-apply`, with a `summary` of what stopped you. Omit `publication` or set it to `null`.

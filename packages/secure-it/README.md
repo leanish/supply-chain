@@ -23,7 +23,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
 4. **Plans the change** (`plan.ts`), for each version and location. For npm, code reads locked and candidate manifests
    to find direct peer constraints in either direction. Rule-picked security targets stay fixed. A direct that must
    move with them gets the lowest safe version in its own compatible line that makes the connected set consistent:
-   aged (own scopes: any age), adding no advisory group or malware, and passing the gate's publisher identity check.
+   aged (own scopes: any age, or the proved required-dependency exception below), adding no advisory group or malware, and passing the gate's publisher identity check.
    Unchanged compatible peers stay at base; a companion may move downward within its line when necessary. All these
    choices use the security batch's same advisory snapshot, and each registry document is read once. An impossible
    set leaves the batch as blocked, with the conflicting peer ranges reported; unrelated fixes proceed. Unreadable
@@ -45,9 +45,17 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    npm may resolve transitive changes a planned move requires, under the supplied release-age window and exclusions.
    The tool resolves those versions; the agent never changes npm dependency fields or lockfiles. Direct
    dependencies outside the plan stay unchanged. Direct peers selected by code are explicit moves, even when they
-   have no advisory themselves. New or purely transitive peers remain npm's resolution under `compare`.
-   These induced versions are npm's choice, not additional rule-picked
-   targets: `compare` judges each changed version's advisories, age and identity. They may differ from another open
+   have no advisory themselves. New or purely transitive peers remain npm's resolution under `compare` unless they need the proved exception below.
+   When a security target needs a version with no aged satisfier, code proves the registry requirement and pins its
+   lowest stable, non-deprecated target exactly. This includes young direct-peer companions and recursive
+   requirements; reciprocal direct peers are solved jointly at their resolved locations, and aged bridges are pinned
+   when needed to preserve the proof. The gate independently validates every security root before reconstructing the
+   batch's joint requirements; ordinary upgrades cannot narrow the proof's constraints. Parent, range, location, target and
+   reason are recorded in the plan identity, PR and run report. Unsafe lowest versions, missing metadata, conflicting
+   constraints or a proof bound block the unit. Existing compatibility pins remain constraints. Exact declarations
+   support root/workspace anchors; placements the exact resolver cannot represent are reported without publication.
+   A verification retry drops connected required sets together, leaving unrelated fixes.
+   Other induced versions are npm's choice, not additional rule-picked targets: `compare` judges each changed version's advisories, age and identity. They may differ from another open
    PR's target; that PR doesn't constrain resolution. A failed comparison prevents publishing that edit rather than silently
    choosing a coupled target. The PR description lists required transitive changes too.
 7. **Verifies before publishing** (`verify.ts`):

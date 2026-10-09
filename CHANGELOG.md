@@ -11,6 +11,14 @@
   are not retried.
 - Concurrent metadata lookups stop scheduling after the first failure and wait
   for active requests to finish before reporting it. The POM limit stays at 16.
+- secure-it proves and pins npm dependencies required by a rule-picked security
+  fix. When no aged version satisfies a requirement, only its lowest stable,
+  non-deprecated version gets the age exemption. The gate reconstructs the proof
+  from registry metadata, jointly for independently verified security roots and
+  reciprocal direct peers at their resolved locations, preserving complete
+  assignments even when their versions are crossed. Optional dependencies
+  replace same-key ordinary requirements. Missing data or proof/search bounds
+  block it explicitly. Ordinary bumps, Maven and Actions receive no new age exemption.
 - Temporary exact npm declarations also align object-form self-overrides, keeping
   their child rules and restoring the repository's original overrides afterwards.
 - secure-it refreshes computed npm files before verifying a clean same-plan rebase,

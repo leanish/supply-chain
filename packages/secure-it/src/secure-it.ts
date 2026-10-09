@@ -35,6 +35,7 @@ import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { reconcileNpmFloors } from "./npm-floor-history.ts";
 import { materializeOnBase } from "./npm-materialize.ts";
+import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
 import { type ChangePlan, coupledWork, packageKey, planFor, type SecurityUnit } from "./plan.ts";
@@ -54,6 +55,7 @@ interface SkillAnswer {
 
 /** What secure-it reaches outside its own logic; tests replace them. */
 export interface SecureItDeps {
+  readonly requiredNpm: typeof requiredNpmPlan;
   readonly materializeNpm: typeof materializeOnBase;
   readonly floorProbe: (context: ToolRunContext, base: Tree, floors: ReadonlyArray<Floor>, env: GateEnvironment) => Promise<RemovalProbe>;
   readonly gate: (context: ToolRunContext) => Promise<GateEnvironment>;
@@ -74,6 +76,7 @@ export interface SecureItDeps {
 
 export function defaultDeps(): SecureItDeps {
   return {
+    requiredNpm: requiredNpmPlan,
     materializeNpm: materializeOnBase,
     floorProbe: probeOnBase,
     gate: async (context) => {
@@ -165,7 +168,7 @@ async function prepareNpmFiles(execution: Execution, plan: ChangePlan, base: Tre
   const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base));
   for (const detail of window.notes) context.logger.warn("secure-it: npm release-age exclusion", { detail });
   if (plan.moves.some((move) => move.ecosystem === "npm")) {
-    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young or unreadable security targets or locked base versions, or own-package exclusions");
+    await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young security targets or proved requirements, unreadable or young locked base versions, or own-package exclusions");
   }
   let files = await deps.materializeNpm(context, base, plan, window.exclude);
   if (reconcileFloors) files = reconcileNpmFloors(files, await deps.trees.working(context.workingCopy).read(FLOORS_FILE));
@@ -286,7 +289,8 @@ async function runRemoval(execution: Execution, removal: ComputedRemoval, base: 
 
 async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
-  return planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const plan = await planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 
 async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase, own: ReadonlyArray<GitHubPullRequest>): Promise<Readonly<Record<string, unknown>>> {
@@ -297,7 +301,7 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
     const previous = planOf(pr.body);
     return stateOf(pr.body)?.head === pr.headSha && previous !== undefined && planDigest(previous) === planDigest(plan);
   });
-  const details = { topic: plan.topic, packages: plan.packages };
+  const details = { topic: plan.topic, packages: plan.packages, notes: plan.notes ?? [] };
   if (already !== undefined) return { ...details, outcome: "already-open", pullRequest: already.url };
   const reusable = owned[0];
   const prepared = await preparePlan(context, deps, plan, reusable, own, base.tree.id);
@@ -305,7 +309,7 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
   if (answer.outcome !== "applied" || answer.publication == null) return { ...details, outcome: "cannot-apply", summary: answer.summary };
   const verified = await verifyWithRetry(execution, base, plan, answer.publication);
-  const checked = { ...details, packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
+  const checked = { ...details, notes: verified.plan.notes ?? [], packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
   if (verified.problems.length > 0) return { ...checked, outcome: "verification-failed", problems: verified.problems };
   const content = { ...verified.content, body: withPlanSection(verified.content.body, verified.plan) };
   if (reusable !== undefined) {
@@ -464,6 +468,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const recomputed = await planUnit(execution, unit, { tree: base, gradle: baseGradle });
       // Plans predating batches retain their package scope and branch topic until retired.
       const plan = previous.kind === undefined ? { ...recomputed, kind: undefined, topic: previous.topic } : recomputed;
+      if (plan.notes !== undefined && plan.notes.length > 0) notes.push({ number: pr.number, notes: plan.notes });
       const changed = planDigest(plan) !== planDigest(previous);
       const code: string[] = [];
       if (changed) {

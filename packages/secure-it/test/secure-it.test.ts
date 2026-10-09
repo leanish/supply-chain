@@ -103,6 +103,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     }) as ToolRunContext["agent"],
   };
   const deps: SecureItDeps = {
+    requiredNpm: async (_base, plan) => plan,
     materializeNpm: async () => new Map(),
     floorProbe: async () => ({ files: new Map(), findings: [], problems: [] }),
     gate: async () => ({ run: async () => ({ code: 0, stdout: "", stderr: "" }), fetch: async () => ({ ok: false, status: 404, headers: { get: () => null }, json: async () => ({}), text: async () => "" }), now: () => NOW, osvScanner: "osv-scanner", githubToken: "read-token" }),

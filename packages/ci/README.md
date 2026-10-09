@@ -95,7 +95,7 @@ A floor forces a minimum version on a dependency, usually a transitive one: a se
 
 For every version a PR adds or changes:
 
-- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
+- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or its independently proved required npm dependency (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
 - **Source:** every locked package comes from an allowed registry (`npm.registries`, default the npm registry). The gate checks age and identity only against the npm registry, so a package from another allowed registry fails, unless it's an own package with an unexpired `identity` exception recording that its publish was reviewed (own packages skip only the wait).
 - **Identity:** a version that replaces another fails on a publisher identity break: provenance dropped or from another repository or workflow, provenance from a repository the replaced version doesn't declare, or (without provenance) a publisher who hadn't published the package up to the replaced version. Every provenance statement must name the exact package, version and locked sha512.
 - Bundles the lockfile doesn't fully record fail: every `bundleDependencies` entry, and what it depends on, needs an `inBundle` entry inside the package that ships it.
@@ -115,6 +115,32 @@ A version younger than the wait passes without an exception when it's the fix th
 - V passes only if it's that version. If an older fix in the line turns 7 days old before CI runs, the check fails on purpose: that one is safer, and secure-it picks it up.
 
 Candidates join the same advisory snapshot as base and head, so the rule and the comparison read the same data. On sqs-codec's snappy-java 1.1.10.8 → 1.1.10.10, three days old, it passes with no exception: 1.1.10.9 leaves two of the seven advisories, and 1.1.10.10 is the lowest that fixes them all.
+
+## npm dependencies required by a security fix
+
+A rule-picked npm security fix can require a dependency whose satisfying versions are all younger than the window.
+Only the lowest stable, non-deprecated version satisfying the registry requirement and existing applicable constraints
+gets an age exemption. If any satisfying version is aged, the ordinary age rule applies. Unknown dates or manifests
+cannot prove the absence of an aged alternative and block the proof. An unsafe lowest target is not replaced by a
+higher young choice: source, publisher identity, advisories and malware checks still apply.
+
+The gate independently identifies all rule-picked security roots from replaced versions and the shared advisory
+snapshot before reconstructing their joint closure. Ordinary head upgrades stay at their base versions in the proof;
+they cannot manufacture a stricter requirement. The gate then reads dependency and peer requirements from registry manifests, including aliases, new packages and recursive requirements through
+aged dependencies. Direct peer companions stay in their existing compatible line. It resolves actual lockfile
+locations and checks exact landing. Direct peer companions are solved jointly, including reciprocal requirements;
+an outgoing peer requirement constrains only the copy its root actually resolves. Complete assignments are ordered
+by package name (then location), preferring aged versions and then lowest versions; an eligible aged locked version
+is preserved. Each young choice is checked against the rest of its selected assignment for aged alternatives and
+the lowest satisfying version. Installed optional dependencies
+replace same-key ordinary requirements; optional dependencies absent from the lock are not introduced. Baseline overrides
+constrain the proof; PR annotations, narrowed root declarations and new overrides cannot grant exemptions.
+The proof is limited per root to depth 8, 128 visited package/location/version nodes and 2,048 satisfying versions per
+requirement; a limit hit is an explicit blocker, never a partial exemption. Cycles stop at already visited nodes.
+Peer components are limited to 128 companions, 2,048 candidate versions each and 4,096 attempted assignments per
+search; exhaustion blocks the proof. Required targets must land in head and use the comparison's one advisory
+snapshot. Ordinary bumps do not qualify, and this extension
+applies only to npm; Maven/Gradle and Actions keep their existing age rules.
 
 ## Release age (Maven)
 

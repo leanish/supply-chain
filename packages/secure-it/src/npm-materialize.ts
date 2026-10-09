@@ -17,6 +17,7 @@ import { requireNpmExcludes } from "../../remediation/src/npm-version.ts";
 import { pinnedManifests, type Pin } from "../../remediation/src/npm-pins.ts";
 import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 
+import type { PlannedRequirement } from "./npm-required-plan.ts";
 import { type ChangePlan, lockfileOf, type PlannedMove } from "./plan.ts";
 
 type NpmCommand = (cwd: string, args: ReadonlyArray<string>) => Promise<{ code: number; stdout: string; stderr: string }>;
@@ -41,7 +42,7 @@ export async function materializeInCopy(context: Pick<ToolRunContext, "releaseAg
   for (const [lockfile, lock] of locks) {
     const moves = plan.moves.filter((move) => move.ecosystem === "npm" && move.locations.some((location) => lockfileOf(locks, location).lock === lock));
     if (moves.length === 0) continue;
-    const result = await materializeLock({ context, dir, base, exclude, npm }, locks, lockfile, lock, moves, floorsText);
+    const result = await materializeLock({ context, dir, base, exclude, npm }, locks, lockfile, lock, moves, floorsText, plan.requiredNpm?.filter((target) => target.lockfile === lockfile) ?? []);
     floorsText = result.floorsText;
     for (const [path, text] of result.files) files.set(path, text);
   }
@@ -60,7 +61,7 @@ interface MaterializationInputs {
   readonly npm: NpmCommand;
 }
 
-async function materializeLock(inputs: MaterializationInputs, locks: ReadonlyMap<string, unknown>, lockfile: string, lock: unknown, moves: ReadonlyArray<PlannedMove>, floorsText: string | undefined) {
+async function materializeLock(inputs: MaterializationInputs, locks: ReadonlyMap<string, unknown>, lockfile: string, lock: unknown, moves: ReadonlyArray<PlannedMove>, floorsText: string | undefined, required: ReadonlyArray<PlannedRequirement>) {
   const { context, dir, base, exclude, npm } = inputs;
   const files = new Map<string, string>();
   const root = dirname(lockfile);
@@ -72,19 +73,25 @@ async function materializeLock(inputs: MaterializationInputs, locks: ReadonlyMap
   const plannedTargets = planDeclarations(graph, moves, locks, lock, texts);
   floorsText = planOverrides(graph, plannedTargets, texts, root, floorsText, context.now);
   const manifests = new Map([...texts].map(([owner, text]) => [owner, JSON.parse(text) as Manifest]));
-  const pins: Pin[] = graph.copies().flatMap((copy) => {
+  const pinGraph = requiredPinGraph(lock, required, manifests);
+  const pins: Pin[] = pinGraph.copies().flatMap((copy) => {
     const move = plannedTargets.get(copy.path);
-    return move !== undefined || graph.edgesTo(copy.path).some((edge) => edge.declared)
-      ? [{ copy, target: move?.to ?? copy.version }] : [];
+    const target = required.find((target) => target.path === copy.path);
+    if (move !== undefined && target !== undefined && move.to !== target.version) throw new Error(`${copy.name}: planned security target conflicts with required ${target.version}`);
+    return move !== undefined || target !== undefined || graph.edgesTo(copy.path).some((edge) => edge.declared)
+      ? [{ copy, target: move?.to ?? target?.version ?? copy.version }] : [];
   });
   const runInstall = async () => {
     const result = await npm(cwd, ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", `--min-release-age=${context.releaseAgeDays}`, ...exclude.map((name) => `--min-release-age-exclude=${name}`)]);
     if (result.code !== 0) throw new Error(`npm install in ${root} failed: ${result.stderr.trim()}`);
   };
-  await resolveExact(cwd, texts, pinnedManifests(graph, pins, manifests, repositoryOverrides(manifests.get(""))), runInstall, runInstall);
+  await resolveExact(cwd, texts, pinnedManifests(pinGraph, pins, manifests, repositoryOverrides(manifests.get(""))), runInstall, runInstall);
   const final = await readFile(join(dir, lockfile), "utf8");
   const head = new NpmGraph(JSON.parse(final));
   assertLanding(graph, head, plannedTargets);
+  for (const target of required) {
+    if (head.packages[target.path]?.version !== target.version) throw new Error(`${target.name} at ${target.path} did not keep its lowest required target ${target.version}`);
+  }
   // Include unchanged manifests too: the agent must leave every computed npm dependency file intact.
   for (const [owner, text] of texts) files.set(join(root, manifestPath(owner)), text);
   files.set(lockfile, final);
@@ -190,4 +197,20 @@ function securityFloor(text: string | undefined, move: PlannedMove, declaredIn: 
   }
   parseFloors(record);
   return formatManifest(text ?? "{}\n", record);
+}
+
+/** A synthetic peer edge requests the shared exact-declaration machinery, without changing any persisted graph. */
+function requiredPinGraph(lock: unknown, required: ReadonlyArray<PlannedRequirement>, manifests: ReadonlyMap<string, Manifest>): NpmGraph {
+  const packages = structuredClone((lock as { packages: Record<string, unknown> }).packages);
+  for (const [index, target] of required.entries()) {
+    const suffix = `node_modules/${target.key}`;
+    const owner = target.path === suffix ? "" : target.path.endsWith(`/${suffix}`) ? target.path.slice(0, -(suffix.length + 1)) : undefined;
+    if (owner === undefined || !manifests.has(owner) || owner.includes("node_modules/")) throw new Error(`${target.name}: unsupported required-dependency placement ${target.path}`);
+    packages[target.path] ??= { name: target.name, version: target.version };
+    const prefix = owner === "" ? "" : `${owner}/`;
+    const anchor = `${prefix}node_modules/.required-proof-${index}`;
+    if (packages[anchor] !== undefined) throw new Error(`unsupported required-dependency anchor collision ${anchor}`);
+    packages[anchor] = { version: "0.0.0", peerDependencies: { [target.key]: target.name === target.key ? target.version : `npm:${target.name}@${target.version}` } };
+  }
+  return new NpmGraph({ packages });
 }

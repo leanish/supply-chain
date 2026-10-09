@@ -55,6 +55,8 @@ export interface OmittedMoves {
 }
 
 export interface ChangePlan {
+  readonly requiredNpm?: ReadonlyArray<import("./npm-required-plan.ts").PlannedRequirement>;
+  readonly notes?: ReadonlyArray<string>;
   readonly floorRemoval?: FloorRemoval;
   /** Absent in plans published before batching; those PRs retain per-package reviews. */
   readonly kind?: PlanKind;

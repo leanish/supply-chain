@@ -27,6 +27,7 @@ import { osvScannerVersion } from "./osv-scanner.ts";
 import { versionKey } from "./package-version.ts";
 import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
+import { gatherRequiredProofs, verifiedRequiredProofs, verifiedSecurityRoots } from "./npm-required-gate.ts";
 import { type ChangedVersion, isYoung, releaseAgeProblems } from "./release-age.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { type SnapshotOptions, takeSnapshot } from "./take-snapshot.ts";
@@ -169,11 +170,13 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
     ...resolutionFailures(headInventory, config, undefined),
   ];
   const changes: ChangedVersion[] = [];
+  const ownRoots: ChangedVersion[] = [];
   for (const lockfile of headInventory.npm) {
     const before = baseInventory.npm.find((candidate) => candidate.path === lockfile.path)?.packages ?? [];
     const npm = await npmChanges(before, lockfile.packages, { registry, exceptions, config, now });
     problems.push(...npm.problems.map((problem) => prefixed(headInventory, lockfile.path, problem)));
     changes.push(...npm.changes);
+    ownRoots.push(...npm.ownChanges);
   }
   const maven = await mavenChanges(baseLocated, headLocated, { config, dates });
   problems.push(...maven.problems);
@@ -183,19 +186,25 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   changes.push(...actions.changes);
   const merged = mergeChanges(changes);
   const young = merged.filter((change) => isYoung(change, config, now));
-  const candidates = await gatherCandidates(young, catalogs, config);
-
-  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env, github), [...candidates.versions]);
+  const rootChanges = [...merged, ...ownRoots].filter((change) => change.pkg.ecosystem === "npm" && change.replaced.length > 0);
+  const needsRequiredProof = young.some((change) => change.pkg.ecosystem === "npm");
+  const candidates = await gatherCandidates([...young, ...needsRequiredProof ? rootChanges.filter((change) => !young.includes(change)) : []], catalogs, config);
+  const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env, github), candidates.versions);
+  const securityRoots = needsRequiredProof
+    ? await verifiedSecurityRoots(rootChanges, candidates, snapshot, catalogs.npm, config, now) : [];
+  const required = await gatherRequiredProofs(securityRoots, base, head, headInventory, registry, config, now);
   const headFindings = findingsOf(headLocated, snapshot);
   const comparison = compareFindings(findingsOf(baseLocated, snapshot), headFindings);
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
-  problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange })));
+  const proved = await verifiedRequiredProofs(required, rootChanges, candidates, snapshot, catalogs.npm, config, now);
+  problems.push(...proved.problems);
+  problems.push(...(await releaseAgeProblems(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange, required: proved.versions })));
   const floorCheck = await checkFloors(floors, headInventory, head);
   return {
     headFindings,
     failures: [...verdict.failures, ...problems, ...floorCheck.failures],
     warnings: verdict.warnings,
-    notes: [...verdict.notes, ...floorCheck.notes],
+    notes: [...verdict.notes, ...floorCheck.notes, ...proved.notes],
     gaps: [...snapshot.gaps, ...actions.gaps],
     osvScannerVersion: version,
     configText,

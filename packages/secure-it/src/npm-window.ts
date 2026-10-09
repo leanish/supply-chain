@@ -20,7 +20,7 @@ export async function npmWindowFor(
 ): Promise<NpmWindow> {
   if (days === 0) return { exclude: [...new Set(ownScopes)].sort(), notes: [] };
   const registry = new NpmRegistry(fetch);
-  const exclude = new Set(ownScopes);
+  const exclude = new Set([...ownScopes, ...plan.requiredNpm?.filter((target) => target.exempt).map((target) => target.name) ?? []]);
   const notes: string[] = [];
   const seen = new Set<string>();
   for (const move of plan.moves) {

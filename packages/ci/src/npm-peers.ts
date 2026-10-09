@@ -29,6 +29,7 @@ export interface PeerResolution {
 }
 
 export interface PeerSources {
+  readonly requiredYoung?: (name: string, from: string, lockfile: string, path: string, anchors: ReadonlyArray<PeerMove>) => Promise<string | undefined>;
   versions(name: string): Promise<ReadonlyArray<string> | undefined>;
   manifest(name: string, version: string): Promise<unknown>;
   published(name: string, version: string): Promise<Date | undefined>;
@@ -235,7 +236,7 @@ async function resolve(nodes: ReadonlyArray<Node>, moves: ReadonlyArray<PeerMove
     for (const node of group) {
       const to = solved.get(node.key)!;
       if (to === node.from || anchors.some((move) => matches(node, move))) continue;
-      additions.push({ name: node.name, from: node.from, to, line: sources.line(node.name, to), aged: !sources.isOwn(node.name), locations: [node.location],
+      additions.push({ name: node.name, from: node.from, to, line: sources.line(node.name, to), aged: await isAged(node.name, to, sources), locations: [node.location],
         declarations: node.declarations.map((declaration) => ({ ...declaration, lockfile: node.lockfile })) });
     }
   }
@@ -246,6 +247,12 @@ async function optionsFor(node: Node, anchors: ReadonlyArray<PeerMove>, snapshot
   const targets = [...new Set(anchors.filter((move) => matches(node, move)).map((move) => move.to))];
   const problems = node.problem === undefined ? [] : [node.problem];
   if (targets.length > 1) problems.push(`${node.name} has conflicting planned targets ${targets.join(", ")}`);
+  let forced: string | undefined;
+  try {
+    if (targets.length === 0) forced = await sources.requiredYoung?.(node.name, node.from, node.lockfile, node.path, anchors);
+  } catch (error) {
+    return { versions: [], problems: [...problems, `${node.name}: ${error instanceof Error ? error.message : String(error)}`] };
+  }
   const versions: string[] = [];
   for (const version of targets.length > 0 ? targets : [node.from, ...node.candidates]) {
     if (!node.manifests.has(version)) continue;
@@ -254,7 +261,9 @@ async function optionsFor(node: Node, anchors: ReadonlyArray<PeerMove>, snapshot
       // Rule targets already satisfy their age rule (security fixes may be young); companions must be aged.
       if (targets.length === 0 && version !== node.from && !sources.isOwn(node.name)) {
         const published = await sources.published(node.name, version);
-        if (published === undefined || sources.now.getTime() - published.getTime() < sources.releaseAgeDays * 86_400_000) continue;
+        if (published === undefined || sources.now.getTime() - published.getTime() < sources.releaseAgeDays * 86_400_000) {
+          if (version !== forced) continue;
+        }
       }
       if (version !== node.from && (await sources.identity(node.name, node.from, version)).length > 0) continue;
       versions.push(version);
@@ -312,4 +321,10 @@ function consistent(nodes: ReadonlyArray<Node>, chosen: ReadonlyMap<string, stri
     }
   }
   return true;
+}
+
+async function isAged(name: string, version: string, sources: PeerSources): Promise<boolean> {
+  if (sources.isOwn(name)) return false;
+  const published = await sources.published(name, version);
+  return published !== undefined && sources.now.getTime() - published.getTime() >= sources.releaseAgeDays * 86_400_000;
 }
