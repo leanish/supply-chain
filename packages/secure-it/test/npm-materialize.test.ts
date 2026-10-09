@@ -168,6 +168,23 @@ describe("security npm materialization", () => {
     expect(parseFloors(floors).map((floor) => [floor.package, floor.overridePaths])).toEqual([["vite", [["vite"]]], ["child", [["vite", "child"]]]]);
   });
 
+  it("pins a nested security fix that is also another fix's required target once, by its planned move", async () => {
+    const root = { dependencies: { app: "^1.0.0" } };
+    const nested = "node_modules/app/node_modules/lib";
+    const lock = { packages: { "": root, "node_modules/app": { version: "1.0.0", dependencies: { lib: "^1.0.0" } }, [nested]: { version: "1.0.0" } } };
+    const h = await fixture({ "package.json": json(root), "package-lock.json": json(lock) });
+    const app = { name: "app", version: "1.0.1", path: "node_modules/app" };
+    const required = { name: "lib", version: "1.0.1", path: nested, key: "lib", range: "^1.0.1", parent: app, root: app, lockfile: "package-lock.json", exempt: true, reason: "app@1.0.1 requires lib ^1.0.1; young lib@1.0.1 is the verified security fix there" };
+    const planned = { ...plan([move("app", "1.0.1"), { ...move("lib", "1.0.1", "npm-lock", nested), from: "1.0.0" }]), requiredNpm: [required] };
+    const files = await materializeInCopy({ releaseAgeDays: 7, now }, h.dir, h.base, planned, ["app", "lib"], async (cwd, args) => {
+      if (args[0] === "--version") return { code: 0, stdout: "11.19.1", stderr: "" };
+      const manifest = JSON.parse(await readFile(join(cwd, "package.json"), "utf8"));
+      await writeFile(join(cwd, "package-lock.json"), json({ packages: { ...lock.packages, "": manifest, "node_modules/app": { version: "1.0.1", dependencies: { lib: "^1.0.1" } }, [nested]: { version: "1.0.1" } } }));
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    expect(JSON.parse(files.get("package-lock.json")!).packages[nested].version).toBe("1.0.1");
+  });
+
   it("permits planned Gradle records beside tool-written npm floors, but protects the npm records", async () => {
     const npm = { ecosystem: "npm", package: "vite", version: "8.3.3" };
     const expected = new Map([[".github/dependency-floors.json", json({ floors: [npm] })]]);

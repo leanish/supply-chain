@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseConfig } from "../src/config.ts";
 import { NpmRegistry } from "../src/npm-registry.ts";
-import { requiredClosure, requiredPath, REQUIRED_LIMITS } from "../src/npm-required.ts";
+import { requiredClosure, type RequiredInputs, requiredPath, REQUIRED_LIMITS } from "../src/npm-required.ts";
 import { verifiedRequiredProofs } from "../src/npm-required-gate.ts";
 import { releaseAgeProblems } from "../src/release-age.ts";
 import { NpmCatalog } from "../src/catalogs.ts";
@@ -33,13 +33,41 @@ describe("npm security-required release age", () => {
     expect(proof.targets[0]?.reason).toContain("lowest satisfying version");
   });
 
-  it("keeps another verified security root where the requirement reaches it, if its version satisfies", async () => {
-    const at = (version: string) => ({ ...inputs(), verifiedRoot: (path: string) => path === "node_modules/postcss", installed: () => version });
-    const kept = await requiredClosure(root, at("8.5.30"));
-    expect(kept).toMatchObject({ targets: [], problems: [], reached: [{ name: "postcss", version: "8.5.30", path: "node_modules/postcss" }] });
-    // Otherwise the edge is chosen as usual; the caller's landing check then rejects a young target the lockfile lacks.
-    const unsatisfied = await requiredClosure(root, at("8.5.28"));
-    expect(unsatisfied).toMatchObject({ targets: [{ name: "postcss", version: "8.5.29", exempt: true }], problems: [], reached: [] });
+  describe("another verified security fix at the requirement's path", () => {
+    const at = (version: string, extra: Partial<RequiredInputs> = {}) =>
+      ({ ...inputs(), verifiedRoot: (path: string) => path === "node_modules/postcss" ? { name: "postcss", version } : undefined, installed: () => "8.5.28", ...extra });
+
+    // `installed` says 8.5.28 throughout, as after a hypothetical choice: the snapshot decides, never the proof's state.
+    it("is chosen, not re-picked, when it satisfies the requirement", async () => {
+      const proof = await requiredClosure(root, at("8.5.30"));
+      expect(proof.problems).toEqual([]);
+      expect(proof.targets).toMatchObject([{ name: "postcss", version: "8.5.30", exempt: true }]);
+      expect(proof.targets[0]?.reason).toContain("young postcss@8.5.30 is the verified security fix there");
+    });
+
+    it("is chosen as an aged anchor when it is old enough", async () => {
+      const proof = await requiredClosure(root, at("8.5.30", { registry: registry({ postcss: { ...postcss, time: { ...postcss.time, "8.5.30": old } } }) }));
+      expect(proof).toMatchObject({ targets: [], problems: [] });
+    });
+
+    it("is never young when it's an own package", async () => {
+      const proof = await requiredClosure(root, at("8.5.30", { isOwn: (name) => name === "postcss", registry: registry({ postcss: { ...postcss, time: {} } }) }));
+      expect(proof).toMatchObject({ targets: [], problems: [] });
+    });
+
+    it("fails closed on its unknown publish time", async () => {
+      const proof = await requiredClosure(root, at("8.5.30", { registry: registry({ postcss: { ...postcss, time: { "8.5.28": old, "8.5.29": young } } }) }));
+      expect(proof.problems.join()).toContain("publish time");
+    });
+
+    it.each([
+      ["the requirement", at("8.5.28")],
+      ["another applicable constraint", at("8.5.30", { constraints: async () => ["<8.5.30"] })],
+    ])("leaves the ordinary choice when it doesn't satisfy %s", async (_name, given) => {
+      const proof = await requiredClosure(root, given);
+      expect(proof).toMatchObject({ targets: [{ name: "postcss", version: "8.5.29", exempt: true }], problems: [] });
+      expect(proof.targets[0]?.reason).toContain("lowest satisfying version");
+    });
   });
 
   it("does not exempt the real Vite 8.3.3 requirement when an aged 8.5.28 satisfies ^8.5.28", async () => {

@@ -120,7 +120,9 @@ Candidates join the same advisory snapshot as base and head, so the rule and the
 
 A rule-picked npm security fix can require a dependency whose satisfying versions are all younger than the window.
 Only the lowest stable, non-deprecated version satisfying the registry requirement and existing applicable constraints
-gets an age exemption. If any satisfying version is aged, the ordinary age rule applies. Unknown dates or manifests
+gets an age exemption. If any satisfying version is aged, the ordinary age rule applies. The exception is a requirement
+that reaches another security fix verified in the same comparison: when that fix's version satisfies every applicable
+range, it is the one chosen (exempt if young), rather than a lower version the fix moved away from. Unknown dates or manifests
 cannot prove the absence of an aged alternative and block the proof. An unsafe lowest target is not replaced by a
 higher young choice: source, publisher identity, advisories and malware checks still apply.
 

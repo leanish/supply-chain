@@ -107,7 +107,8 @@ npm-induced transitives subject to compare; bump-it additionally selects routine
 
 The npm required-dependency age exception starts only at a security fix independently established by the gate's
 version rule and advisory snapshot. Registry requirements and publish times prove that no aged satisfying version
-exists; only the lowest stable non-deprecated target qualifies. The gate rebuilds the closure from actual lockfile
+exists; only the lowest stable non-deprecated target qualifies, unless the requirement reaches another independently
+verified security fix whose version satisfies every applicable range, which is then chosen instead. The gate rebuilds the closure from actual lockfile
 placements, baseline overrides and registry manifests, rather than trusting secure-it's hidden plan or notes.
 Every security root is independently validated on the shared snapshot before its version can constrain the joint
 proof; ordinary head upgrades remain at base. Direct peer companions are solved jointly at their resolved locations,

@@ -6,9 +6,10 @@
 
 - A security fix whose required dependency is another security fix in the same
   batch keeps that fix's own version when it satisfies the requirement: the
-  requirement proof no longer reselects a lower (possibly still vulnerable)
-  young version and rejects the right one. secure-it keeps the two coupled, so
-  a retry that drops one drops both.
+  requirement proof chooses it instead of re-picking a lower (possibly still
+  vulnerable) young version and rejecting the right one. A fix that needs the
+  other fix's young version, directly or through it, stays with it in
+  secure-it's retries and cooldown split.
 - secure-it updates an object-form security override (`{ ".": "1.0.0", "child": … }`)
   by its own `.` version, keeping its child rules and their floor records.
 

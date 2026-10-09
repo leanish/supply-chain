@@ -25,6 +25,7 @@ export async function gatherRequiredProofs(changes: ReadonlyArray<ChangedVersion
     const roots = lock.packages.filter((copy) => !copy.bundled && changes.some((change) =>
       change.pkg.ecosystem === "npm" && change.replaced.length > 0 && copy.name === change.pkg.name && copy.version === change.pkg.version));
     const fixed = new Set(roots.map((copy) => copy.path));
+    const verified = new Map(roots.map((copy) => [copy.path, { name: copy.name, version: copy.version }]));
     for (const change of changes.filter((change) => change.pkg.ecosystem === "npm" && change.replaced.length > 0)) {
       for (const copy of lock.packages.filter((copy) => copy.name === change.pkg.name && copy.version === change.pkg.version && !copy.bundled)) {
         // The caller establishes every security root before gathering the joint closure.
@@ -37,7 +38,7 @@ export async function gatherRequiredProofs(changes: ReadonlyArray<ChangedVersion
             return isObject(previous) && typeof previous["version"] === "string" ? previous["version"] : undefined;
           },
           isOwn: (name) => isOwnPackage(config.ownPackages, { ecosystem: "npm", name }),
-          verifiedRoot: (path) => fixed.has(path),
+          verifiedRoot: (path) => verified.get(path),
           registry, days: config.releaseAgeDays, now,
           placement: (parent, key, peer) => requiredPath(packages, parent.path, key, peer),
           selected: (target) => {
