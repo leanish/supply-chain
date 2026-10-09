@@ -46,6 +46,14 @@ describe("gradleSourceIndex", () => {
     expect(await named({ "build.gradle.kts": script }, "org.other:lib")).toBe(true);
   });
 
+  it("nests block comments only in Kotlin", async () => {
+    const groovy = '/* Include files using src/* patterns. */\ndependencies { implementation "com.acme:lib:1.0" }';
+    expect(await named({ "build.gradle": groovy }, "com.acme:lib")).toBe(true);
+    expect(await named({ "buildSrc/src/main/java/Logic.java": groovy.replace("dependencies", "add") }, "com.acme:lib")).toBe(true);
+    // In Kotlin the same `/*` opens a nested comment, so the whole rest is still inside it.
+    expect(await named({ "build.gradle.kts": '/* a /* b */ implementation("com.acme:lib:1.0")' }, "com.acme:lib")).toBe(false);
+  });
+
   it("keeps code after a nested block comment", async () => {
     expect(await named({ "build.gradle.kts": '/* a /* b */ c */ implementation("com.acme:lib:1.0")' }, "com.acme:lib")).toBe(true);
   });
@@ -142,12 +150,13 @@ describe("gradleSourceIndex", () => {
       "build-logic/plugins/src/main/java/Logic.java": 'project.getDependencies().add("implementation", "com.acme:logic:1.0");',
       "included/build.gradle.kts": 'implementation("com.acme:included:1.0")',
       "src/main/kotlin/shipped.gradle.kts": 'dependencies { implementation("com.acme:shipped:1.0") }',
+      "src/app/build.gradle": "dependencies { implementation 'com.acme:src-project:1.0' }",
       "build/generated/leftover.gradle.kts": 'implementation("com.acme:generated:1.0")',
     };
     const builds = [".", "buildSrc", "included"];
     const index = await gradleSourceIndex(tree(files), builds);
     const at = (build: string, name: string) => index.named(build, "com.acme", name);
-    expect([at(".", "root"), at(".", "convention"), at(".", "logic")]).toEqual([true, true, true]);
+    expect([at(".", "root"), at(".", "convention"), at(".", "logic"), at(".", "src-project")]).toEqual([true, true, true, true]);
     expect([at(".", "included"), at(".", "test-only"), at(".", "shipped"), at(".", "generated")]).toEqual([false, false, false, false]);
     expect([at("included", "included"), at("included", "root")]).toEqual([true, false]);
     expect(() => index.named("missing", "com.acme", "root")).toThrow("no source index");

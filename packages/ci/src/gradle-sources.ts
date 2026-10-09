@@ -44,7 +44,7 @@ export async function gradleSourceIndex(tree: Tree, builds: ReadonlyArray<string
     for (const path of [...await ownSources(tree, build, builds), ...await importedCatalogs(tree, build)]) {
       const text = await tree.read(path);
       if (text === undefined) throw new Error(`${path} disappeared while reading it`);
-      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(path, text) : scriptCoordinates(text)) found.add(coordinate);
+      for (const coordinate of path.endsWith(".toml") ? catalogCoordinates(path, text) : scriptCoordinates(text, /\.kts?$/.test(path))) found.add(coordinate);
     }
     coordinates.set(build, found);
   }
@@ -73,8 +73,9 @@ async function ownSources(tree: Tree, build: string, builds: ReadonlyArray<strin
     if (/^gradle\/[^/]+\.versions\.toml$/.test(relative)) return true;
     // In a convention build, its main code declares the build's dependencies too.
     if (convention !== undefined && CODE.test(relative) && /(?:^|\/)src\/main\//.test(relative)) return true;
-    // Scripts outside `src/`: precompiled script plugins there are what a build ships, not how it builds.
-    return /\.gradle(?:\.kts)?$/.test(relative) && !segments.includes("src");
+    // Not precompiled script plugins (`src/main/kotlin/x.gradle.kts`): what a build ships, not how it builds.
+    // A project's own directory may still be under `src/` (`src/app/build.gradle`).
+    return /\.gradle(?:\.kts)?$/.test(relative) && !/(?:^|\/)src\/[^/]+\/(?:kotlin|groovy|java|resources)\//.test(relative);
   });
 }
 
@@ -89,7 +90,7 @@ async function importedCatalogs(tree: Tree, build: string): Promise<string[]> {
   for (const settings of ["settings.gradle", "settings.gradle.kts"].map((file) => posix.join(build, file))) {
     const text = await tree.read(settings);
     if (text === undefined) continue;
-    for (const match of withoutComments(text).matchAll(/\bfrom\s*\(?\s*files\s*\(\s*["']([^"']+\.toml)["']\s*\)/g)) {
+    for (const match of withoutComments(text, settings.endsWith(".kts")).matchAll(/\bfrom\s*\(?\s*files\s*\(\s*["']([^"']+\.toml)["']\s*\)/g)) {
       // One outside the repository can't be read: its entries just don't count.
       if (posix.isAbsolute(match[1]!)) continue;
       const path = posix.normalize(posix.join(build, match[1]!));
@@ -101,8 +102,8 @@ async function importedCatalogs(tree: Tree, build: string): Promise<string[]> {
 }
 
 /** Coordinates in code: quoted `group:name[:version]` literals, and `group`/`name` in one argument list. */
-function scriptCoordinates(text: string): string[] {
-  const code = withoutComments(text);
+function scriptCoordinates(text: string, kotlin: boolean): string[] {
+  const code = withoutComments(text, kotlin);
   const found: string[] = [];
   for (const match of code.matchAll(/["']([\w.-]+):([\w.-]+)(?::[^"'\s]*)?["']/g)) found.push(`${match[1]}:${match[2]}`);
   for (const match of code.matchAll(GROUP_FIRST)) found.push(`${match[1]}:${match[2]}`);
@@ -149,8 +150,8 @@ function textOf(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** Drops `//` and `/* *\/` comments outside string literals, keeping line breaks. */
-function withoutComments(text: string): string {
+/** Drops `//` and `/* *\/` comments outside string literals, keeping line breaks. Only Kotlin's block comments nest. */
+function withoutComments(text: string, kotlin: boolean): string {
   let out = "";
   let quote: string | undefined;
   for (let i = 0; i < text.length; i++) {
@@ -168,10 +169,9 @@ function withoutComments(text: string): string {
       while (i < text.length && text[i] !== "\n") i++;
       out += "\n";
     } else if (char === "/" && text[i + 1] === "*") {
-      // Kotlin block comments nest; Groovy and Java ones can't contain `/*` that matters here.
       let depth = 0;
       for (; i < text.length; i++) {
-        if (text[i] === "/" && text[i + 1] === "*") { depth++; i++; } else if (text[i] === "*" && text[i + 1] === "/") { depth--; i++; } else if (text[i] === "\n") out += "\n";
+        if (text[i] === "/" && text[i + 1] === "*" && (kotlin || depth === 0)) { depth++; i++; } else if (text[i] === "*" && text[i + 1] === "/") { depth--; i++; } else if (text[i] === "\n") out += "\n";
         if (depth === 0) break;
       }
     } else out += char;
