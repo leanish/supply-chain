@@ -10,7 +10,7 @@ import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, F
 import type { WrapperFile } from "./wrapper-generation.ts";
 import { WRAPPER_FILES, type WrapperPlanner } from "./gradle-wrapper.ts";
 import { plannedPinsLanded } from "./action-pins.ts";
-import { gradleDeclarationProblems } from "./gradle-declarations.ts";
+import { gradleDeclarationProblems, pluginDriven } from "./gradle-declarations.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, dependencyDigest, sha256 } from "./plan.ts";
 
 export interface VerifyInputs {
@@ -52,9 +52,10 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...await floorProblems(base, head, gradle));
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where);
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves);
+  const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
   problems.push(...directChangesOutside(before, after, planned));
-  problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head));
+  problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));
   problems.push(...await plannedPinsLanded(plan.moves, base, head), ...await actionsOutsidePlan(pins, base, head));
   if (plan.kind !== "major") {
     const outside = inputs.changedFiles.filter((path) => !isDependencyFile(path, pins.length > 0) && !(wrapperMoves.length > 0 && WRAPPER_FILES.includes(path)));

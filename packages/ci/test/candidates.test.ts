@@ -286,6 +286,28 @@ describe("securityCandidates, regressions", () => {
 });
 
 describe("bumpCandidates", () => {
+  it("moves only Gradle dependencies the build's own sources declare, noting the rest", async () => {
+    const head = await tree({}, {
+      "settings.gradle.kts": 'includeBuild("included")',
+      "build.gradle.kts": 'plugins { `kotlin-dsl` }\ndependencies { implementation("com.acme:shared:1.0") }',
+      "included/build.gradle.kts": "plugins { java }",
+    });
+    const configuration = (id: string, declared: Array<[string, string, string]>) => ({ id, kind: "project" as const, resolved: [], unresolved: [], error: undefined,
+      declared: declared.map(([group, name, version]) => ({ group, name, version, reason: undefined })) });
+    const gradle = { head: { tree: "worktree", builds: [
+      // The Kotlin DSL plugin adds kotlin-stdlib; the build never names it.
+      { build: ".", configurations: [configuration(":compileClasspath", [["com.acme", "shared", "1.0"], ["org.jetbrains.kotlin", "kotlin-stdlib", "2.4.10"]])] },
+      // The included build gets com.acme:shared from a plugin too.
+      { build: "included", configurations: [configuration(":compileClasspath", [["com.acme", "shared", "1.0"]])] },
+    ] } };
+    const found = await bumpCandidates(head, environment({}, {}), gradle as never);
+    expect(found.bumps.map((bump) => [bump.name, bump.locations])).toEqual([["com.acme:shared", [":compileClasspath"]]]);
+    expect(found.notes).toEqual([
+      "com.acme:shared@1.0: no supported declaration found in its build's sources (included/:compileClasspath), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read",
+      "org.jetbrains.kotlin:kotlin-stdlib@2.4.10: no supported declaration found in its build's sources (:compileClasspath), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read",
+    ]);
+  });
+
   it.each(["24.19.0", "22.0.0"])("caps Node types from %s at the runtime minimum before choosing routine and major targets", async (from) => {
     const versions = ["22.0.0", "22.1.0", "24.19.0", "24.20.0", "26.6.3"];
     const root = { engines: { node: ">=24" }, devDependencies: { "@types/node": `^${from}` } };

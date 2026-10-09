@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- bump-it no longer plans Gradle dependencies a plugin adds (the Kotlin DSL
+  plugin's embedded Kotlin, for one): it moves a Gradle dependency only where
+  its build's own scripts, version catalogs or `buildSrc`/`build-logic` code
+  name it (plugins through `id(...)` or a catalog plugin), and lists the rest
+  as not moved automatically. Gradle reports
+  plugin-added dependencies as declared, so bump-it asked its agent, on every
+  run, to move declarations that don't exist. Of the version catalogs, it reads the default
+  `gradle/libs.versions.toml` and those the settings import, as Gradle does.
+  When a planned plugin update moves the dependencies that plugin adds (the
+  Kotlin plugin's stdlib), verification lets their version change: only for
+  declarations the build's sources don't name, in a build whose plugin the plan
+  moves, and never an addition or removal. Everything else must still change
+  only as planned, and the gate judges every version that changes.
+
+### Changed
+
+- The `ci` package depends on `smol-toml` (1.9.0, zero dependencies) to read
+  Gradle version catalogs, and on `fast-xml-parser` (5.11.2, with seven
+  dependencies of its own, all from its author) to read POMs and Maven
+  metadata, under size, nesting and entity budgets. Both run in the gate and
+  the tools only.
+- POMs and `maven-metadata.xml` are read as XML, not with patterns: only the
+  project's own `<scm>`, `<url>`, `<properties>` and `<parent>` count (not a
+  profile's or a plugin's), CDATA and entities are decoded, and a commented-out
+  `<version>` no longer counts as a published version.
+
 ## 0.2.1 - 2026-10-09
 
 ### Fixed

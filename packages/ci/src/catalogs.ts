@@ -11,6 +11,7 @@ import { isObject } from "./json.ts";
 import { type NpmRegistry, publishTime } from "./npm-registry.ts";
 import type { PackageName, PackageVersion } from "./package-version.ts";
 import { mavenCoordinates } from "./source-repos.ts";
+import { child, children, text, xmlRoot } from "./xml.ts";
 import type { VersionCatalog } from "./young-fixes.ts";
 
 export class NpmCatalog implements VersionCatalog {
@@ -61,10 +62,13 @@ export class MavenCatalog implements VersionCatalog {
       const response = await this.fetch(url);
       if (response.status === 404) continue;
       if (!response.ok) throw new Error(`Maven metadata ${url} failed with HTTP ${response.status}`);
-      const block = /<versions>([\s\S]*?)<\/versions>/.exec(await response.text())?.[1];
-      if (block === undefined) throw new Error(`Maven metadata ${url} has no <versions>`);
+      const versions = child(child(xmlRoot(await response.text(), "metadata"), "versioning"), "versions");
+      if (versions === undefined) throw new Error(`Maven metadata ${url} has no <versions>`);
       found ??= new Set();
-      for (const match of block.matchAll(/<version>\s*([^<\s]+)\s*<\/version>/g)) found.add(match[1]!);
+      for (const [name, version] of children(versions)) {
+        const value = name === "version" ? text(version) : undefined;
+        if (value !== undefined) found.add(value);
+      }
     }
     return found === undefined ? undefined : [...found];
   }
