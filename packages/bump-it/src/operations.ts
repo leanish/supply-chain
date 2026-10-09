@@ -129,6 +129,7 @@ export async function verify(execution: Execution, computed: Computed): Promise<
     wrapperJarSha256: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.wrapperJarSha256(context.workingCopy) : undefined,
     gradle,
     changedFiles,
+    modeChanged: await deps.modeChangedSince(context.workingCopy, computed.base.id),
   });
   if (problems.length > 0) {
     throw new Error(`verification failed: ${problems.join("; ")}`);
