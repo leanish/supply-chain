@@ -176,6 +176,31 @@ describe("occurrences and edge cases", () => {
     ]);
   });
 
+  it("counts occurrences, subdirectory included: another action of the same repository, a second copy or an aliased step is new", async () => {
+    const gh = github();
+    const config = parseConfig({});
+    const at = (path: string | undefined, file = "ci.yml") => ({ name: "acme/actions", path, ref: "main", comment: undefined, file });
+    const of = (...uses: ReturnType<typeof at>[]): ActionsInventory => ({ uses, docker: [], files: ["ci.yml"], gaps: [] });
+    const base = of(at("safe"), at("safe"));
+    const resolutions = await resolveUses([base], gh);
+    const problems = async (head: ActionsInventory) => (await actionChanges(base, head, resolutions, gh, config)).problems;
+    const unpinned = (path: string) => `acme/actions/${path}@main (ci.yml) is new or changed, so it must be pinned to a full commit SHA with a \`# vX.Y.Z\` comment`;
+    expect(await problems(of(at("safe"), at("unsafe")))).toEqual([unpinned("unsafe")]);
+    expect(await problems(of(at("safe"), at("safe"), at("safe")))).toEqual([unpinned("safe")]);
+    // Unchanged or fewer copies stay grandfathered (gaps).
+    expect(await problems(of(at("safe"), at("safe")))).toEqual([]);
+    expect(await problems(of(at("safe")))).toEqual([]);
+    const aliased = (copies: number) => `on: push\njobs:\n  a:\n    steps:\n      - &step\n        uses: acme/actions/safe@main\n${"      - *step\n".repeat(copies)}`;
+    const read = (copies: number): ActionsInventory => ({ ...parseUses(aliased(copies), "ci.yml"), files: ["ci.yml"], gaps: [] });
+    expect((await actionChanges(read(1), read(2), resolutions, gh, config)).problems).toEqual([unpinned("safe")]);
+  });
+
+  it("refuses YAML whose aliases expand past a budget", () => {
+    const levels = ["a: &a [x, x, x, x, x, x, x, x, x, x]"];
+    for (let level = 1; level < 8; level++) levels.push(`${String.fromCharCode(97 + level)}: &${String.fromCharCode(97 + level)} [${Array(10).fill(`*${String.fromCharCode(96 + level)}`).join(", ")}]`);
+    expect(() => parseUses(levels.join("\n"), "bomb.yml")).toThrow("too many YAML nodes");
+  });
+
   it("won't take a floating major tag as the version", async () => {
     const gh = github({ [`${API}/repos/actions/checkout/git/ref/tags/v7`]: { body: { object: { type: "commit", sha: CHECKOUT_SHA } } } });
     expect([...(await resolveUses([inventory(use(CHECKOUT_SHA, "v7"))], gh)).values()]).toEqual([
@@ -200,6 +225,8 @@ jobs:
     const read = await readActionsInventory(tree({ ".github/workflows/ci.yml": workflow, ".github/workflows/shell.yml": "on: push\njobs:\n  a:\n    steps:\n      - run: echo hi\n" }));
     expect(read.uses.map((found) => [found.name, found.ref, found.comment])).toEqual([
       ["actions/checkout", CHECKOUT_SHA, "v7.0.1"],
+      ["actions/setup-node", "v7", undefined],
+      // The alias in job b runs the step again: a use of its own.
       ["actions/setup-node", "v7", undefined],
     ]);
     expect(read.files).toEqual([".github/workflows/ci.yml", ".github/workflows/shell.yml"]);
