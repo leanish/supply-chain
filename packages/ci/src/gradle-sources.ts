@@ -33,7 +33,8 @@ const PLUGIN_MARKER = /^([^:]+):\1\.gradle\.plugin$/;
 export async function gradleSourceIndex(tree: Tree): Promise<GradleSourceIndex> {
   const texts: string[] = [];
   const catalogued = new Set<string>();
-  for (const path of await tree.list(".")) {
+  // Symlinked files too: in a working tree, a catalog may be a link to its data.
+  for (const path of await tree.list(".", { symlinks: true })) {
     if (!BUILD_FILE.test(path) && !CONVENTION_CODE.test(path)) continue;
     const text = await tree.read(path);
     if (text === undefined) throw new Error(`${path} disappeared while reading it`);
