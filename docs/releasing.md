@@ -5,7 +5,7 @@ there is no npm publication. The root version identifies the release.
 
 The release flow follows java-conventions: prepare a dated CHANGELOG entry in a
 small release PR, merge it, tag its exact merge commit, and create the matching
-GitHub release. The first release was v0.1.0; v0.1.1 contains the fixes listed in
+GitHub release. The first release was v0.1.0; each release lists its changes in
 [the CHANGELOG](../CHANGELOG.md).
 
 1. Start from the latest reviewed main. Keep PAT mode documented; GitHub App mode
