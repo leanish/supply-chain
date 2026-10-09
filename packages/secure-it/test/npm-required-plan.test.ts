@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCompare } from "../../ci/src/gate.ts";
-import { environment, files, FIXED, json, locked, metadata, NOW, OLD, postcss, tree, vite, YOUNG, securityBatch, bridgeBatch } from "../../ci/test/required-fixture.ts";
+import { environment, files, FIXED, json, locked, metadata, NOW, OLD, postcss, tree, vite, YOUNG, securityBatch, bridgeBatch, chainBatch } from "../../ci/test/required-fixture.ts";
 import { materializeInCopy } from "../src/npm-materialize.ts";
 import { requiredNpmPlan } from "../src/npm-required-plan.ts";
 import { npmWindowFor } from "../src/npm-window.ts";
 import { planDigest, planOf, planSection } from "../src/plan-block.ts";
 import { retryWithoutNamed } from "../src/retry.ts";
-import type { ChangePlan } from "../src/plan.ts";
+import type { ChangePlan, PlannedMove } from "../src/plan.ts";
 
 const plan: ChangePlan = { kind: "routine", topic: "security", malware: false, packages: ["npm|vite"], severity: "HIGH", moves: [
   { ecosystem: "npm", name: "vite", from: "8.3.2", to: "8.3.3", mechanism: "npm-direct", locations: ["node_modules/vite"], advisories: [FIXED], major: false, commitSha: undefined, declaredAs: undefined },
@@ -71,14 +71,16 @@ describe("security-required npm planning and exact materialization", () => {
   });
 
   it("keeps a second security root's own target where the first root's requirement reaches it", async () => {
-    // 8.5.29 satisfies vite's ^8.5.29 but is vulnerable; postcss's own fix, 8.5.30, stands and needs no required target.
+    // 8.5.29 satisfies vite's ^8.5.29 but is vulnerable; postcss's own fix, 8.5.30, stands as vite's required target.
     const affected = { "vite@8.3.2": [FIXED], "postcss@8.5.28": ["GHSA-postcss"], "postcss@8.5.29": ["GHSA-postcss"] };
     const joint: ChangePlan = { ...plan, packages: ["npm|postcss", "npm|vite"], moves: [plan.moves[0]!,
       { ...plan.moves[0]!, name: "postcss", from: "8.5.28", to: "8.5.30", mechanism: "npm-lock", locations: ["node_modules/postcss"], advisories: ["GHSA-postcss"] }] };
     const h = environment({ affected });
     const computed = await requiredNpmPlan(tree(files()), joint, h.env);
-    // No required target, but vite still depends on postcss's fix: a retry that drops postcss drops vite too.
-    expect(computed).toEqual({ ...joint, coupled: [["npm|vite", "npm|postcss"]] });
+    expect(computed.moves).toEqual(joint.moves);
+    expect(computed.requiredNpm).toMatchObject([{ name: "postcss", version: "8.5.30", exempt: true, root: { name: "vite" } }]);
+    expect(computed.coupled).toContainEqual(["npm|vite", "npm|postcss"]);
+    // vite depends on postcss's fix: a retry that drops postcss drops vite too.
     expect(retryWithoutNamed(computed, ["compare: postcss@8.5.30 adds an advisory"]).plan).toBeUndefined();
     expect((await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), h.env)).failures).toEqual([]);
   });
@@ -88,6 +90,18 @@ describe("security-required npm planning and exact materialization", () => {
     const fix = (name: string, advisory: string) => ({ ...plan.moves[0]!, name, from: "1.0.0", to: "1.0.1", locations: [`node_modules/${name}`], advisories: [advisory] });
     const joint: ChangePlan = { ...plan, packages: ["npm|app", "npm|lib"], moves: [fix("app", FIXED), { ...fix("lib", "GHSA-lib"), mechanism: "npm-lock" }] };
     await expect(requiredNpmPlan(tree(batch.base), joint, environment(batch).env)).resolves.toEqual(joint);
+  });
+
+  it("keeps an aged fix that requires another aged fix's young requirement with it, so the cooldown holds both", async () => {
+    const batch = chainBatch();
+    const fix = (name: string, advisory: string, mechanism: PlannedMove["mechanism"]) => ({ ...plan.moves[0]!, name, from: "1.0.0", to: "1.0.1", mechanism, locations: [`node_modules/${name}`], advisories: [advisory] });
+    const joint: ChangePlan = { ...plan, packages: ["npm|a", "npm|b"], moves: [fix("a", FIXED, "npm-direct"), fix("b", "GHSA-b", "npm-lock")] };
+    const h = environment(batch);
+    const computed = await requiredNpmPlan(tree(batch.base), joint, h.env);
+    // holdRequiredYoung moves every root with an exempt target: a as well as b.
+    expect(computed.requiredNpm?.filter((target) => target.exempt).map((target) => [target.root.name, target.name, target.version]).sort())
+      .toEqual([["a", "c", "1.0.1"], ["b", "c", "1.0.1"]]);
+    expect((await runCompare(tree(batch.base), tree(batch.head, "head"), h.env)).failures).toEqual([]);
   });
 
   it("does not exempt PostCSS when an aged version satisfies the security root", async () => {

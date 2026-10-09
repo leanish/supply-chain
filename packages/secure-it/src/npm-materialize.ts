@@ -73,7 +73,13 @@ async function materializeLock(inputs: MaterializationInputs, locks: ReadonlyMap
   const plannedTargets = planDeclarations(graph, moves, locks, lock, texts);
   floorsText = planOverrides(graph, plannedTargets, texts, root, floorsText, context.now);
   const manifests = new Map([...texts].map(([owner, text]) => [owner, JSON.parse(text) as Manifest]));
-  const pinGraph = requiredPinGraph(lock, required, manifests);
+  // A required target that is itself a planned move (another security fix) already has its exact pin; it needs no anchor.
+  const anchored = required.filter((target) => {
+    const move = plannedTargets.get(target.path);
+    if (move !== undefined && move.to !== target.version) throw new Error(`${target.name}: planned security target conflicts with required ${target.version}`);
+    return move === undefined;
+  });
+  const pinGraph = requiredPinGraph(lock, anchored, manifests);
   const pins: Pin[] = pinGraph.copies().flatMap((copy) => {
     const move = plannedTargets.get(copy.path);
     const target = required.find((target) => target.path === copy.path);

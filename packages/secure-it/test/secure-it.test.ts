@@ -795,6 +795,19 @@ describe("the cooldown hold", () => {
     expect(result).toMatchObject({ units: [{ topic: "security", packages: ["npm|left-pad"] }, { topic: "security-cooldown", packages: ["npm|vite"] }] });
   });
 
+  it("holds an aged fix with the aged fix it requires when that one requires a young dependency", async () => {
+    // As requiredNpmPlan proves it (npm-required-plan.test.ts, chainBatch): vite requires left-pad's fix, which requires young c,
+    // so both roots carry an exempt target for c.
+    const h = harness({ fixes: [vite(), leftPad()] });
+    const target = (root: string, version: string, path: string) => ({ exempt: true, name: "c", version: "1.0.1", root: { name: root, version, path } });
+    const requiredNpm: SecureItDeps["requiredNpm"] = async (_base, plan) => ({ ...plan, requiredNpm: [
+      ...plan.packages.includes("npm|vite") ? [target("vite", "8.3.3", "node_modules/vite")] : [],
+      ...plan.packages.includes("npm|left-pad") ? [target("left-pad", "1.0.1", "node_modules/left-pad")] : [],
+    ] as never });
+    const result = await secureIt({ ...h.deps, requiredNpm, verify: holdingVerify }).run(h.context);
+    expect(result).toMatchObject({ units: [{ topic: "security-cooldown", packages: ["npm|left-pad", "npm|vite"] }] });
+  });
+
   it("keeps a waiting held PR a draft on green CI, and retires it once everything has aged", async () => {
     const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
       { kind: "routine", topic: "security-cooldown" });

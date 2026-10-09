@@ -32,7 +32,7 @@ export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnv
   const { config, exceptions } = await readSettings(base);
   const registry = new NpmRegistry(env.fetch);
   const { proofs, targets } = await collectRequirements(base, plan, locks, registry, config, env.now());
-  if (targets.length === 0) return withCoupling(plan, proofs, plan.packages);
+  if (targets.length === 0) return plan;
   assertConsistentTargets(targets);
   const baseline = [...locks.values()].flatMap(lockedPackages);
   const snapshot = await takeSnapshot(baseline.map((pkg) => ({ ...pkg, ecosystem: "npm" as const })), snapshotOptions(config, env, new ActionsGitHub(env.fetch, env.githubToken)), requiredVersions(proofs));
@@ -41,16 +41,9 @@ export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnv
   const distinctAdditions = companionMoves(targets, plan, locks);
   const moves = [...plan.moves, ...distinctAdditions];
   const packages = [...new Set(moves.map((move) => `${move.ecosystem}|${move.name}`))].sort();
-  return withCoupling({ ...plan, moves, packages, requiredNpm: targets, notes }, proofs, packages);
-}
-
-/** Each root travels with its required targets and the other security roots it requires, so a retry drops them together. */
-function withCoupling(plan: ChangePlan, proofs: ReadonlyArray<RequiredProof>, packages: ReadonlyArray<string>): ChangePlan {
-  const sets = proofs.map((proof) =>
-    [...new Set([proof.root.name, ...proof.targets.map((target) => target.name), ...proof.reached.map((root) => root.name)].map((name) => `npm|${name}`))].filter((key) => packages.includes(key)));
-  // Without required targets only a root requiring another root couples anything; such plans otherwise stay as they were.
-  const added = plan.requiredNpm === undefined ? sets.filter((set) => set.length > 1) : sets;
-  return added.length === 0 ? plan : { ...plan, coupled: [...plan.coupled ?? [], ...added] };
+  const coupled = [...plan.coupled ?? [], ...proofs.map((proof) =>
+    [...new Set([proof.root.name, ...proof.targets.map((target) => target.name)].map((name) => `npm|${name}`))].filter((key) => packages.includes(key)))];
+  return { ...plan, moves, packages, coupled, requiredNpm: targets, notes };
 }
 
 export function requirementLocation(target: PlannedRequirement): string {
@@ -73,10 +66,11 @@ async function collectRequirements(base: Tree, plan: ChangePlan, locks: Readonly
         packages[found.key] = { ...entry, version: move.to };
       }
     }
-    const fixed = new Set(roots.flatMap((root) => root.locations.flatMap((location) => {
+    const verified = new Map(roots.flatMap((root) => root.locations.flatMap((location) => {
       const found = lockfileOf(locks, location);
-      return found.lock === lock ? [found.key] : [];
+      return found.lock === lock ? [[found.key, { name: root.name, version: root.to }] as const] : [];
     })));
+    const fixed = new Set(verified.keys());
     for (const root of roots) {
       for (const location of root.locations) {
         const found = lockfileOf(locks, location);
@@ -87,7 +81,7 @@ async function collectRequirements(base: Tree, plan: ChangePlan, locks: Readonly
             return isObject(actual) && typeof actual["version"] === "string" ? actual["version"] : undefined;
           },
           isOwn: (name) => isOwnPackage(config.ownPackages, { ecosystem: "npm", name }),
-          verifiedRoot: (path) => fixed.has(path),
+          verifiedRoot: (path) => verified.get(path),
           registry, days: config.releaseAgeDays, now,
           placement: (parent, key, peer, optional) => {
             const existing = requiredPath(packages, parent.path, key, peer);

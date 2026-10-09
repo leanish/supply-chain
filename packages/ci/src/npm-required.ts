@@ -26,8 +26,6 @@ export interface RequiredTarget extends RequiredNode {
 export interface RequiredProof {
   readonly root: RequiredNode;
   readonly targets: ReadonlyArray<RequiredTarget>;
-  /** Other verified security roots this root's requirements reach: no targets, but the root depends on their versions. */
-  readonly reached: ReadonlyArray<RequiredNode>;
   readonly problems: ReadonlyArray<string>;
 }
 
@@ -41,8 +39,11 @@ export interface RequiredInputs {
   readonly constraints?: (path: string, name: string) => Promise<ReadonlyArray<string>>;
   readonly isOwn?: (name: string) => boolean;
   readonly installed?: (path: string) => string | undefined;
-  /** Paths holding another verified security root: its own proof covers it wherever its version satisfies the requirement. */
-  readonly verifiedRoot?: (path: string) => boolean;
+  /**
+   * The verified security fix at a path, from a snapshot taken before the proof (never from `installed`, which hypothetical
+   * choices overwrite). A requirement it satisfies chooses it, so that fix isn't replaced by a lower young version.
+   */
+  readonly verifiedRoot?: (path: string) => { readonly name: string; readonly version: string } | undefined;
   readonly incoming?: (node: RequiredNode) => Promise<ReadonlyArray<RequiredTarget>>;
   readonly selected?: (target: RequiredTarget) => void;
   readonly limits?: { readonly depth: number; readonly nodes: number; readonly versions: number };
@@ -51,7 +52,6 @@ export interface RequiredInputs {
 /** Gather before the advisory snapshot; the caller must establish that the root really is a rule-picked fix. */
 export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs): Promise<RequiredProof> {
   const targets: RequiredTarget[] = [];
-  const reached: RequiredNode[] = [];
   const problems: string[] = [];
   const seen = new Set<string>();
   const limits = inputs.limits ?? REQUIRED_LIMITS;
@@ -76,19 +76,16 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
       if (path === undefined && edge.optional) continue;
       if (path === undefined) throw new Error(`${node.name}@${node.version}: unsupported placement for ${edge.key}`);
       const spec = requirementSpec(edge.key, edge.spec);
-      const rootVersion = inputs.verifiedRoot?.(path) === true ? inputs.installed?.(path) : undefined;
-      // A satisfied verified root is its own proof. An unsatisfied one may come from a hypothetical aged bridge the
-      // lockfile doesn't use, so the edge is chosen as usual: a young target there still has to land exactly.
-      if (rootVersion !== undefined && semver.satisfies(rootVersion, spec.range)) {
-        reached.push({ name: spec.name, version: rootVersion, path });
-        continue;
-      }
       const ranges = [spec.range, ...await inputs.constraints?.(path, spec.name) ?? []];
-      const choice = await lowestRequired(spec.name, ranges, inputs, inputs.installed?.(path));
-      const { version, exempt } = choice;
+      if (ranges.some((range) => semver.validRange(range) === null)) throw new Error(`${spec.name}: unreadable applicable requirement`);
+      const verified = inputs.verifiedRoot?.(path);
+      const fix = verified !== undefined && verified.name === spec.name && ranges.every((range) => semver.satisfies(verified.version, range)) ? verified.version : undefined;
+      const { version, exempt } = fix !== undefined ? await verifiedFix(spec.name, fix, inputs) : await lowestRequired(spec.name, ranges, inputs, inputs.installed?.(path));
       const child = { name: spec.name, version, path };
-      const reason = exempt ? `${node.name}@${node.version} requires ${edge.key} ${edge.spec}; no version satisfying ${ranges.join(" & ")} is at least ${inputs.days} days old; ${spec.name}@${version} is the lowest satisfying version`
-        : `${node.name}@${node.version} requires ${edge.key} ${edge.spec}; ${inputs.isOwn?.(spec.name) ? "own-package" : "aged"} ${spec.name}@${version} anchors its required-dependency proof`;
+      const requires = `${node.name}@${node.version} requires ${edge.key} ${edge.spec}`;
+      const reason = fix !== undefined ? `${requires}; ${exempt ? "young" : "aged"} ${spec.name}@${version} is the verified security fix there`
+        : exempt ? `${requires}; no version satisfying ${ranges.join(" & ")} is at least ${inputs.days} days old; ${spec.name}@${version} is the lowest satisfying version`
+          : `${requires}; ${inputs.isOwn?.(spec.name) ? "own-package" : "aged"} ${spec.name}@${version} anchors its required-dependency proof`;
       const target = { ...child, parent: node, key: edge.key, range: edge.spec, reason, exempt };
       const before = targets.length;
       inputs.selected?.(target);
@@ -103,7 +100,7 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
   } catch (error) {
     problems.push(`${root.name}@${root.version}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { root, targets, reached, problems };
+  return { root, targets, problems };
 }
 
 /** An alias keeps its installed key but reads versions/dates of the real package. Tags and non-registry specs cannot prove absence. */
@@ -113,6 +110,13 @@ export function requirementSpec(key: string, spec: string): { name: string; rang
   const range = alias?.[2] ?? spec;
   if (semver.validRange(range) === null) throw new Error(`unreadable required range ${key}: ${spec}`);
   return { name, range };
+}
+
+/** Another verified security fix the requirement accepts: young (exempt) or aged like any choice, never re-picked. */
+async function verifiedFix(name: string, version: string, inputs: RequiredInputs): Promise<{ version: string; exempt: boolean }> {
+  if (inputs.isOwn?.(name)) return { version, exempt: false };
+  const published = publishTime(await inputs.registry.packument(name), name, version);
+  return { version, exempt: inputs.now.getTime() - published.getTime() < inputs.days * DAY_MS };
 }
 
 async function lowestRequired(name: string, ranges: ReadonlyArray<string>, inputs: RequiredInputs, installed: string | undefined): Promise<{ version: string; exempt: boolean }> {
