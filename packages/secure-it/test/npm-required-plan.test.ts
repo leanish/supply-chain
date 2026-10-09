@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { runCompare } from "../../ci/src/gate.ts";
-import { environment, files, FIXED, json, locked, metadata, NOW, OLD, postcss, tree, vite, YOUNG, securityBatch } from "../../ci/test/required-fixture.ts";
+import { environment, files, FIXED, json, locked, metadata, NOW, OLD, postcss, tree, vite, YOUNG, securityBatch, bridgeBatch } from "../../ci/test/required-fixture.ts";
 import { materializeInCopy } from "../src/npm-materialize.ts";
 import { requiredNpmPlan } from "../src/npm-required-plan.ts";
 import { npmWindowFor } from "../src/npm-window.ts";
@@ -81,6 +81,13 @@ describe("security-required npm planning and exact materialization", () => {
     expect(computed).toEqual({ ...joint, coupled: [["npm|vite", "npm|postcss"]] });
     expect(retryWithoutNamed(computed, ["compare: postcss@8.5.30 adds an advisory"]).plan).toBeUndefined();
     expect((await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), h.env)).failures).toEqual([]);
+  });
+
+  it("plans two security roots without rejecting one over a hypothetical aged bridge's requirement", async () => {
+    const batch = bridgeBatch();
+    const fix = (name: string, advisory: string) => ({ ...plan.moves[0]!, name, from: "1.0.0", to: "1.0.1", locations: [`node_modules/${name}`], advisories: [advisory] });
+    const joint: ChangePlan = { ...plan, packages: ["npm|app", "npm|lib"], moves: [fix("app", FIXED), { ...fix("lib", "GHSA-lib"), mechanism: "npm-lock" }] };
+    await expect(requiredNpmPlan(tree(batch.base), joint, environment(batch).env)).resolves.toEqual(joint);
   });
 
   it("does not exempt PostCSS when an aged version satisfies the security root", async () => {

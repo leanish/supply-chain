@@ -41,7 +41,7 @@ export interface RequiredInputs {
   readonly constraints?: (path: string, name: string) => Promise<ReadonlyArray<string>>;
   readonly isOwn?: (name: string) => boolean;
   readonly installed?: (path: string) => string | undefined;
-  /** Paths holding another verified security root: its own proof covers it, so a requirement reaching it must accept its version. */
+  /** Paths holding another verified security root: its own proof covers it wherever its version satisfies the requirement. */
   readonly verifiedRoot?: (path: string) => boolean;
   readonly incoming?: (node: RequiredNode) => Promise<ReadonlyArray<RequiredTarget>>;
   readonly selected?: (target: RequiredTarget) => void;
@@ -76,10 +76,11 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
       if (path === undefined && edge.optional) continue;
       if (path === undefined) throw new Error(`${node.name}@${node.version}: unsupported placement for ${edge.key}`);
       const spec = requirementSpec(edge.key, edge.spec);
-      if (inputs.verifiedRoot?.(path) === true) {
-        const version = inputs.installed?.(path);
-        if (version === undefined || !semver.satisfies(version, spec.range)) throw new Error(`${node.name}@${node.version} requires ${edge.key} ${edge.spec}, but the verified security fix at ${path} is ${spec.name}@${version ?? "missing"}`);
-        reached.push({ name: spec.name, version, path });
+      const rootVersion = inputs.verifiedRoot?.(path) === true ? inputs.installed?.(path) : undefined;
+      // A satisfied verified root is its own proof. An unsatisfied one may come from a hypothetical aged bridge the
+      // lockfile doesn't use, so the edge is chosen as usual: a young target there still has to land exactly.
+      if (rootVersion !== undefined && semver.satisfies(rootVersion, spec.range)) {
+        reached.push({ name: spec.name, version: rootVersion, path });
         continue;
       }
       const ranges = [spec.range, ...await inputs.constraints?.(path, spec.name) ?? []];

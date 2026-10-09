@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { runCompare } from "../src/gate.ts";
-import { environment, files, FIXED, json, metadata, OLD, postcss, tree, vite, locked, YOUNG, securityBatch } from "./required-fixture.ts";
+import { environment, files, FIXED, json, metadata, OLD, postcss, tree, vite, locked, YOUNG, securityBatch, bridgeBatch } from "./required-fixture.ts";
 
 describe("independently gated security requirements", () => {
   it("accepts synthetic Vite 8.3.3 and its lowest required young PostCSS on one snapshot", async () => {
@@ -38,6 +38,12 @@ describe("independently gated security requirements", () => {
     const outcome = await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), environment({ affected }).env);
     expect(outcome.failures).toEqual([]);
     expect(outcome.notes.join()).not.toContain("postcss@8.5.29");
+  });
+
+  it("doesn't reject another verified security root over a hypothetical aged bridge's requirement", async () => {
+    const batch = bridgeBatch();
+    const outcome = await runCompare(tree(batch.base), tree(batch.head, "head"), environment(batch).env);
+    expect(outcome.failures).toEqual([]);
   });
 
   it("lets an installed optional dependency replace its same-key ordinary declaration", async () => {
