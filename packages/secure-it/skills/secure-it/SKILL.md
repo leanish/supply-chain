@@ -1,6 +1,6 @@
 ---
 name: secure-it
-description: Apply the routine security batch, major fix, malware or floor-removal plan secure-it already chose (packages, versions, mechanisms) to the working copy, adapting code only for a major move, and write the PR's title, description and commit message. The tool decides versions, verifies the result with the supply-chain gate, and publishes.
+description: Apply selected Gradle and action security moves, adapting code only for a major, and write the PR text. The tool writes and protects npm files, verifies with the gate, and publishes.
 compatibleCodingAgents:
   - codex
 inputSchema:
@@ -80,6 +80,13 @@ inputSchema:
         type: string
 outputSchema:
   type: object
+  if:
+    properties:
+      outcome: { const: applied }
+  then:
+    required: [publication]
+    properties:
+      publication: { type: object }
   additionalProperties: false
   required: [outcome, summary]
   properties:
@@ -91,7 +98,7 @@ outputSchema:
       minLength: 1
       maxLength: 2000
     publication:
-      type: object
+      type: [object, "null"]
       additionalProperties: false
       required: [title, body, commitMessage]
       properties:
@@ -112,8 +119,8 @@ outputSchema:
 # secure-it
 
 You apply the security moves or explicit floor removals supplied for the working copy of `repo`. **secure-it already chose the explicit targets
-and mechanisms.** Your job is the edit, done the way this repository does things, and the text of the PR. npm may
-also resolve transitive changes required by those moves, under the limits below. The tool verifies the whole result
+and mechanisms.** Your job is the non-npm edit, major adaptation and PR text. The tool has already resolved npm and written its
+exact files. That graph may include induced transitives absent from the explicit moves; preserve them. The tool verifies the whole result
 with the supply-chain gate before publishing it.
 
 Apply every explicit move together. A routine plan batches non-major fixes across packages and ecosystems; a major
@@ -136,33 +143,33 @@ logic and repository code. If the declaration is shared with an unplanned floor,
 requires other edits, answer `cannot-apply`. Run relevant checks with `--no-daemon` for Gradle. Do not add or raise
 floors, change parents, or adapt code in a removal plan. The tool writes this PR's text itself.
 
-## npm's release window
+## Tool-written npm files
 
-The sandbox keeps `npm_config_min_release_age`. A security fix may be younger than that window. The tool supplies
-`npmAgeExclusions`: the repository's own scope patterns, planned packages with young or unreadable target publish
-times, and packages with young or unreadable versions already locked in the affected base lockfiles. It checks npm
->= 11.17.0 before asking you to use these exclusions. For **every npm command**, pass each
-entry as `--min-release-age-exclude=<entry>` (repeated flags); this keeps the own-scope patterns too, which CLI flags
-would otherwise replace. Never lower or unset the age window, or add exclusions of your own. These flags permit
-installing the selected security target; they do not permit choosing another version for an explicit move. Verification requires the
-exact planned versions and `compare` passes before publication.
+The tool applies every npm target and direct companion simultaneously with temporary exact declarations, installs
+under the release-age window and supplied exclusions, restores the intended ranges and formatting, then installs
+again and checks every exact target. Peer-resolved copies use temporary exact root/workspace declarations, since
+npm may ignore overrides for peers. Unsupported placements stop that unit with a reason. Persistent security
+`npm-override` floors are written by the tool too. Induced transitive versions are npm's choice, judged by `compare`.
+
+Never edit npm dependency fields or lockfiles, or add a companion yourself. Leave `toolWritten` files byte for byte;
+a major may adapt only a package.json's other fields (for example scripts), preserving dependencies, devDependencies,
+optionalDependencies, peerDependencies, bundleDependencies/bundledDependencies, peerDependenciesMeta, overrides
+and workspaces. If installation is needed for checks use `npm ci --ignore-scripts`, passing every supplied
+`npmAgeExclusions` as repeated `--min-release-age-exclude=<entry>` flags. Never run npm install/update or anything
+that rewrites a lockfile. Never lower/unset the window or add exclusions of your own.
 
 ## What you may change
 
-- Only what the moves need: dependency declarations, lockfiles, Gradle build and settings files, `gradle/libs.versions.toml`,
+- Only the non-npm moves: Gradle declarations, build and settings files, `gradle/libs.versions.toml`,
   and `floorsFile` (`.github/dependency-floors.json`).
 - Code, tests and docs **only when a move has `major: true`**, and only to adapt to that major.
 - Direct dependencies outside the supplied moves keep their declarations and locked versions. Never edit another
   dependency's version by hand or add an unplanned override or floor.
-- Preserve existing floor records and declarations, except the exact `floorRemovals` described above. Never alter a compatibility floor. A security floor may move
+- Preserve existing floor records and declarations, except the exact `floorRemovals` described above. Never alter a compatibility floor. A Gradle security floor may move
   only to the supplied exact target at its planned locations, keeping its file, selectors, reason, added date and
-  existing advisory IDs; add only the supplied target IDs. New floors are only for `npm-override` or `gradle-floor`.
-- npm may move transitives required by a planned move when you run its install/override mechanism. Let npm resolve
-  them under the supplied release-age window and exclusions; do not edit their lockfile entries by hand, run a
-  general refresh, or add age exclusions for them. This is allowed even when another open PR picked a different
-  version for that transitive. Do not refuse merely because such a required transitive is absent from `moves`.
-  Every explicit move must still land exactly at `to`. The tool runs `compare` on every changed version, including
-  induced transitives: advisory, age and identity failures prevent publication.
+  existing advisory IDs; add only the supplied target IDs. Only planned `gradle-floor` additions are yours to write; npm floors are tool-written.
+- The tool-written npm graph can include induced transitives absent from `moves`. Preserve them exactly; do not
+  reject or revert them merely because another open PR chose a different version. `compare` judges all changes.
 - Never change `.github/supply-chain.json`, `.github/supply-chain-exceptions.json`, or a workflow or action file,
   except the `uses:` lines an `action-pin` move names in its `locations`. The tool rejects any other change to them,
   whatever the move.
@@ -171,19 +178,8 @@ exact planned versions and `compare` passes before publication.
 
 ## Each mechanism
 
-- `npm-direct`: the package is a direct dependency of the workspace whose `node_modules` holds the location. Change
-  its range in that workspace's `package.json` so its base is exactly `<to>` (keep the existing style: `^` stays `^`,
-  `~` stays `~`, an exact version stays exact; an `npm:` alias, named in `declaredAs`, keeps its key and target:
-  `npm:<name>@^<to>`), then run `npm install --package-lock-only --ignore-scripts` next to the lockfile.
-- `npm-lock`: a transitive dependency whose parents' ranges all allow `to`; lock exactly `to` (never `npm update`, which
-  can go past it): add a temporary `overrides` entry pinning `<name>` to `<to>` in the lockfile's `package.json`, run
-  `npm install --package-lock-only --ignore-scripts`, remove that entry, run it again, and check the lockfile still has
-  `to` at every location.
-- `npm-override`: a transitive dependency no parent range allows to fix. Add an `overrides` entry pinning `<name>` to
-  `<to>` exactly (nested under the parent when `locations` shows only one parent), run `npm install --package-lock-only
-  --ignore-scripts`, and add a floor entry to `floorsFile`: `{ "ecosystem": "npm", "package", "version": "<to>",
-  "declaredIn": "<package.json path>", "selector": [[...override key path]], "purpose": "security", "advisories",
-  "reason", "added": "<today>" }`.
+- `npm-direct`, `npm-lock`, `npm-override`: already applied by the tool. Preserve its exact lockfiles, dependency
+  fields and any floor records. Never re-resolve, install a different target, or hand-edit a transitive.
 - `gradle-declared`: a dependency the build declares. Change its version where it's declared (the version catalog if
   it comes from there, else the build file).
 - `gradle-floor`: a transitive dependency. In each configuration of `locations` (`:runtimeClasspath`,
@@ -221,4 +217,4 @@ End with one fenced `json` block, nothing after it:
   adds the table of moves itself). Also mention required transitive changes npm made and why; their versions are
   npm's resolution, not explicit rule-picked targets. The tool verifies them before publishing. Use a commit message
   in the repository's style.
-- `cannot-apply`, with a `summary` of what stopped you. No `publication`.
+- `cannot-apply`, with a `summary` of what stopped you. Omit `publication` or set it to `null`.

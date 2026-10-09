@@ -1,6 +1,7 @@
 /** Security fixes and a separate proved floor-removal unit; malware first, every publication verified. */
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";
@@ -20,6 +21,8 @@ import { writeLocalFile } from "../../remediation/src/local-files.ts";
 import { changedSince } from "../../remediation/src/git-copies.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
+import { formatManifest } from "../../remediation/src/manifest-format.ts";
+import { NPM_DEPENDENCY_FIELDS } from "../../remediation/src/npm-file-checks.ts";
 import { requireNpmExcludes } from "../../remediation/src/npm-version.ts";
 import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 import { ensureOsvScanner, verifyingRun } from "../../remediation/src/osv-scanner.ts";
@@ -30,6 +33,8 @@ import { type BaseMerge, reviewOpenPullRequests, type ReviewSteps } from "../../
 
 import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
+import { reconcileNpmFloors } from "./npm-floor-history.ts";
+import { materializeOnBase } from "./npm-materialize.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
 import { type ChangePlan, coupledWork, packageKey, planFor, type SecurityUnit } from "./plan.ts";
@@ -44,11 +49,12 @@ const SKILLS_DIR = fileURLToPath(new URL("../skills", import.meta.url));
 interface SkillAnswer {
   readonly outcome: "applied" | "cannot-apply";
   readonly summary: string;
-  readonly publication?: { readonly title: string; readonly body: string; readonly commitMessage: string };
+  readonly publication?: { readonly title: string; readonly body: string; readonly commitMessage: string } | null;
 }
 
 /** What secure-it reaches outside its own logic; tests replace them. */
 export interface SecureItDeps {
+  readonly materializeNpm: typeof materializeOnBase;
   readonly floorProbe: (context: ToolRunContext, base: Tree, floors: ReadonlyArray<Floor>, env: GateEnvironment) => Promise<RemovalProbe>;
   readonly gate: (context: ToolRunContext) => Promise<GateEnvironment>;
   readonly gradle: (context: ToolRunContext) => GradleInventories;
@@ -68,6 +74,7 @@ export interface SecureItDeps {
 
 export function defaultDeps(): SecureItDeps {
   return {
+    materializeNpm: materializeOnBase,
     floorProbe: probeOnBase,
     gate: async (context) => {
       // Outside everything sandboxed commands can write, and checked right before each run.
@@ -142,20 +149,46 @@ function skillInput(context: ToolRunContext, plan: ChangePlan, npmAgeExclusions:
 
 /** Every agent mode receives the same explicit npm window, after checking the sandbox's npm. */
 async function agentInput(
-  context: ToolRunContext,
-  deps: SecureItDeps,
-  env: GateEnvironment,
+  execution: Execution,
   plan: ChangePlan,
   base: Tree,
   mode: "apply" | "adapt" | "resolve",
   extra: { failingChecks?: string[]; conflicted?: ReadonlyArray<string> } = {},
 ) {
+  const window = await prepareNpmFiles(execution, plan, base);
+  return { ...skillInput(execution.context, plan, window.exclude, mode, extra), toolWritten: [...execution.npmFiles.keys()].filter((path) => path !== FLOORS_FILE || !plan.moves.some((move) => move.mechanism === "gradle-floor")) };
+}
+
+/** Write the recomputed npm files before either agent work or a clean, model-free rebase verification. */
+async function prepareNpmFiles(execution: Execution, plan: ChangePlan, base: Tree, reconcileFloors = false) {
+  const { context, deps, env } = execution;
   const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base));
   for (const detail of window.notes) context.logger.warn("secure-it: npm release-age exclusion", { detail });
   if (plan.moves.some((move) => move.ecosystem === "npm")) {
     await requireNpmExcludes((_dir, args) => deps.npm(context, args), context.workingCopy.path, window.exclude, "young or unreadable security targets or locked base versions, or own-package exclusions");
   }
-  return skillInput(context, plan, window.exclude, mode, extra);
+  let files = await deps.materializeNpm(context, base, plan, window.exclude);
+  if (reconcileFloors) files = reconcileNpmFloors(files, await deps.trees.working(context.workingCopy).read(FLOORS_FILE));
+  execution.npmFiles.clear();
+  for (const [path, text] of files) {
+    execution.npmFiles.set(path, text);
+    let output = text;
+    if (path.endsWith("package.json") && plan.moves.some((move) => move.major)) {
+      const current = await deps.trees.working(context.workingCopy).read(path);
+      if (current !== undefined) {
+        const manifest = JSON.parse(current) as Record<string, unknown>;
+        const original = structuredClone(manifest);
+        const planned = JSON.parse(text) as Record<string, unknown>;
+        for (const field of NPM_DEPENDENCY_FIELDS) {
+          if (planned[field] === undefined) delete manifest[field];
+          else manifest[field] = planned[field];
+        }
+        output = isDeepStrictEqual(original, manifest) ? current : formatManifest(current, manifest);
+      }
+    }
+    await deps.writeFile(context.workingCopy, path, output);
+  }
+  return window;
 }
 
 const effortFor = (context: ToolRunContext, plan: ChangePlan) => (plan.moves.some((move) => move.major) ? context.config.agent.majorEffort : context.config.agent.effort);
@@ -166,6 +199,7 @@ interface Execution {
   readonly env: GateEnvironment;
   readonly inventories: GradleInventories;
   readonly publication: PublicationContext;
+  readonly npmFiles: Map<string, string>;
 }
 
 interface PlanBase {
@@ -188,7 +222,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const selection = await coupledWork(found.fixes, found.npmPeers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
 
-  const execution = { context, deps, env, inventories, publication: publicationOf(context, deps) };
+  const execution = { context, deps, env, inventories, publication: publicationOf(context, deps), npmFiles: new Map<string, string>() };
   const own = await ownOpenPullRequests(context.github, RULES, context.repo.repo, context.base);
   const results: Readonly<Record<string, unknown>>[] = [];
   for (const unit of selection.units) {
@@ -265,12 +299,11 @@ async function runUnit(execution: Execution, unit: SecurityUnit, base: PlanBase,
   });
   const details = { topic: plan.topic, packages: plan.packages };
   if (already !== undefined) return { ...details, outcome: "already-open", pullRequest: already.url };
-  // Version support is checked before any old PR's edits are reverted.
-  const input = await agentInput(context, deps, execution.env, plan, base.tree, "apply");
   const reusable = owned[0];
   const prepared = await preparePlan(context, deps, plan, reusable, own, base.tree.id);
+  const input = await agentInput(execution, plan, base.tree, "apply");
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({ entrypoint: "secure-it", input, effort: effortFor(context, plan) });
-  if (answer.outcome !== "applied" || answer.publication === undefined) return { ...details, outcome: "cannot-apply", summary: answer.summary };
+  if (answer.outcome !== "applied" || answer.publication == null) return { ...details, outcome: "cannot-apply", summary: answer.summary };
   const verified = await verifyWithRetry(execution, base, plan, answer.publication);
   const checked = { ...details, packages: verified.plan.packages, named: verified.named, leftOut: verified.leftOut };
   if (verified.problems.length > 0) return { ...checked, outcome: "verification-failed", problems: verified.problems };
@@ -308,19 +341,23 @@ interface VerifiedBatch {
 /** Restart once from the same base without named package groups; never shrink malware or guess an unnamed cause. */
 async function verifyWithRetry(execution: Execution, base: PlanBase, plan: ChangePlan, content: Content): Promise<VerifiedBatch> {
   const { context, deps, env, inventories } = execution;
-  const problems = await verifyEdit(context, deps, plan, env, inventories, base.tree, base.gradle);
+  if (execution.npmFiles.size === 0 && plan.moves.some((move) => move.ecosystem === "npm")) {
+    const window = await npmWindowFor(plan, context.releaseAgeDays, context.releaseAgeExclude, context.now, env.fetch, await lockfilesOf(base.tree));
+    for (const [path, text] of await deps.materializeNpm(context, base.tree, plan, window.exclude)) execution.npmFiles.set(path, text);
+  }
+  const problems = await verifyEdit(context, deps, plan, env, inventories, base.tree, base.gradle, execution.npmFiles);
   if (problems.length === 0) return { plan, content, problems, named: [], leftOut: plan.leftOut ?? [] };
   const retry = retryWithoutNamed(plan, problems);
   if (retry.plan === undefined) return { plan, content, problems, named: retry.named, leftOut: retry.leftOut };
   context.logger.warn("secure-it: retrying the routine without named package groups", { leftOut: retry.leftOut });
   await deps.revert(context.workingCopy, base.tree.id);
   const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
-    entrypoint: "secure-it", input: await agentInput(context, deps, env, retry.plan, base.tree, "apply"), effort: effortFor(context, retry.plan),
+    entrypoint: "secure-it", input: await agentInput(execution, retry.plan, base.tree, "apply"), effort: effortFor(context, retry.plan),
   });
-  if (answer.outcome !== "applied" || answer.publication === undefined) {
+  if (answer.outcome !== "applied" || answer.publication == null) {
     return { plan: retry.plan, content, problems: [`retry could not apply: ${answer.summary}`], named: retry.named, leftOut: retry.plan.leftOut ?? [] };
   }
-  const remaining = await verifyEdit(context, deps, retry.plan, env, inventories, base.tree, base.gradle);
+  const remaining = await verifyEdit(context, deps, retry.plan, env, inventories, base.tree, base.gradle, execution.npmFiles);
   return { plan: retry.plan, content: answer.publication, problems: remaining, named: [...retry.named, ...namedProblems(retry.plan, remaining)], leftOut: retry.plan.leftOut ?? [] };
 }
 
@@ -373,17 +410,18 @@ async function verifyEdit(
   inventories: GradleInventories,
   base: Tree,
   baseGradle: GradleInputs["head"],
+  npmFiles?: ReadonlyMap<string, string>,
 ): Promise<string[]> {
   const head = deps.trees.working(context.workingCopy);
   const headGradle = await inventories.ofWorkingTree(head);
-  return deps.verify({ plan, base, head, env, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id) });
+  return deps.verify({ plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id) });
 }
 
 async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Readonly<Record<string, unknown>>> {
   const env = await deps.gate(context);
   const inventories = deps.gradle(context);
   const publication = publicationOf(context, deps);
-  const execution = { context, deps, env, inventories, publication };
+  const execution = { context, deps, env, inventories, publication, npmFiles: new Map<string, string>() };
   const notes: Array<Readonly<Record<string, unknown>>> = [];
   const planFrom = (pr: GitHubPullRequest): ChangePlan => {
     const plan = planOf(pr.body);
@@ -392,6 +430,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
   };
   const steps: ReviewSteps = {
     async rebase(pr, merge: BaseMerge) {
+      execution.npmFiles.clear();
       const previous = planFrom(pr);
       const baseSha = merge.prepared.baseSha;
       // Recomputed on the new base first: it may already have the fix, or need a different one.
@@ -443,14 +482,16 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       if (changed || merge.kind === "conflicted") {
         const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
           entrypoint: "secure-it",
-          input: await agentInput(context, deps, env, plan, base, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
+          input: await agentInput(execution, plan, base, code.length > 0 ? "resolve" : "apply", code.length > 0 ? { conflicted: code } : {}),
           effort: effortFor(context, plan),
         });
         if (answer.outcome !== "applied") throw new Error(`the agent couldn't re-apply the plan on the new base: ${answer.summary}`);
         // A different plan is a different change: its own title and description.
-        if (changed && answer.publication !== undefined) {
+        if (changed && answer.publication != null) {
           content = { title: answer.publication.title, body: `${answer.publication.body}\n\n${planSection(plan)}`, commitMessage: answer.publication.commitMessage };
         }
+      } else {
+        await prepareNpmFiles(execution, plan, base, true);
       }
       // Fixes remain (the recomputation said so): an edit that left the base as it was fails verification, it isn't retired.
       const verified = await verifyWithRetry(execution, { tree: base, gradle: baseGradle }, plan, content);
@@ -460,6 +501,7 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       return "rebased";
     },
     async adapt(pr, prepared, _context, attempt) {
+      execution.npmFiles.clear();
       const plan = planFrom(pr);
       if (plan.kind === "floor-removal") {
         context.logger.warn("secure-it: floor-removal CI failure cannot be adapted", { number: pr.number, detail: "the proved removal cannot legitimately be edited" });
@@ -470,10 +512,10 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
       const base = await deps.trees.commit(context.workingCopy, prepared.baseSha);
       const answer = await context.agent<ReturnType<typeof skillInput>, SkillAnswer>({
         entrypoint: "secure-it",
-        input: await agentInput(context, deps, env, plan, base, "adapt", { failingChecks }),
+        input: await agentInput(execution, plan, base, "adapt", { failingChecks }),
         effort: effortFor(context, plan),
       });
-      if (answer.outcome !== "applied" || answer.publication === undefined) return false;
+      if (answer.outcome !== "applied" || answer.publication == null) return false;
       const verified = await verifyWithRetry(execution, { tree: base, gradle: await inventories.ofCommit(base) }, plan, { title: pr.title, body: pr.body, commitMessage: answer.publication.commitMessage });
       if (verified.leftOut.length > 0) notes.push({ number: pr.number, leftOut: verified.leftOut, named: verified.named });
       if (verified.problems.length > 0) throw new Error(`the adaptation doesn't verify: ${verified.problems.join("; ")}`);

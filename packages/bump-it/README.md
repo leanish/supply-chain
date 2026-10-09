@@ -56,8 +56,10 @@ packages/remediation/run.sh bump-it review leanish/widget   # every few hours
   with target selection: bump-it's targets still require the age, and `compare` judges what a major induces.
   The routine resolves after direct updates,
   then code weighs all transitive candidates within the dependents' ranges and existing override constraints on one
-  advisory snapshot. Temporary exact specs/overrides lock targets, restoring the planned manifests before a second
-  install. The final graph must keep every target (at most four pin passes). Majors install their own move without a
+  advisory snapshot. Direct targets and frozen directs are constrained with simultaneous temporary exact declarations before the
+  first install/update. Peer copies at a root/workspace are anchored with exact declarations, not ignored overrides;
+  unsupported nested/conflicting placements block that unit with a reason. Temporary pins lock targets, restoring
+  planned manifest bytes before a second install. The final graph must keep every target (at most four pin passes). Majors install their own move without a
   routine refresh, installing any explicit peer companions too; direct declarations outside the plan remain at base.
 - Unjudgeable copies stay at their base version, with an unresolved note. Complex scoped override rules are treated
   conservatively: their copies stay at base rather than claiming an R3 selection. If a new copy has no provable eligible

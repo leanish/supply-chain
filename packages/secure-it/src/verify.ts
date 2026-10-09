@@ -24,6 +24,7 @@
  *      no action use outside the plan changed;
  *   5. only dependency files changed, unless a move is a major.
  */
+import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
 import { type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
@@ -46,6 +47,7 @@ import { verifyRemovalEdit } from "./floor-verification.ts";
 import { type ChangePlan, lockfileOf, packageKey } from "./plan.ts";
 
 export interface VerifyInputs {
+  readonly npmFiles?: ReadonlyMap<string, string>;
   readonly plan: ChangePlan;
   readonly base: Tree;
   readonly head: Tree;
@@ -63,6 +65,8 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const pins = pinsOf(plan);
   const fenced = await policyFence(inputs.changedFiles, pins, base, head);
   if (fenced.length > 0) return fenced;
+  const npm = await computedNpmProblems(inputs.npmFiles, head, plan.moves.some((move) => move.major), base, inputs.changedFiles);
+  if (npm.length > 0) return npm;
   const floors = await preservedFloors(plan, base, head, gradle);
   if (floors.length > 0) return floors;
 

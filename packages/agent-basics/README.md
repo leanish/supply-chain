@@ -22,3 +22,5 @@ What secure-it and bump-it need to run a coding agent, without leanish-developme
 Most of it is copied from leanish-development's runtime, temporarily: [PROVENANCE.md](PROVENANCE.md) lists every file,
 where it comes from and what changed. A fix to a copied file is made in both repositories until a shared
 `leanish/agent-kit` replaces the copies.
+
+Skill schemas additionally accept the `[object, null]` type union and a restricted constant-property `if`/`then` requiring one non-null object. Both tool answers allow null publication only for cannot-apply; applied still needs complete publication text. Other unions, general conditionals, unknown keywords and malformed objects remain rejected. These runtime adaptations are listed in PROVENANCE.md for manual mirroring.

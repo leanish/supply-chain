@@ -1,6 +1,6 @@
 # secure-it
 
-Fixes what the [supply-chain gate](../ci)'s full scan fails on, at any depth, with the smallest change the version rule picks, batching non-major fixes and opening each major separately. The code decides versions and verifies the result; a coding agent (Codex) only edits the working copy.
+Fixes what the [supply-chain gate](../ci)'s full scan fails on, at any depth, with the smallest change the version rule picks, batching non-major fixes and opening each major separately. The code decides versions and verifies the result; the tool writes npm files and a coding agent (Codex) applies non-npm edits and major adaptations.
 
 ```bash
 packages/remediation/run.sh secure-it run leanish/sqs-codec      # daily: batch fixes, majors apart
@@ -32,7 +32,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | Ecosystem | Situation | Mechanism |
    |---|---|---|
    | npm | a direct dependency | change its range and lock |
-   | npm | a transitive one that every parent's range allows | lock at exactly `to`, through a temporary override |
+   | npm | a transitive one that every parent's range allows | lock exactly `to`, through temporary pins (a declaration for peers) |
    | npm | otherwise | a lasting override plus a floor entry |
    | Gradle | a declared dependency | change its version |
    | Gradle | a transitive one | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
@@ -41,9 +41,9 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    - An open PR for the same routine/major/malware unit, with an identical plan and a recognised head: nothing to do; its review owns it. The unit reports `already-open`. Other major units still proceed. An already-open malware unit is left to review without planning other work.
    - One with a different plan, while its head is still the tool's: that PR is reconciled. The default branch is merged into it, every file it changed goes back to the base's content, and the new plan is applied on top, so nothing the old plan did lingers. It's pushed as a normal commit.
    - One someone else pushed to: the fix goes in a PR of its own.
-6. **The agent applies the plan** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
+6. **The tool resolves npm; the agent applies non-npm moves** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
    npm may resolve transitive changes a planned move requires, under the supplied release-age window and exclusions.
-   The agent does not hand-edit those versions, add unplanned overrides, or refresh unrelated packages. Direct
+   The tool resolves those versions; the agent never changes npm dependency fields or lockfiles. Direct
    dependencies outside the plan stay unchanged. Direct peers selected by code are explicit moves, even when they
    have no advisory themselves. New or purely transitive peers remain npm's resolution under `compare`.
    These induced versions are npm's choice, not additional rule-picked
@@ -120,7 +120,8 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - Older per-package plans without a batch kind keep their original package scope and topic during review. Runs
     create the new units independently; legacy PRs retire once their fixes are on the base.
   - A different plan on the new base: the PR is reconciled as in a run (reverted to the base, conflicts included, then the new plan applied), with the agent's new title and description.
-  - The same plan: conflicted dependency files take the base's side, and the agent re-applies the plan; it also resolves any code conflicts.
+  - The same plan: conflicted dependency files take the base's side, the tool re-writes npm files and the agent re-applies the non-npm plan; it also resolves any code conflicts.
+  - A clean merge with the same plan also refreshes npm files before verification, without an agent. Matching npm floors keep their recorded date and reason; merged Gradle floor records remain intact.
   - Either way the result is verified like a run (including the one routine retry and visible omissions) and pushed, with the plan in the PR. Fixes remained on the new base, so an edit that leaves the base as it was fails verification; it doesn't retire the PR.
 - **CI failed (version-fix units):** the agent adapts, at most twice, and the result is verified before it's pushed. CI and failing names come from the head SHA's Actions runs/jobs plus commit statuses; no Checks permission is needed.
 
@@ -131,7 +132,7 @@ The tick from [`packages/remediation`](../remediation), with secure-it's steps:
   - the Keychain isn't reachable;
   - the sensitive home paths can't be read;
   - writes land only in the working copy, the temp dirs and the build cache.
-- npm dependency edits use `--package-lock-only --ignore-scripts`. The agent keeps the configured release-age window. Planned young/unreadable targets and young/unreadable base versions in the affected lockfiles get explicit `--min-release-age-exclude` flags, alongside own-scope patterns. Each exclusion is reported; exact target checks and `compare` still judge all induced versions, including age and identity. This applies to initial edits, rebases/conflict resolution and CI adaptation, and requires npm >= 11.17.0 whenever exclusions are needed.
+- npm dependency edits use `--package-lock-only --ignore-scripts`. Tool-run npm keeps the configured release-age window; agent check commands inherit it too. Planned young/unreadable targets and young/unreadable base versions in the affected lockfiles get explicit `--min-release-age-exclude` flags, alongside own-scope patterns. Each exclusion is reported; exact target checks and `compare` still judge all induced versions, including age and identity. This applies to initial edits, rebases/conflict resolution and CI adaptation, and requires npm >= 11.17.0 whenever exclusions are needed.
 - npm 11.17.0 or later is required when an npm plan needs these exclusions. The tool checks the sandbox's npm before starting the agent and reports the required exclusions and detected version on failure.
 - The agent gets the read-only token alone.
 
@@ -149,3 +150,15 @@ permissions and launchd schedules, and the [config reference](../../docs/tool-co
 - **Tools:** Node 24, git, `gh`, and Codex, logged in; npm >= 11.17.0 when a planned npm fix or an own scope needs a release-age exclusion.
 - **OSV-Scanner:** the version pinned in [`packages/ci/tools.json`](../ci/tools.json), installed into the tool's state directory (out of reach of sandboxed commands) and verified by sha256 before every run.
 - **Schedule:** launchd or cron calls `run.sh`.
+
+
+npm moves are written by the tool in a sandboxed export of base, before any agent work. All planned directs and
+peer companions are pinned simultaneously to exact targets; unplanned directs keep base versions. The tool
+installs, restores intended ranges and original manifest formatting, installs again, and requires exact landing.
+Peer-resolved root/workspace copies use temporary exact declarations rather than overrides npm may ignore;
+unsupported nested/conflicting placements are reported and nothing in that unit is published. Existing floors
+remain, and new security overrides have matching floor records. Induced transitives remain npm's resolution under
+the window and exclusions, judged by compare. The agent preserves computed locks and dependency fields; only a
+major may adapt manifest scripts/config. Every apply, resolve and adapt path verifies those files before publishing.
+
+Both skills accept omitted or null publication only for `cannot-apply`; an `applied` answer must include all PR text.

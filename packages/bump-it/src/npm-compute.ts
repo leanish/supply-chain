@@ -9,10 +9,11 @@ import { basename, dirname, join } from "node:path";
 
 import type { NpmDeclaration } from "../../ci/src/candidates.ts";
 import { type NodeRuntime, nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "../../ci/src/node-runtime.ts";
+import { resolveExact } from "../../remediation/src/npm-exact.ts";
 import { workingTree } from "../../ci/src/tree.ts";
 
 import { assertLocalFile } from "./files.ts";
-import { formatManifest } from "./manifest-format.ts";
+import { withSpec } from "../../remediation/src/manifest-spec.ts";
 import { NpmGraph, rewriteSpec } from "./npm-graph.ts";
 import { repositoryOverrides } from "./npm-overrides.ts";
 import { pinnedManifests } from "./npm-pins.ts";
@@ -127,12 +128,6 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
   }
   const planned = plannedManifests(baseTexts, inputs.moves.filter((move) => move.lockfile === lockfile), lockfile);
   const plannedParsed = new Map([...planned].map(([path, text]) => [path, JSON.parse(text) as Manifest]));
-  const writePlanned = async () => {
-    for (const [path, text] of planned) {
-      await writeFile(at(manifestOf(path)), text);
-    }
-  };
-  await writePlanned();
 
   const flags = [
     "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund",
@@ -145,11 +140,6 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
       throw new Error(`npm ${args.join(" ")} in ${root === "" ? "the root" : root} failed (exit ${result.code}): ${result.stderr.trim().split("\n").slice(-3).join(" / ")}`);
     }
   };
-  await npm("install");
-  if (inputs.kind === "routine") {
-    await npm("update");
-  }
-
   const overrides = repositoryOverrides(plannedParsed.get(""));
   const plannedDirect = new Map(inputs.moves.filter((move) => move.lockfile === lockfile).map((move) => [`${move.workspace}:${move.declaredAs}`, move.to]));
   const baseCopies = new Map(baseGraph.copies().map((copy) => [copy.path, copy.version]));
@@ -158,6 +148,17 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
     const version = edge.to === undefined ? undefined : baseCopies.get(edge.to);
     return version === undefined ? [] : [[`${edge.from === "" ? "." : edge.from}:${edge.key}`, version] as const];
   }));
+  // Freeze all direct declarations before npm can drift an excluded name, including peer companions.
+  const initialDirect = directTargets(baseGraph, plannedDirect, baseDirect);
+  const initialPins = baseGraph.copies().flatMap((copy) => {
+    const target = initialDirect.get(copy.path);
+    return target === undefined ? [] : [{ copy, target }];
+  });
+  await resolveExact(join(inputs.dir, root), planned, pinnedManifests(baseGraph, initialPins, plannedParsed, overrides), async () => {
+    await npm("install");
+    if (inputs.kind === "routine") await npm("update");
+  }, () => npm("install"));
+
   let decisions: Decision[] = [];
   for (let pass = 0; ; pass++) {
     const graph = new NpmGraph(JSON.parse(await readFile(at(lockName), "utf8")));
@@ -180,13 +181,13 @@ async function computeLockfile(lockfile: string, inputs: NpmInputs, baseVersions
     if (pass === MAX_PASSES) {
       throw new Error(`npm didn't keep the targets in ${lockfile} after ${MAX_PASSES} passes: ${off.map((pin) => `${pin.copy.name} at ${pin.copy.path} is ${pin.copy.version}, not ${pin.target}`).join("; ")}`);
     }
-    const pinned = pinnedManifests(graph, off, plannedParsed, overrides);
-    for (const [path, manifest] of pinned) {
-      await writeFile(at(manifestOf(path)), `${JSON.stringify(manifest, null, 2)}\n`);
-    }
-    await npm("install");
-    await writePlanned();
-    await npm("install");
+    // Pin the full decision set together, not just off-target copies: a later install must not drift a companion.
+    const pins = decisions.flatMap((decision) => {
+      const needed = decision.target !== decision.copy.version || direct.has(decision.copy.path);
+      return decision.target === undefined || !needed ? [] : [{ copy: decision.copy, target: decision.target }];
+    });
+    await resolveExact(join(inputs.dir, root), planned, pinnedManifests(graph, pins, plannedParsed, overrides),
+      () => npm("install"), () => npm("install"));
   }
 
   const files = new Map<string, string>();
@@ -270,34 +271,6 @@ function plannedManifests(texts: ReadonlyMap<string, string>, moves: ReadonlyArr
   return result;
 }
 
-function withSpec(text: string, key: string, from: string, to: string, file: string): string {
-  const manifest = JSON.parse(text) as Manifest;
-  let found = false;
-  for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
-    const deps = manifest[field] as Record<string, string> | undefined;
-    if (deps?.[key] === from) {
-      deps[key] = to;
-      found = true;
-    }
-  }
-  if (!found) {
-    throw new Error(`${file} doesn't declare ${key} as '${from}'`);
-  }
-  if (formatManifest(text, JSON.parse(text)) === text) {
-    return formatManifest(text, manifest);
-  }
-  // Not npm's own formatting: replace the pair in place, when it's there exactly once.
-  const pair = new RegExp(`${escape(JSON.stringify(key))}(\\s*:\\s*)${escape(JSON.stringify(from))}`, "g");
-  const matches = [...text.matchAll(pair)];
-  if (matches.length !== 1) {
-    throw new Error(`${file} isn't formatted the way npm writes it, and '${key}: ${from}' isn't there exactly once to replace`);
-  }
-  return text.replace(pair, (_whole, colon: string) => `${JSON.stringify(key)}${colon}${JSON.stringify(to)}`);
-}
-
-function escape(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /**
  * Copy path → the version each declared dependency's copy must be at: the
