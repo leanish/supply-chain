@@ -146,6 +146,24 @@ describe("bump verification", () => {
     const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("2.0.0")), head: tree("head", script("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("2.1.0", "1.1") } })).toContainEqual(expect.stringContaining("g:lib"));
+    // The plugin move itself must still land exactly.
+    expect(await verifyPlan({ ...input, gradle: { base: inventory("2.0.0"), head: { ...inventory("2.1.0"), builds: [{ ...inventory("2.1.0").builds[0]!, configurations: [
+      { ...inventory("2.2.0").builds[0]!.configurations[0]! }, inventory("2.1.0").builds[0]!.configurations[1]!] }] } } })).toContainEqual(expect.stringContaining("exactly 2.1.0"));
+    // Not a version change: an unreadable explicit declaration (kotlin("reflect", ...)) removed, or a new one added.
+    const withReflect = (inv: GradleInventory, reflect: boolean): GradleInventory => ({ ...inv, builds: [{ ...inv.builds[0]!, configurations: [inv.builds[0]!.configurations[0]!,
+      { ...inv.builds[0]!.configurations[1]!, declared: [...inv.builds[0]!.configurations[1]!.declared, ...reflect ? [{ group: "org.jetbrains.kotlin", name: "kotlin-reflect", version: "2.0.0", reason: undefined }] : []] }] }] });
+    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), true), head: withReflect(inventory("2.1.0"), false) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
+    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
+  });
+  it("protects declarations it can't read when the plan moves no plugin of their build", async () => {
+    const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: "g:lib", from: "1.0", minor: { version: "1.1", line: "1" }, major: undefined, locations: [":compileClasspath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
+    const inventory = (lib: string, stdlib: string): GradleInventory => ({ schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":compileClasspath", kind: "project", unresolved: [], error: undefined, resolved: [], declared: [{ group: "g", name: "lib", version: lib, reason: undefined }, { group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: stdlib, reason: undefined }] },
+    ] }] });
+    const script = (lib: string) => ({ "build.gradle.kts": `dependencies { implementation("g:lib:${lib}") }` });
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("1.0")), head: tree("head", script("1.1")), env, gradle: { base: inventory("1.0", "2.0.0"), head: inventory("1.1", "2.0.0") }, changedFiles: ["build.gradle.kts"] };
+    expect(await verifyPlan(input)).toEqual([]);
+    expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: inventory("1.1", "2.1.0") } })).toContainEqual(expect.stringContaining("kotlin-stdlib"));
   });
   it("keeps floors and their declarations immutable even when a plan names them", async () => {
     const floor = JSON.stringify({ floors: [{ ecosystem: "Maven", package: "g:lib", version: "1.0", declaredIn: "build.gradle", selector: [":runtimeClasspath"], purpose: "compatibility", reason: "works", added: "2026-01-01" }] });

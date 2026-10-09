@@ -6,22 +6,36 @@ import { declaredAt } from "../../remediation/src/edit-checks.ts";
 import type { PlannedMove } from "./plan.ts";
 
 /**
- * Whether a declared dependency at a Gradle location is plugin-driven: named in its build's own sources neither
- * before nor after (see `gradleSourceIndex`). bump-it never plans those (a plugin update moves them, the Kotlin
- * plugin's stdlib for one), so verification lets them change; the gate still judges every version that changes.
+ * Whether an unplanned declared dependency's change at a Gradle location is plugin-driven, so verification lets it
+ * through: its build's own sources name it neither before nor after (see `gradleSourceIndex`), the plan moves a
+ * plugin of that build (a move on a buildscript or settings classpath), and only its version changed (as many
+ * declarations before as after: nothing added or removed). bump-it never plans such dependencies (updating the
+ * Kotlin plugin moves the stdlib it adds), and the gate still judges every version that changes. Anything else keeps
+ * the strict checks: a declaration the index can't read changes only with a plugin update in its build.
  */
-export async function pluginDriven(base: Tree, head: Tree, inventories: ReadonlyArray<GradleInventory | undefined>): Promise<(name: string, location: string) => boolean> {
+export async function pluginDriven(base: Tree, head: Tree, inventories: { readonly base: GradleInventory | undefined; readonly head: GradleInventory | undefined }, moves: ReadonlyArray<PlannedMove>): Promise<(name: string, location: string) => boolean> {
   const buildOf = new Map<string, string>();
-  for (const build of inventories.flatMap((inventory) => inventory?.builds ?? [])) {
-    for (const configuration of build.configurations) buildOf.set(gradleLocation(build.build, configuration.id), build.build);
+  const classpath = new Set<string>();
+  for (const build of [inventories.base, inventories.head].flatMap((inventory) => inventory?.builds ?? [])) {
+    for (const configuration of build.configurations) {
+      const location = gradleLocation(build.build, configuration.id);
+      buildOf.set(location, build.build);
+      if (configuration.kind === "buildscript" || configuration.kind === "settings") classpath.add(location);
+    }
   }
-  if (buildOf.size === 0) return () => false;
+  const planned = moves.filter((move) => move.mechanism === "gradle-declared");
+  const pluginBuilds = new Set(planned.flatMap((move) => move.locations.filter((location) => classpath.has(location)).map((location) => buildOf.get(location)!)));
+  if (pluginBuilds.size === 0) return () => false;
   const builds = [...new Set(buildOf.values())];
   const [before, after] = await Promise.all([gradleSourceIndex(base, builds), gradleSourceIndex(head, builds)]);
   return (name, location) => {
     const build = buildOf.get(location);
+    if (build === undefined || !pluginBuilds.has(build)) return false;
+    if (planned.some((move) => move.name === name && move.locations.includes(location))) return false;
     const [group, artifact] = name.split(":") as [string, string];
-    return build !== undefined && !before.named(build, group, artifact) && !after.named(build, group, artifact);
+    if (before.named(build, group, artifact) || after.named(build, group, artifact)) return false;
+    const was = declaredAt(inventories.base, location, name);
+    return was.length > 0 && was.length === declaredAt(inventories.head, location, name).length;
   };
 }
 
