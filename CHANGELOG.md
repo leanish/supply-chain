@@ -14,8 +14,9 @@
   repository, comments included (see `packages/ci/README.md` for its known
   limitations). When a planned plugin update moves the dependencies that plugin
   adds (the Kotlin plugin's stdlib), verification lets their version change:
-  only for dependencies no Gradle source names, before or after, in a build
-  whose plugin the plan moves, and never an addition or removal. Everything
+  only in a build whose plugin the plan moves, never an addition or removal,
+  and only when every file the update changed differs from the base by the
+  planned version swaps alone, so no other edit can be behind it. Everything
   else must still change only as planned, and the gate judges every version
   that changes.
 

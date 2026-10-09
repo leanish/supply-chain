@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
-import { changedSince, exportCommit, sameTreeAs } from "../src/git-copies.ts";
+import { changedSince, exportCommit, modeChangedSince, sameTreeAs } from "../src/git-copies.ts";
 
 let root: string;
 let workingCopy: WorkingCopy;
@@ -65,6 +65,17 @@ describe("git copies", () => {
     await writeFile(join(workingCopy.path, "package.json"), '{"name":"a"}\n');
     await rm(join(workingCopy.path, "new.txt"));
     expect(await sameTreeAs(workingCopy, first)).toBe(true);
+  });
+
+  it("lists the tracked paths whose mode changed, not those whose content alone did", async () => {
+    await writeFile(join(workingCopy.path, "package.json"), '{"name":"b"}\n');
+    await chmod(join(workingCopy.path, "hidden.gradle"), 0o755);
+    await chmod(join(workingCopy.path, "gradlew"), 0o644);
+    expect(await modeChangedSince(workingCopy, first)).toEqual(["gradlew", "hidden.gradle"]);
+    await chmod(join(workingCopy.path, "hidden.gradle"), 0o644);
+    await chmod(join(workingCopy.path, "gradlew"), 0o755);
+    await writeFile(join(workingCopy.path, "package.json"), '{"name":"a"}\n');
+    expect(await modeChangedSince(workingCopy, first)).toEqual([]);
   });
 
   it("refuses a tree with an entry under its own symlink, case-insensitively: a symlink A and a file under a/", async () => {
