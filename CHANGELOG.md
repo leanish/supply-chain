@@ -10,7 +10,8 @@
   name it (plugins through `id(...)` or a catalog plugin), and lists the rest
   as not moved automatically. Gradle reports
   plugin-added dependencies as declared, so bump-it asked its agent, on every
-  run, to move declarations that don't exist.
+  run, to move declarations that don't exist. Of the version catalogs, it reads the default
+  `gradle/libs.versions.toml` and those the settings import, as Gradle does.
 
 ### Changed
 
