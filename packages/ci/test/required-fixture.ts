@@ -70,3 +70,27 @@ export function securityBatch() {
   return { docs: { vite: root, bundler: root }, base: batchFiles("8.3.2", "8.5.28"), head: batchFiles("8.3.3", "8.5.29"),
     affected: { "vite@8.3.2": [FIXED], "bundler@8.3.2": [FIXED] } };
 }
+
+/**
+ * Fix app@1.0.1 requires bridge ^1.0.1. The lowest aged bridge, 1.0.1, pins lib@1.0.0, but the lockfile installs bridge
+ * 1.0.2, which accepts lib's own security fix, 1.0.1. The proof's hypothetical 1.0.1 bridge mustn't reject that fix.
+ */
+export function bridgeBatch() {
+  const doc = (versions: Record<string, unknown>, time: Record<string, string>) => ({ time, versions });
+  const docs = {
+    app: doc({ "1.0.0": { ...metadata, dependencies: { bridge: "^1.0.0" } }, "1.0.1": { ...metadata, dependencies: { bridge: "^1.0.1" } } }, { "1.0.0": OLD, "1.0.1": YOUNG }),
+    bridge: doc({ "1.0.0": { ...metadata, dependencies: { lib: "1.0.0" } }, "1.0.1": { ...metadata, dependencies: { lib: "1.0.0" } }, "1.0.2": { ...metadata, dependencies: { lib: "^1.0.1" } } }, { "1.0.0": OLD, "1.0.1": OLD, "1.0.2": OLD }),
+    lib: doc({ "1.0.0": metadata, "1.0.1": metadata }, { "1.0.0": OLD, "1.0.1": YOUNG }),
+  };
+  const batchFiles = (app: string, bridge: string, lib: string) => {
+    const manifest = { devDependencies: { app: `^${app}` } };
+    return { "package.json": json(manifest), "package-lock.json": json({ lockfileVersion: 3, packages: {
+      "": manifest,
+      "node_modules/app": { ...locked("app", app), dependencies: { bridge: app === "1.0.0" ? "^1.0.0" : "^1.0.1" } },
+      "node_modules/bridge": { ...locked("bridge", bridge), dependencies: { lib: bridge === "1.0.2" ? "^1.0.1" : "1.0.0" } },
+      "node_modules/lib": locked("lib", lib),
+    } }) };
+  };
+  return { docs, base: batchFiles("1.0.0", "1.0.0", "1.0.0"), head: batchFiles("1.0.1", "1.0.2", "1.0.1"),
+    affected: { "app@1.0.0": [FIXED], "lib@1.0.0": ["GHSA-lib"] } };
+}
