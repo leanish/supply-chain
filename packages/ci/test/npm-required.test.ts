@@ -36,7 +36,7 @@ describe("npm security-required release age", () => {
   it("keeps another verified security root where the requirement reaches it, if its version satisfies", async () => {
     const at = (version: string) => ({ ...inputs(), verifiedRoot: (path: string) => path === "node_modules/postcss", installed: () => version });
     const kept = await requiredClosure(root, at("8.5.30"));
-    expect(kept).toMatchObject({ targets: [], problems: [] });
+    expect(kept).toMatchObject({ targets: [], problems: [], reached: [{ name: "postcss", version: "8.5.30", path: "node_modules/postcss" }] });
     const refused = await requiredClosure(root, at("8.5.28"));
     expect(refused.targets).toEqual([]);
     expect(refused.problems.join()).toContain("requires postcss ^8.5.29, but the verified security fix at node_modules/postcss is postcss@8.5.28");

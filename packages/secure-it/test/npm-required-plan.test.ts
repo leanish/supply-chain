@@ -9,6 +9,7 @@ import { materializeInCopy } from "../src/npm-materialize.ts";
 import { requiredNpmPlan } from "../src/npm-required-plan.ts";
 import { npmWindowFor } from "../src/npm-window.ts";
 import { planDigest, planOf, planSection } from "../src/plan-block.ts";
+import { retryWithoutNamed } from "../src/retry.ts";
 import type { ChangePlan } from "../src/plan.ts";
 
 const plan: ChangePlan = { kind: "routine", topic: "security", malware: false, packages: ["npm|vite"], severity: "HIGH", moves: [
@@ -75,7 +76,10 @@ describe("security-required npm planning and exact materialization", () => {
     const joint: ChangePlan = { ...plan, packages: ["npm|postcss", "npm|vite"], moves: [plan.moves[0]!,
       { ...plan.moves[0]!, name: "postcss", from: "8.5.28", to: "8.5.30", mechanism: "npm-lock", locations: ["node_modules/postcss"], advisories: ["GHSA-postcss"] }] };
     const h = environment({ affected });
-    expect(await requiredNpmPlan(tree(files()), joint, h.env)).toEqual(joint);
+    const computed = await requiredNpmPlan(tree(files()), joint, h.env);
+    // No required target, but vite still depends on postcss's fix: a retry that drops postcss drops vite too.
+    expect(computed).toEqual({ ...joint, coupled: [["npm|vite", "npm|postcss"]] });
+    expect(retryWithoutNamed(computed, ["compare: postcss@8.5.30 adds an advisory"]).plan).toBeUndefined();
     expect((await runCompare(tree(files()), tree(files("8.3.3", "8.5.30"), "head"), h.env)).failures).toEqual([]);
   });
 
