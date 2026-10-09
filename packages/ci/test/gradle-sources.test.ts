@@ -149,10 +149,19 @@ describe("gradleSourceIndex", () => {
     expect([await named(broken, "com.acme:lib"), await named(broken, "com.acme:other")]).toEqual([false, true]);
   });
 
-  it("reads a convention build's sources only when it's in the inventory", async () => {
-    const files = { "build-logic/gradle/libs.versions.toml": "[libraries]\nlib = { module = ", "build-logic/src/main/kotlin/c.gradle.kts": 'implementation("com.acme:logic:1.0")', "build-logic/build.gradle.kts": 'implementation("com.acme:logic-script:1.0")', "build.gradle.kts": 'implementation("com.acme:root:1.0")' };
-    expect([await named(files, "com.acme:root"), await named(files, "com.acme:logic"), await named(files, "com.acme:logic-script")]).toEqual([true, false, false]);
-    expect(await named(files, "com.acme:logic", ".", [".", "build-logic"])).toBe(true);
+  it("treats build-logic as a convention build only when it's a build in the inventory", async () => {
+    const files = {
+      "build-logic/gradle/libs.versions.toml": "[libraries]\nlib = { module = ",
+      "build-logic/src/main/kotlin/c.gradle.kts": 'implementation("com.acme:logic:1.0")',
+      "build-logic/build.gradle.kts": 'implementation("com.acme:logic-script:1.0")',
+      "build-logic/tools/build.gradle.kts": 'implementation("com.acme:tools:1.0")',
+      "build.gradle.kts": 'implementation("com.acme:root:1.0")',
+    };
+    // Not a build: an ordinary directory (a subproject), whose scripts count but whose shipped code doesn't.
+    expect([await named(files, "com.acme:root"), await named(files, "com.acme:logic-script"), await named(files, "com.acme:logic")]).toEqual([true, true, false]);
+    // A convention build: its main code counts for the root too, but a build nested inside it keeps its own files.
+    const builds = [".", "build-logic", "build-logic/tools"];
+    expect([await named(files, "com.acme:logic", ".", builds), await named(files, "com.acme:tools", ".", builds), await named(files, "com.acme:tools", "build-logic/tools", builds)]).toEqual([true, false, true]);
   });
 
   it("counts a catalog the build's settings import from elsewhere in the repository", async () => {
