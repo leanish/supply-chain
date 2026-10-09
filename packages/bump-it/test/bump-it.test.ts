@@ -167,7 +167,7 @@ describe("bump-it run", () => {
     expect(h.agentCalls).toEqual([]);
   });
   it("reports the candidates' notes beside the wrapper's", async () => {
-    const candidateNotes = ["org.jetbrains.kotlin:kotlin-stdlib@2.4.10: no supported declaration found in its build's sources (:compileClasspath)"];
+    const candidateNotes = ["org.jetbrains.kotlin:kotlin-stdlib@2.4.10: not named in the repository's Gradle sources (:compileClasspath)"];
     const h = harness({ bumps: [candidate({ major: undefined })], candidateNotes });
     const notes = ["Gradle wrapper left out: catalog unavailable"];
     const result = await bumpIt({ ...h.deps, wrapper: () => ({ candidates: async () => ({ unavailable: true, notes }), verify: async () => [] }) }).run(h.context);

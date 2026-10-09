@@ -2,7 +2,7 @@
  * Where a side of the comparison reads its files from: a git commit (read
  * with `git show`, so nothing in it runs) or the working tree.
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 import type { RunProcess } from "./process.ts";
@@ -12,8 +12,12 @@ export interface Tree {
   readonly id: string;
   /** The file's content, or undefined when the tree has no such file. */
   read(path: string): Promise<string | undefined>;
-  /** Every file under `dir`, recursively, as paths from the root; empty when there's no such directory. */
-  list(dir: string): Promise<string[]>;
+  /**
+   * Every file under `dir`, recursively, as paths from the root; empty when there's no such directory. A commit's
+   * tree always lists symlinks (reading one gives its target path); a working tree lists those leading to a file
+   * (reading one follows it) only with `symlinks`.
+   */
+  list(dir: string, options?: { readonly symlinks?: boolean }): Promise<string[]>;
 }
 
 export function workingTree(root: string): Tree {
@@ -28,10 +32,16 @@ export function workingTree(root: string): Tree {
         throw err;
       }
     },
-    async list(dir) {
+    async list(dir, options) {
       try {
         const entries = await readdir(join(root, dir), { recursive: true, withFileTypes: true });
-        return entries.filter((entry) => entry.isFile()).map((entry) => relative(root, join(entry.parentPath, entry.name))).sort();
+        const files: string[] = [];
+        for (const entry of entries) {
+          const path = join(entry.parentPath, entry.name);
+          // A wanted symlink counts when it leads to a file; links to directories and broken ones don't.
+          if (entry.isFile() || options?.symlinks === true && entry.isSymbolicLink() && await stat(path).then((target) => target.isFile(), () => false)) files.push(relative(root, path));
+        }
+        return files.sort();
       } catch (err) {
         if (isMissing(err)) return [];
         throw err;

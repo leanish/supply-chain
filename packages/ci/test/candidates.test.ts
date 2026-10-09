@@ -286,7 +286,7 @@ describe("securityCandidates, regressions", () => {
 });
 
 describe("bumpCandidates", () => {
-  it("moves only Gradle dependencies the build's own sources declare, noting the rest", async () => {
+  it("moves only Gradle dependencies the repository's sources name, in every build, noting the rest", async () => {
     const head = await tree({}, {
       "settings.gradle.kts": 'includeBuild("included")',
       "build.gradle.kts": 'plugins { `kotlin-dsl` }\ndependencies { implementation("com.acme:shared:1.0") }',
@@ -297,14 +297,13 @@ describe("bumpCandidates", () => {
     const gradle = { head: { tree: "worktree", builds: [
       // The Kotlin DSL plugin adds kotlin-stdlib; the build never names it.
       { build: ".", configurations: [configuration(":compileClasspath", [["com.acme", "shared", "1.0"], ["org.jetbrains.kotlin", "kotlin-stdlib", "2.4.10"]])] },
-      // The included build gets com.acme:shared from a plugin too.
+      // The evidence is repository-wide: the included build counts as declaring com.acme:shared too.
       { build: "included", configurations: [configuration(":compileClasspath", [["com.acme", "shared", "1.0"]])] },
     ] } };
     const found = await bumpCandidates(head, environment({}, {}), gradle as never);
-    expect(found.bumps.map((bump) => [bump.name, bump.locations])).toEqual([["com.acme:shared", [":compileClasspath"]]]);
+    expect(found.bumps.map((bump) => [bump.name, bump.locations])).toEqual([["com.acme:shared", [":compileClasspath", "included/:compileClasspath"]]]);
     expect(found.notes).toEqual([
-      "com.acme:shared@1.0: no supported declaration found in its build's sources (included/:compileClasspath), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read",
-      "org.jetbrains.kotlin:kotlin-stdlib@2.4.10: no supported declaration found in its build's sources (:compileClasspath), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read",
+      "org.jetbrains.kotlin:kotlin-stdlib@2.4.10: not named in the repository's Gradle sources (:compileClasspath), so it isn't moved automatically; a plugin may add it, or it uses notation bump-it doesn't read",
     ]);
   });
 
