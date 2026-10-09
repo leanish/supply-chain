@@ -84,6 +84,7 @@ Lambda), and the target-credentials resolver (the tools pass the agent's read-on
 | `test/fixtures/codex-rollout.ts` | `core/runtime/test/fixtures/codex-rollout.ts` | copied | — |
 | `test/fixtures/report-on-signal.ts` | — | new | — |
 | `test/git-clone-auth.test.ts` | `core/runtime/test/unit/git-clone-auth.test.ts` | copied | `gitCloneAuth` tests replace the `resolveGitCloneAuth` ones; imports this package's modules from `../src/` instead of `../../src/` |
+| `test/git-failure.test.ts` | — | new | — |
 | `test/github-client.test.ts` | `core/runtime/test/unit/github-client.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures |
 | `test/guard.test.ts` | `agents/bump-it/test/local-guard.test.ts` | copied | the guards' directory, and their messages say "agent guard" |
 | `test/input-render.test.ts` | `core/runtime/test/unit/input-render.test.ts` | copied | imports this package's modules from `../src/` instead of `../../src/` |
