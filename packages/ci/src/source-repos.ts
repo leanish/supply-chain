@@ -9,6 +9,7 @@ import { mapLimited, type Fetch } from "./http.ts";
 import { dig, isObject } from "./json.ts";
 import { npmPackageUrl } from "./npm-url.ts";
 import { packageKey, type PackageVersion, versionKey } from "./package-version.ts";
+import { child, children, text, type XmlElement, xmlRoot } from "./xml.ts";
 
 export const MAVEN_CENTRAL = "https://repo1.maven.org/maven2";
 const MAX_PARENT_DEPTH = 5;
@@ -76,35 +77,17 @@ export function mavenCoordinates(name: string): [group: string, artifact: string
   return [parts[0]!, parts[1]!];
 }
 
-/** Sections whose `<url>` isn't the project's. */
-const NESTED_SECTIONS = [
-  "parent",
-  "scm",
-  "licenses",
-  "developers",
-  "contributors",
-  "organization",
-  "issueManagement",
-  "ciManagement",
-  "distributionManagement",
-  "mailingLists",
-  "repositories",
-  "pluginRepositories",
-  "build",
-  "reporting",
-  "profiles",
-  "dependencyManagement",
-  "dependencies",
-  "properties",
-];
-
+/**
+ * The project's GitHub repository: its `<scm>` url and connections, then its own `<url>`, with
+ * `${...}` properties expanded. Only `<project>`'s own children count: a profile's or a plugin's
+ * `<scm>`, `<url>` or `<properties>` isn't the project's. A POM that can't be read names none.
+ */
 export function pomRepository(pom: string, pkg: PackageVersion): string | undefined {
-  const xml = stripComments(pom);
-  const scm = section(xml, "scm") ?? "";
-  let projectLevel = xml;
-  for (const name of NESTED_SECTIONS) projectLevel = projectLevel.replace(new RegExp(`<${name}\\b[\\s\\S]*?</${name}>`, "g"), "");
-  const candidates = [element(scm, "url"), element(scm, "connection"), element(scm, "developerConnection"), element(projectLevel, "url")];
-  const properties = pomProperties(xml, pkg);
+  const project = xmlRoot(pom, "project");
+  if (project === undefined) return undefined;
+  const scm = child(project, "scm");
+  const candidates = [text(child(scm, "url")), text(child(scm, "connection")), text(child(scm, "developerConnection")), text(child(project, "url"))];
+  const properties = pomProperties(project, pkg);
   for (const candidate of candidates) {
     const repo = candidate === undefined ? undefined : githubRepository(interpolate(candidate, properties));
     if (repo !== undefined) return repo;
@@ -113,16 +96,15 @@ export function pomRepository(pom: string, pkg: PackageVersion): string | undefi
 }
 
 export function pomParent(pom: string): PackageVersion | undefined {
-  const parent = section(stripComments(pom), "parent");
-  if (parent === undefined) return undefined;
-  const group = element(parent, "groupId");
-  const artifact = element(parent, "artifactId");
-  const version = element(parent, "version");
+  const parent = child(xmlRoot(pom, "project"), "parent");
+  const group = text(child(parent, "groupId"));
+  const artifact = text(child(parent, "artifactId"));
+  const version = text(child(parent, "version"));
   if (group === undefined || artifact === undefined || version === undefined || version.includes("${")) return undefined;
   return { ecosystem: "Maven", name: `${group}:${artifact}`, version };
 }
 
-function pomProperties(xml: string, pkg: PackageVersion): Map<string, string> {
+function pomProperties(project: XmlElement, pkg: PackageVersion): Map<string, string> {
   const [group, artifact] = mavenCoordinates(pkg.name);
   const properties = new Map([
     ["project.groupId", group],
@@ -132,28 +114,12 @@ function pomProperties(xml: string, pkg: PackageVersion): Map<string, string> {
     ["groupId", group],
     ["version", pkg.version],
   ]);
-  const block = section(xml, "properties") ?? "";
-  for (const match of block.matchAll(/<([\w.-]+)>([^<]*)<\/\1>/g)) properties.set(match[1]!, match[2]!.trim());
+  for (const [name, property] of children(child(project, "properties"))) properties.set(name, text(property) ?? "");
   return properties;
 }
 
 function interpolate(value: string, properties: ReadonlyMap<string, string>): string {
   return value.replace(/\$\{([^}]+)\}/g, (whole, key: string) => properties.get(key) ?? whole);
-}
-
-function stripComments(xml: string): string {
-  // Metadata matching only, never HTML sanitization. Removing comments preserves
-  // text split by them (ac<!-- note -->me); spaces would change the repository name.
-  return xml.replace(/<!--[\s\S]*?-->/g, "");
-}
-
-function section(xml: string, name: string): string | undefined {
-  return new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)</${name}>`).exec(xml)?.[1];
-}
-
-function element(xml: string, name: string): string | undefined {
-  const value = new RegExp(`<${name}\\b[^>]*>([^<]*)</${name}>`).exec(xml)?.[1]?.trim();
-  return value === undefined || value === "" ? undefined : value;
 }
 
 /**

@@ -322,6 +322,18 @@ describe("Maven release age", () => {
     expect(await catalog.versions({ ecosystem: "Maven", name: "com.acme:gone" })).toBeUndefined();
   });
 
+  it("reads Maven metadata as XML: comments and versions outside <versioning> don't count, and unreadable metadata fails", async () => {
+    const xml = '<?xml version="1.0"?><metadata><version>9.9.9</version><versioning><versions><version>1.0.0</version><!-- <version>6.6.6</version> --><version><![CDATA[1.0.1]]></version></versions></versioning></metadata>';
+    const config = parseConfig({});
+    const fetch = fakeFetch({
+      "https://repo1.maven.org/maven2/com/acme/lib/maven-metadata.xml": { text: xml },
+      "https://repo1.maven.org/maven2/com/acme/broken/maven-metadata.xml": { text: "<metadata><versioning><versions>" },
+    });
+    const catalog = new MavenCatalog(fetch, config.maven.repositories, new MavenDates(fetch, config.maven.repositories));
+    expect([...(await catalog.versions({ ecosystem: "Maven", name: "com.acme:lib" }))!].sort()).toEqual(["1.0.0", "1.0.1"]);
+    await expect(catalog.versions({ ecosystem: "Maven", name: "com.acme:broken" })).rejects.toThrow("has no <versions>");
+  });
+
   it("fails a version no configured repository has, skips own packages, and fails closed on a missing header", async () => {
     const config = parseConfig({ ownPackages: { Maven: { groups: ["io.github.leanish"], pluginIdPrefixes: ["io.github.leanish."] } } });
     const head = [
