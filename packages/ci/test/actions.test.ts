@@ -195,6 +195,18 @@ describe("occurrences and edge cases", () => {
     expect((await actionChanges(read(1), read(2), resolutions, gh, config)).problems).toEqual([unpinned("safe")]);
   });
 
+  it("keeps occurrences apart whose ref or comment holds a separator", async () => {
+    const gh = github({ [`${API}/repos/acme/actions/git/ref/tags/v1.2.3`]: { body: { object: { type: "commit", sha: CHECKOUT_SHA } } } });
+    const at = (ref: string, comment: string) => ({ name: "acme/actions", path: undefined, ref, comment, file: "ci.yml" });
+    const of = (...uses: ReturnType<typeof at>[]): ActionsInventory => ({ uses, docker: [], files: ["ci.yml"], gaps: [] });
+    const base = of(at(CHECKOUT_SHA, "reviewed|note v1.2.3"));
+    const head = of(at(`${CHECKOUT_SHA}|reviewed`, "note v1.2.3"));
+    const resolutions = await resolveUses([base, head], gh);
+    expect((await actionChanges(base, head, resolutions, gh, parseConfig({}))).problems).toEqual([
+      `acme/actions@${CHECKOUT_SHA}|reviewed (ci.yml) is new or changed, so it must be pinned to a full commit SHA with a \`# vX.Y.Z\` comment`,
+    ]);
+  });
+
   it("refuses YAML whose aliases expand past a budget", () => {
     const levels = ["a: &a [x, x, x, x, x, x, x, x, x, x]"];
     for (let level = 1; level < 8; level++) levels.push(`${String.fromCharCode(97 + level)}: &${String.fromCharCode(97 + level)} [${Array(10).fill(`*${String.fromCharCode(96 + level)}`).join(", ")}]`);
