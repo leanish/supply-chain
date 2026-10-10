@@ -15,6 +15,13 @@
   `required-cooldown-check` input, default `supply-chain / cooldown`; bridge
   callers such as this repository's own CI pass `gate / cooldown`). Before, a
   PR that went green under a 7-day wait stayed green when the base raised it.
+- The Gradle inventory reads each configuration's declarations only once every
+  configuration of the build has resolved. Resolving adds some (a plugin's
+  `defaultDependencies`: Checkstyle's, JaCoCo's and PITest's tools, Kotlin's
+  build tools), so they were missing, or present on one side only, depending on
+  what had resolved first; verification then saw them appear "from nothing".
+  What resolves is unchanged, so are the gate's findings; the tools see more
+  declarations, and those plugins add go to bump-it's notes.
 
 ## 0.2.2 - 2026-10-09
 
