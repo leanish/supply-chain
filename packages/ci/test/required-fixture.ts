@@ -19,7 +19,7 @@ export const postcss = { time: { "8.5.28": OLD, "8.5.29": YOUNG, "8.5.30": YOUNG
 } };
 export const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
 export function locked(name: string, version: string) {
-  return { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: "sha512-AAAA" };
+  return { version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity: "sha512-AAAA" };
 }
 export function files(version = "8.3.2", child: string | undefined = "8.5.28"): Record<string, string> {
   const manifest = { devDependencies: { vite: `^${version}` } };

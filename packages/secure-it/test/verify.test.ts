@@ -15,7 +15,7 @@ const OLD = "2026-01-01T00:00:00Z";
 function lock(root: Record<string, string>, installed: Record<string, string>): string {
   const packages: Record<string, object> = { "": { name: "app", dependencies: root } };
   for (const [name, version] of Object.entries(installed)) {
-    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: "sha512-AAAA" };
+    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity: "sha512-AAAA" };
   }
   return JSON.stringify({ lockfileVersion: 3, packages });
 }
@@ -257,6 +257,23 @@ describe("verifyPlan", () => {
     expect(await local(run({ "build.gradle.kts": script("2.1", 'dependencies { implementation("g:added:1.0") }') }))).toContainEqual(expect.stringContaining("g:added"));
     expect(await local(run({ "build.gradle.kts": script("2.1"), "gradle.properties": "x=1" }, { changed: ["build.gradle.kts", "gradle.properties"] }))).toContainEqual(expect.stringContaining("g:added"));
     expect(await local(run({ "build.gradle.kts": script("2.1") }, { modes: ["build.gradle.kts"] }))).toContainEqual(expect.stringContaining("g:added"));
+  });
+
+  it("compares every declaration of an unplanned package, not only the last of a configuration's", async () => {
+    const declared = (versions: string[]) => versions.map((version) => ({ group: "g", name: "other", version, reason: undefined }));
+    const inventory = (other: string[], lib: string) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":runtimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: lib }], unresolved: [], declared: [{ group: "g", name: "lib", version: lib, reason: undefined }, ...declared(other)], error: undefined },
+    ] }] });
+    const plan: ChangePlan = {
+      topic: "g:lib", malware: false, packages: ["Maven|g:lib"], severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0.0", to: "1.0.1", mechanism: "gradle-declared", locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+    };
+    const problems = await verifyPlan({
+      plan, base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
+      gradle: { base: inventory(["1.0.0", "2.0.0"], "1.0.0") as never, head: inventory(["3.0.0", "2.0.0"], "1.0.1") as never },
+      changedFiles: ["build.gradle"], modeChanged: [],
+    });
+    expect(problems).toContainEqual("g:other changed from 1.0.0, 2.0.0 to 2.0.0, 3.0.0 at :runtimeClasspath, outside the plan");
   });
 
   it("rejects an action use that changed outside the plan", async () => {
