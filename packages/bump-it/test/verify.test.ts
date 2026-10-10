@@ -26,6 +26,11 @@ async function fixture(major = false) {
 function gradle(version: string, other = "1.0", resolved = version): GradleInventory {
   return { schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [{ id: ":runtimeClasspath", kind: "project", unresolved: [], error: undefined, resolved: [{ group: "g", name: "lib", version: resolved }], declared: [{ group: "g", name: "lib", version, reason: undefined }] }, { id: ":testRuntimeClasspath", kind: "project", unresolved: [], error: undefined, resolved: [{ group: "g", name: "lib", version: other }], declared: [{ group: "g", name: "lib", version: other, reason: undefined }] }] }] };
 }
+/** `inventory` as the reference script leaves it: its declarations of `name` at `version` in `locations` are the ones it moved. */
+function markMoved(inventory: GradleInventory, name: string, version: string, locations: ReadonlyArray<string>): GradleInventory {
+  return { ...inventory, builds: inventory.builds.map((build) => ({ ...build, configurations: build.configurations.map((configuration) => ({ ...configuration,
+    declared: configuration.declared.map((entry) => (locations.includes(configuration.id) && `${entry.group}:${entry.name}` === name && entry.version === version ? { ...entry, moved: true as const } : entry)) })) })) };
+}
 beforeEach(() => { vi.mocked(runCompare).mockClear(); vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } }); });
 describe("bump verification", () => {
   it("verifies official wrapper targets before compare and only permits wrapper files with a planned move", async () => {
@@ -129,7 +134,7 @@ describe("bump verification", () => {
   it("requires head to resolve and declare exactly what the plan's reference does, and the plan to have landed in it", async () => {
     const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: "g:lib", from: "1.0", locations: [":runtimeClasspath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
     const script = (version: string) => ({ "build.gradle.kts": `dependencies { implementation("g:lib:${version}") }` });
-    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("1.0")), head: tree("head", script("1.1.0")), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0", "1.0", "1.2.0") }, reference: gradle("1.1.0", "1.0", "1.2.0"), changedFiles: ["build.gradle.kts"] };
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("1.0")), head: tree("head", script("1.1.0")), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0", "1.0", "1.2.0") }, reference: markMoved(gradle("1.1.0", "1.0", "1.2.0"), "g:lib", "1.1.0", [":runtimeClasspath"]), changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
     // An unplanned location moved, a version forced or constrained, a declaration gone: head no longer matches.
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle("1.1.0", "1.1.0", "1.2.0") } })).toContain(":testRuntimeClasspath, unlike the plan's reference, also resolves g:lib:1.1.0 and no longer resolves g:lib:1.0");
@@ -150,14 +155,14 @@ describe("bump verification", () => {
       { id: ":compileClasspath", kind: "project", unresolved: [], error: undefined, resolved: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: kotlin }], declared: [{ group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: kotlin, reason: undefined }, { group: "g", name: "lib", version: lib, reason: undefined }] },
     ] }] });
     const script = (kotlin: string, lib = "1.0") => ({ "build.gradle.kts": `plugins { id("org.jetbrains.kotlin.jvm") version "${kotlin}" }\ndependencies { implementation("g:lib:${lib}") }` });
-    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("2.0.0")), head: tree("head", script("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, reference: inventory("2.1.0"), changedFiles: ["build.gradle.kts"] };
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", script("2.0.0")), head: tree("head", script("2.1.0")), env, gradle: { base: inventory("2.0.0"), head: inventory("2.1.0") }, reference: markMoved(inventory("2.1.0"), marker, "2.1.0", [":buildscript.classpath"]), changedFiles: ["build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
     expect(await verifyPlan({ ...input, head: tree("head", script("2.1.0", "1.1")), gradle: { ...input.gradle, head: inventory("2.1.0", "1.1") } })).toContainEqual(expect.stringContaining("g:lib 1.1"));
   });
   it("keeps floors and their declarations immutable even when a plan names them", async () => {
     const floor = JSON.stringify({ floors: [{ ecosystem: "Maven", package: "g:lib", version: "1.0", declaredIn: "build.gradle", selector: [":runtimeClasspath"], purpose: "compatibility", reason: "works", added: "2026-01-01" }] });
     const plan = await planFor(routineUnit([candidate({ ecosystem: "Maven", name: "g:lib", from: "1.0", locations: [":runtimeClasspath"], declarations: [] })]), { files: new Map(), changes: [], notes: [] }, async () => undefined);
-    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", { ".github/dependency-floors.json": floor }), head: tree("head", { ".github/dependency-floors.json": floor }), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0") }, reference: gradle("1.1.0"), changedFiles: ["build.gradle"] };
+    const input: VerifyInputs = { plan, npmFiles: new Map(), base: tree("base", { ".github/dependency-floors.json": floor }), head: tree("head", { ".github/dependency-floors.json": floor }), env, gradle: { base: gradle("1.0"), head: gradle("1.1.0") }, reference: markMoved(gradle("1.1.0"), "g:lib", "1.1.0", [":runtimeClasspath"]), changedFiles: ["build.gradle"] };
     expect(await verifyPlan(input)).toContain("floor declaration for g:lib changed at :runtimeClasspath");
     expect(await verifyPlan({ ...input, head: tree("head", {}) })).toContain("bump-it may not change dependency floors");
   });

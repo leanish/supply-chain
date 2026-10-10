@@ -15,8 +15,6 @@ import { declaredAt, UNVERSIONED } from "./edit-checks.ts";
 import type { GradleTransform } from "./inventories.ts";
 
 const REFERENCE_INIT_SCRIPT = fileURLToPath(new URL("../../ci/gradle/supply-chain-reference.init.gradle", import.meta.url));
-/** The `because(...)` the reference script gives each declaration it moves, so its whole reach shows in the inventory. */
-const MOVED_REASON = "moved by the supply-chain reference";
 
 /** A declaration move: `name`'s declarations at `from` that the `locations` inherit go to `to`. */
 export interface ReferenceMove {
@@ -38,17 +36,18 @@ export function referenceTransform(moves: ReadonlyArray<ReferenceMove>, floors: 
   return {
     initScript: REFERENCE_INIT_SCRIPT,
     property: "supplyChain.reference.file",
-    content: (repositoryRoot) => ({ repositoryRoot, movedReason: MOVED_REASON, moves, floors }),
+    content: (repositoryRoot) => ({ repositoryRoot, moves, floors }),
   };
 }
 
 /**
  * Whether the plan landed in the reference, as the base declared it, and went nowhere else: at each move's and
  * floor's locations, the package's declarations are the base's with exactly the `from`s planned there turned into `to`
- * and the floors planned there added; and a declaration the reference moved (it carries `MOVED_REASON`) shows only
- * at its move's locations, however Gradle came to reach another (a configuration inheriting it, one created later,
- * the same declaration shared). A build that reset a moved version, or a location the reference couldn't move, shows
- * here rather than passing as the plan's reference. Anything else the reference changed is the plan's own fallout:
+ * and the floors planned there added, each moved one still the declaration the reference moved (marked `moved`); and
+ * a declaration the reference moved shows only at its move's locations, however Gradle came to reach another (a
+ * configuration inheriting it, one created later, the same declaration shared). A build that reset a moved version or
+ * replaced the declaration, or a location the reference couldn't move, shows here rather than passing as the plan's
+ * reference. Anything else the reference changed is the plan's own fallout:
  * the base's build ran with the plan applied (a planned plugin update adding or moving what that plugin declares).
  */
 export function referenceProblems(base: GradleInventory | undefined, reference: GradleInventory | undefined, moves: ReadonlyArray<ReferenceMove>, floors: ReadonlyArray<ReferenceFloor>): string[] {
@@ -65,11 +64,13 @@ export function referenceProblems(base: GradleInventory | undefined, reference: 
     const expected = [...was.map((version) => here.find((move) => move.from === version)?.to ?? version), ...added].sort();
     const actual = declaredAt(reference, location, name).sort();
     if (!sameList(actual, expected)) problems.push(`the plan's reference declares ${name} ${listed(actual)} at ${location}, not ${listed(expected)}`);
+    const sources = was.filter((version) => here.some((move) => move.from === version)).length;
+    if (movedAt(reference, location, name) !== sources) problems.push(`the plan's reference no longer holds the ${name} declarations it moved at ${location}`);
   }
   for (const build of reference?.builds ?? []) {
     for (const configuration of build.configurations) {
       const location = gradleLocation(build.build, configuration.id);
-      for (const declared of configuration.declared.filter((entry) => entry.reason === MOVED_REASON)) {
+      for (const declared of configuration.declared.filter((entry) => entry.moved === true)) {
         const name = `${declared.group}:${declared.name}`;
         if (!moves.some((move) => move.name === name && move.locations.includes(location))) problems.push(`the plan's reference moved ${name} at ${location}, which the plan doesn't list`);
       }
@@ -103,6 +104,15 @@ export function referenceDifferences(reference: GradleInventory | undefined, hea
     problems.push(...listDifference(location, "declares", expected.declared, actual.declared));
   }
   return problems;
+}
+
+function movedAt(inventory: GradleInventory | undefined, location: string, name: string): number {
+  for (const build of inventory?.builds ?? []) {
+    for (const configuration of build.configurations) {
+      if (gradleLocation(build.build, configuration.id) === location) return configuration.declared.filter((entry) => entry.moved === true && `${entry.group}:${entry.name}` === name).length;
+    }
+  }
+  return 0;
 }
 
 interface LocationEntries {

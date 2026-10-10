@@ -35,6 +35,8 @@ export interface DeclaredDependency {
   readonly version: string | undefined;
   /** Gradle's `because(...)`. */
   readonly reason: string | undefined;
+  /** In a reference's inventory only: the reference script moved this declaration (`supply-chain-reference.init.gradle`). */
+  readonly moved?: true;
 }
 
 export interface GradleConfiguration {
@@ -284,10 +286,17 @@ function parseConfiguration(raw: unknown, where: string): GradleConfiguration {
         name: text(item["name"], "name"),
         version: optional(item["version"], "version"),
         reason: optional(item["reason"], "reason"),
+        ...movedFlag(item["moved"]),
       };
     }),
     error: optional(raw["error"], "error"),
   };
+}
+
+function movedFlag(value: unknown): { moved?: true } {
+  if (value === undefined) return {};
+  if (value !== true) throw new Error("Gradle inventory: a declaration's moved flag must be true when present");
+  return { moved: true };
 }
 
 /** `:runtimeClasspath` for the root build, `buildSrc/:runtimeClasspath` for another. */

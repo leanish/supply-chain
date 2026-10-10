@@ -119,6 +119,13 @@ async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
   });
 }
 
+type Inventoried = { readonly builds: ReadonlyArray<{ readonly configurations: ReadonlyArray<{ readonly id: string; readonly declared: ReadonlyArray<{ readonly group: string; readonly name: string; readonly version: string | undefined }> }> }> };
+/** `inventory` as the reference script leaves it: its declarations of `name` at `version` in `locations` are the ones it moved. */
+function markMoved(inventory: Inventoried, name: string, version: string, locations: ReadonlyArray<string>): never {
+  return { ...inventory, builds: inventory.builds.map((build) => ({ ...build, configurations: build.configurations.map((configuration) => ({ ...configuration,
+    declared: configuration.declared.map((entry) => (locations.includes(configuration.id) && `${entry.group}:${entry.name}` === name && entry.version === version ? { ...entry, moved: true as const } : entry)) })) })) } as never;
+}
+
 describe("verifyPlan", () => {
   it("checks remaining targets against compare's one head snapshot", async () => {
     const env = environment({ "lib@1.0.0": ["GHSA-a"], "lib@1.0.1": ["GHSA-a"] });
@@ -195,7 +202,7 @@ describe("verifyPlan", () => {
     };
     const verifyWith = (reference: [string, string], head: [string, string]) => verifyPlan({
       plan, base: tree("b".repeat(40), { "settings.gradle": "" }), head: tree("worktree", { "settings.gradle": "" }), env: environment({}),
-      gradle: { base: config("1.0", "1.0") as never, head: config(...head) as never }, reference: config(...reference) as never, changedFiles: ["build.gradle.kts"],
+      gradle: { base: config("1.0", "1.0") as never, head: config(...head) as never }, reference: markMoved(config(...reference), "g:lib", "1.1", [":runtimeClasspath"]), changedFiles: ["build.gradle.kts"],
     }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
     expect(await verifyWith(["1.1", "1.1"], ["1.1", "1.1"])).toEqual([]);
     expect(await verifyWith(["1.1", "1.1"], ["1.2", "1.2"])).toContain(":runtimeClasspath, unlike the plan's reference, also declares g:lib 1.2 and no longer declares g:lib 1.1");
@@ -216,7 +223,7 @@ describe("verifyPlan", () => {
     };
     const run = (head: string[]) => verifyPlan({
       plan, base: tree("b".repeat(40), { "build.gradle.kts": "" }), head: tree("worktree", { "build.gradle.kts": "" }), env: environment({}),
-      gradle: { base: inventory("2.0", []) as never, head: inventory("2.1", head) as never }, reference: inventory("2.1", ["added"]) as never, changedFiles: ["build.gradle.kts"],
+      gradle: { base: inventory("2.0", []) as never, head: inventory("2.1", head) as never }, reference: markMoved(inventory("2.1", ["added"]), `${marker.group}:${marker.name}`, "2.1", [":buildscript.classpath"]), changedFiles: ["build.gradle.kts"],
     }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
     expect(await run(["added"])).toEqual([]);
     expect(await run(["added", "extra"])).toContainEqual(expect.stringContaining("g:extra"));
@@ -233,7 +240,7 @@ describe("verifyPlan", () => {
     };
     const problems = await verifyPlan({
       plan, base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
-      gradle: { base: inventory(["1.0.0", "2.0.0"], "1.0.0") as never, head: inventory(["3.0.0", "2.0.0"], "1.0.1") as never }, reference: inventory(["1.0.0", "2.0.0"], "1.0.1") as never,
+      gradle: { base: inventory(["1.0.0", "2.0.0"], "1.0.0") as never, head: inventory(["3.0.0", "2.0.0"], "1.0.1") as never }, reference: markMoved(inventory(["1.0.0", "2.0.0"], "1.0.1"), "g:lib", "1.0.1", [":runtimeClasspath"]),
       changedFiles: ["build.gradle"],
     });
     expect(problems).toContain(":runtimeClasspath, unlike the plan's reference, also declares g:other 3.0.0 and no longer declares g:other 1.0.0");

@@ -66,8 +66,10 @@ def resolveEntry = { configuration, String id, String kind ->
     entry
 }
 
-// allDependencies: what this configuration declares and inherits (compileClasspath gets implementation's).
+// allDependencies: what this configuration declares and inherits (compileClasspath gets implementation's). Under the
+// reference script, a declaration it moved (the same object) is marked `moved`.
 def declare = { configuration, Map entry ->
+    def moved = gradle.ext.has("supplyChainReferenceMoved") ? gradle.ext.supplyChainReferenceMoved : Collections.emptySet()
     configuration.allDependencies.withType(ExternalModuleDependency).each { dependency ->
         def constraint = dependency.versionConstraint
         entry.declared << [
@@ -75,7 +77,7 @@ def declare = { configuration, Map entry ->
             name   : dependency.name,
             version: dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null,
             reason : dependency.reason,
-        ]
+        ] + (moved.contains(dependency) ? [moved: true] : [:])
     }
     entry
 }

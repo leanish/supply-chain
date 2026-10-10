@@ -8,41 +8,53 @@ const inventory = (versions: ReadonlyArray<string | undefined>, resolved = "1.0.
   resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], error: undefined, ...extra,
 }] }] });
 const move = (from: string, to: string) => ({ name: "g:lib", from, to, locations: [":runtimeClasspath"] });
+/** `inventory` as the reference script leaves it: the declarations at `moved` versions are the ones it moved. */
+const moved = (versions: ReadonlyArray<string | undefined>, movedVersions: ReadonlyArray<string>): GradleInventory => {
+  const base = inventory(versions);
+  const configuration = base.builds[0]!.configurations[0]!;
+  return { ...base, builds: [{ build: ".", configurations: [{ ...configuration, declared: configuration.declared.map((entry) => (movedVersions.includes(entry.version!) ? { ...entry, moved: true as const } : entry)) }] }] };
+};
 
 describe("the plan's Gradle reference", () => {
   it("hands the reference script the plan, for the build it runs on", () => {
     const transform = referenceTransform([move("1.0.0", "1.1.0")], []);
     expect(transform.initScript).toMatch(/supply-chain-reference\.init\.gradle$/);
     expect(transform.property).toBe("supplyChain.reference.file");
-    expect(transform.content("/tmp/repo")).toEqual({ repositoryRoot: "/tmp/repo", movedReason: "moved by the supply-chain reference", moves: [move("1.0.0", "1.1.0")], floors: [] });
+    expect(transform.content("/tmp/repo")).toEqual({ repositoryRoot: "/tmp/repo", moves: [move("1.0.0", "1.1.0")], floors: [] });
   });
 
   it("requires each move's sources, and only them, to have moved in the reference, versionless declarations kept", () => {
     const moves = [move("1.0.0", "1.1.0"), move("2.0.0", "2.1.0")];
-    expect(referenceProblems(inventory(["1.0.0", "2.0.0", "3.0.0", undefined]), inventory(["1.1.0", "2.1.0", "3.0.0", undefined]), moves, [])).toEqual([]);
-    expect(referenceProblems(inventory(["1.0.0", "2.0.0", "3.0.0"]), inventory(["1.1.0", "2.1.0", "3.1.0"]), moves, [])).toEqual([
+    expect(referenceProblems(inventory(["1.0.0", "2.0.0", "3.0.0", undefined]), moved(["1.1.0", "2.1.0", "3.0.0", undefined], ["1.1.0", "2.1.0"]), moves, [])).toEqual([]);
+    expect(referenceProblems(inventory(["1.0.0", "2.0.0", "3.0.0"]), moved(["1.1.0", "2.1.0", "3.1.0"], ["1.1.0", "2.1.0"]), moves, [])).toEqual([
       "the plan's reference declares g:lib 1.1.0, 2.1.0, 3.1.0 at :runtimeClasspath, not 1.1.0, 2.1.0, 3.0.0",
     ]);
     // A build that reset the move, or a versionless declaration the move took over.
-    expect(referenceProblems(inventory(["1.0.0"]), inventory(["1.0.0"]), [move("1.0.0", "1.1.0")], [])).toHaveLength(1);
-    expect(referenceProblems(inventory(["1.0.0", undefined]), inventory(["1.1.0", "1.1.0"]), [move("1.0.0", "1.1.0")], [])).toHaveLength(1);
+    expect(referenceProblems(inventory(["1.0.0"]), inventory(["1.0.0"]), [move("1.0.0", "1.1.0")], [])).toHaveLength(2);
+    expect(referenceProblems(inventory(["1.0.0", undefined]), moved(["1.1.0", "1.1.0"], ["1.1.0"]), [move("1.0.0", "1.1.0")], [])).toEqual([
+      "the plan's reference declares g:lib 1.1.0, 1.1.0 at :runtimeClasspath, not (no version), 1.1.0",
+      "the plan's reference no longer holds the g:lib declarations it moved at :runtimeClasspath",
+    ]);
     expect(referenceProblems(inventory(["2.0.0"]), inventory(["2.0.0"]), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's base has no declaration of g:lib 1.0.0 to move at :runtimeClasspath"]);
   });
 
-  it("finds a move that reached a configuration the plan doesn't list, by the reason it gave the declaration, and lets fallout through", () => {
-    const MOVED = "moved by the supply-chain reference";
-    const two = (runtime: string, test: string, testReason?: string, stdlib = "2.0.0"): GradleInventory => ({ tree: "tree", schemaVersion: 1, builds: [{ build: ".", configurations: [":runtimeClasspath", ":testRuntimeClasspath"].map((id) => ({
-      id, kind: "project" as const, resolved: [], unresolved: [], error: undefined,
-      declared: [
-        id === ":runtimeClasspath" ? { group: "g", name: "lib", version: runtime, reason: runtime === "1.1.0" ? MOVED : undefined } : { group: "g", name: "lib", version: test, reason: testReason },
-        { group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: stdlib, reason: undefined },
-      ],
-    })) }] });
-    expect(referenceTransform([], []).content("/r")).toMatchObject({ movedReason: MOVED });
-    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
-    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0", MOVED), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference moved g:lib at :testRuntimeClasspath, which the plan doesn't list"]);
+  it("finds a move that reached a configuration the plan doesn't list, or a moved declaration a build replaced, and lets fallout through", () => {
+    const two = (runtime: string, test: string, marks: { runtime?: boolean; test?: boolean } = {}, stdlib = "2.0.0"): GradleInventory => ({ tree: "tree", schemaVersion: 1, builds: [{ build: ".", configurations: [":runtimeClasspath", ":testRuntimeClasspath"].map((id) => {
+      const marked = id === ":runtimeClasspath" ? marks.runtime : marks.test;
+      return {
+        id, kind: "project" as const, resolved: [], unresolved: [], error: undefined,
+        declared: [
+          { group: "g", name: "lib", version: id === ":runtimeClasspath" ? runtime : test, reason: "the build's own reason", ...(marked === true ? { moved: true as const } : {}) },
+          { group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: stdlib, reason: undefined },
+        ],
+      };
+    }) }] });
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", { runtime: true }), [move("1.0.0", "1.1.0")], [])).toEqual([]);
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0", { runtime: true, test: true }), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference moved g:lib at :testRuntimeClasspath, which the plan doesn't list"]);
+    // The moved version, but not the declaration the reference moved: a build replaced it, so its reach is unknown.
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference no longer holds the g:lib declarations it moved at :runtimeClasspath"]);
     // What running the plan changed elsewhere, unmarked, is its fallout.
-    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", undefined, "2.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", { runtime: true }, "2.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
   });
 
   it("requires each floor added in the reference, next to what was declared", () => {
