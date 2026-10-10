@@ -30,8 +30,9 @@
   what the plugin brings; a fix that also adds a floor still keeps the strict
   checks.
 - The gate requires every locked npm package's tarball to be its own: on the
-  npm registry exactly `<name>/-/<unscoped name>-<version>.tgz` (elsewhere a
-  path naming the package and version). Before, a lockfile could keep
+  npm registry exactly `<name>/-/<unscoped name>-<version>.tgz` (elsewhere the
+  full scoped name followed by that tarball or the exact version, as GitHub
+  Packages serves it). Before, a lockfile could keep
   `safe@1.0.0` while fetching another package's tarball with that archive's
   integrity, and neither the comparison nor the signature audit noticed.
 - Verification compares every declaration of an unplanned Gradle dependency in

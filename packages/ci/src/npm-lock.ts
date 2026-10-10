@@ -138,9 +138,11 @@ export function sourceProblems(packages: ReadonlyArray<LockedPackage>, registrie
 
 /**
  * Whether the locked tarball is the package's own on an allowed registry: npm's registry serves it at exactly
- * `<registry>/<name>/-/<unscoped name>-<version>.tgz`; on another registry its path must name the package and the
- * version. A lockfile can't keep a package's name and version while fetching another package's tarball (its
- * integrity would then only vouch for the wrong archive).
+ * `<registry>/<name>/-/<unscoped name>-<version>.tgz`; another registry's path must hold the full name (scope
+ * included) as consecutive segments, followed by that same `-/<unscoped name>-<version>.tgz` or by the exact version
+ * as a segment (GitHub Packages: `download/@scope/name/<version>/<hash>`), with no `.`, `..` or empty segment. A
+ * lockfile can't keep a package's name and version while fetching another package's tarball (its integrity would
+ * then only vouch for the wrong archive).
  */
 export function fromRegistry(pkg: LockedPackage, registries: ReadonlyArray<string>): boolean {
   const resolved = pkg.resolved;
@@ -154,8 +156,13 @@ export function fromRegistry(pkg: LockedPackage, registries: ReadonlyArray<strin
       return false;
     }
     const unscoped = pkg.name.slice(pkg.name.lastIndexOf("/") + 1);
-    if (registry === NPM_REGISTRY) return path === `${pkg.name}/-/${unscoped}-${pkg.version}.tgz`;
-    return path.split("/").includes(unscoped) && path.includes(pkg.version);
+    const tarball = `${pkg.name}/-/${unscoped}-${pkg.version}.tgz`;
+    if (registry === NPM_REGISTRY) return path === tarball;
+    const segments = path.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+    const name = pkg.name.split("/");
+    return segments.some((_, at) => name.every((part, offset) => segments[at + offset] === part)
+      && (segments.slice(at + name.length).join("/") === `-/${unscoped}-${pkg.version}.tgz` || segments[at + name.length] === pkg.version));
   });
 }
 

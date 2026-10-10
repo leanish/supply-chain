@@ -269,6 +269,16 @@ describe("lockfile reading", () => {
     expect(sourceProblems(swapped, ["https://registry.npmjs.org", "https://npm.acme.dev"]).map((problem) => problem.split(" ")[0])).toEqual(["safe@1.0.0", "@acme/own@1.0.0", "other@1.0.0"]);
     const scoped = pkgs({}, { "node_modules/@acme/own": { version: "1.0.0", resolved: "https://registry.npmjs.org/@acme/own/-/own-1.0.0.tgz" } });
     expect(sourceProblems(scoped)).toEqual([]);
+    // GitHub Packages' download paths: the full scoped name, then the exact version.
+    const github = ["https://npm.pkg.github.com"];
+    const at = (resolved: string) => sourceProblems(pkgs({}, { "node_modules/@trusted/name": { version: "1.0.0", resolved } }), github);
+    expect(at("https://npm.pkg.github.com/download/@trusted/name/1.0.0/abc123")).toEqual([]);
+    for (const resolved of [
+      "https://npm.pkg.github.com/download/@attacker/name/1.0.0/abc123",
+      "https://npm.pkg.github.com/download/@trusted/name/11.0.0/abc123",
+      "https://npm.pkg.github.com/download/@trusted/name/1.0.0/../../../@attacker/name/1.0.0/abc123",
+      "https://npm.pkg.github.com/download/@trusted/other/1.0.0/abc123",
+    ]) expect(at(resolved), resolved).toHaveLength(1);
   });
 });
 
