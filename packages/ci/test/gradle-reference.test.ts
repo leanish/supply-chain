@@ -32,6 +32,7 @@ const MODULES: Record<string, string[]> = {
   "fixture:defaulted:1.0": [],
   "fixture:defaulted-extra:1.0": [],
 };
+const MOVED = "moved by the supply-chain reference";
 const IMPLEMENTATION = [":compileClasspath", ":runtimeClasspath", ":testCompileClasspath", ":testRuntimeClasspath"];
 
 function pom(coordinates: string, dependencies: string[]): string {
@@ -53,7 +54,7 @@ let build: string;
 
 async function reference(plan: { moves?: unknown[]; floors?: unknown[] }): Promise<GradleInventory> {
   const file = join(root, `plan-${Math.random().toString(36).slice(2)}.json`);
-  await writeFile(file, JSON.stringify({ repositoryRoot: build, moves: plan.moves ?? [], floors: plan.floors ?? [] }));
+  await writeFile(file, JSON.stringify({ repositoryRoot: build, movedReason: MOVED, moves: plan.moves ?? [], floors: plan.floors ?? [] }));
   return runGradleInventory(build, ["."], "worktree", runProcess, { additionalInitScripts: [REFERENCE], systemProperties: { "supplyChain.reference.file": file } });
 }
 
@@ -122,8 +123,10 @@ dependencies {
     expect(at(inventory, ":defaulted")).toMatchObject({ resolved: ["defaulted-extra:1.0", "defaulted:1.0"], declared: ["defaulted-extra:1.0", "defaulted:1.0"] });
   }, 600_000);
 
-  it("moves a declaration wherever it's inherited, which shows at a configuration the plan doesn't list", async () => {
+  it("marks a moved declaration, so it shows wherever it's inherited, at a configuration the plan doesn't list too", async () => {
     const inventory = await reference({ moves: [{ name: "fixture:plain", from: "1.0", to: "2.0", locations: [":runtimeClasspath"] }] });
-    expect(at(inventory, ":compileClasspath").declared).toContain("plain:2.0");
+    const reasons = (location: string) => inventory.builds[0]!.configurations.find((configuration) => configuration.id === location)!.declared.filter((declared) => declared.name === "plain").map((declared) => `${declared.version} ${declared.reason}`);
+    expect(reasons(":runtimeClasspath")).toEqual([`2.0 ${MOVED}`]);
+    expect(reasons(":compileClasspath")).toEqual([`2.0 ${MOVED}`]);
   }, 600_000);
 });

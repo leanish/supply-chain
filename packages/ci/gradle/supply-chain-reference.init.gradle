@@ -3,11 +3,11 @@
 //   ./gradlew --init-script supply-chain-reference.init.gradle --init-script supply-chain-inventory.init.gradle \
 //     -DsupplyChain.reference.file=<plan.json> -DsupplyChain.out=<dir> ... supplyChainInventory
 //
-// The plan file: { repositoryRoot, moves: [{name, from, to, locations}], floors: [{name, version, reason, locations}] }.
+// The plan file: { repositoryRoot, movedReason, moves: [{name, from, to, locations}], floors: [{name, version, reason, locations}] }.
 // A move rewrites, in place and once, each declaration of `name` at `from` (as the inventory reads its version) that
 // a configuration at one of its locations inherits, keeping the version's form (strictly, require or prefer) and its
-// rejects: what editing that declaration's version does (it reaches whatever inherits it, which the caller checks the
-// plan lists). A plugins-DSL
+// rejects: what editing that declaration's version does. It also gets `because(movedReason)`, so the inventory shows
+// everywhere it reached (whatever inherits it), which the caller checks the plan lists. A plugins-DSL
 // plugin is its marker's declaration on the buildscript classpath, so the reference runs the new plugin, with its own
 // fallout. A floor adds `name:version` with `because(reason)` at each of its locations, through a parent that is
 // neither resolvable nor consumable (defaults such as Checkstyle's still apply). Locations are the inventory's
@@ -23,7 +23,7 @@ if (planPath == null || planPath.isEmpty()) throw new GradleException("supply-ch
 def plan = new JsonSlurper().parse(new File(planPath))
 def text = { value -> value instanceof String && !value.isEmpty() }
 def texts = { value -> value instanceof List && !value.isEmpty() && value.every(text) }
-if (!(plan instanceof Map) || !text(plan.repositoryRoot) || !(plan.moves instanceof List) || !(plan.floors instanceof List)) {
+if (!(plan instanceof Map) || !text(plan.repositoryRoot) || !text(plan.movedReason) || !(plan.moves instanceof List) || !(plan.floors instanceof List)) {
     throw new GradleException("supply-chain reference: malformed plan file")
 }
 plan.moves.each { move ->
@@ -80,6 +80,7 @@ def applyMoves = { configuration ->
             if (planned.isEmpty()) return
             if (planned.size() > 1) throw new GradleException("supply-chain reference: several moves for ${planned[0].name} ${planned[0].from}")
             rewrite(dependency, planned[0].from, planned[0].to)
+            dependency.because(plan.movedReason)
             moved.add(dependency)
         }
     }

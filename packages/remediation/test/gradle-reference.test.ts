@@ -14,7 +14,7 @@ describe("the plan's Gradle reference", () => {
     const transform = referenceTransform([move("1.0.0", "1.1.0")], []);
     expect(transform.initScript).toMatch(/supply-chain-reference\.init\.gradle$/);
     expect(transform.property).toBe("supplyChain.reference.file");
-    expect(transform.content("/tmp/repo")).toEqual({ repositoryRoot: "/tmp/repo", moves: [move("1.0.0", "1.1.0")], floors: [] });
+    expect(transform.content("/tmp/repo")).toEqual({ repositoryRoot: "/tmp/repo", movedReason: "moved by the supply-chain reference", moves: [move("1.0.0", "1.1.0")], floors: [] });
   });
 
   it("requires each move's sources, and only them, to have moved in the reference, versionless declarations kept", () => {
@@ -29,17 +29,20 @@ describe("the plan's Gradle reference", () => {
     expect(referenceProblems(inventory(["2.0.0"]), inventory(["2.0.0"]), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's base has no declaration of g:lib 1.0.0 to move at :runtimeClasspath"]);
   });
 
-  it("requires every other configuration and package of the reference to be the base's: a move reaching beyond the plan shows", () => {
-    const two = (runtime: string, test: string, other = "1.0.0"): GradleInventory => ({ tree: "tree", schemaVersion: 1, builds: [{ build: ".", configurations: [":runtimeClasspath", ":testRuntimeClasspath"].map((id) => ({
+  it("finds a move that reached a configuration the plan doesn't list, by the reason it gave the declaration, and lets fallout through", () => {
+    const MOVED = "moved by the supply-chain reference";
+    const two = (runtime: string, test: string, testReason?: string, stdlib = "2.0.0"): GradleInventory => ({ tree: "tree", schemaVersion: 1, builds: [{ build: ".", configurations: [":runtimeClasspath", ":testRuntimeClasspath"].map((id) => ({
       id, kind: "project" as const, resolved: [], unresolved: [], error: undefined,
-      declared: [{ group: "g", name: "lib", version: id === ":runtimeClasspath" ? runtime : test, reason: undefined }, { group: "g", name: "other", version: other, reason: undefined }],
+      declared: [
+        id === ":runtimeClasspath" ? { group: "g", name: "lib", version: runtime, reason: runtime === "1.1.0" ? MOVED : undefined } : { group: "g", name: "lib", version: test, reason: testReason },
+        { group: "org.jetbrains.kotlin", name: "kotlin-stdlib", version: stdlib, reason: undefined },
+      ],
     })) }] });
+    expect(referenceTransform([], []).content("/r")).toMatchObject({ movedReason: MOVED });
     expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
-    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference declares g:lib 1.1.0 at :testRuntimeClasspath, not 1.0.0"]);
-    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", "2.0.0"), [move("1.0.0", "1.1.0")], [])).toHaveLength(2);
-    // A configuration only the reference has, declaring something.
-    const extra: GradleInventory = { ...two("1.1.0", "1.0.0"), builds: [...two("1.1.0", "1.0.0").builds, { build: "late", configurations: [inventory(["1.0.0"]).builds[0]!.configurations[0]!] }] };
-    expect(referenceProblems(two("1.0.0", "1.0.0"), extra, [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference declares g:lib 1.0.0 at late/:runtimeClasspath, not nothing"]);
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0", MOVED), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference moved g:lib at :testRuntimeClasspath, which the plan doesn't list"]);
+    // What running the plan changed elsewhere, unmarked, is its fallout.
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", undefined, "2.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
   });
 
   it("requires each floor added in the reference, next to what was declared", () => {
