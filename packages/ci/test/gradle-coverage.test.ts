@@ -3,6 +3,11 @@
  * a local file repository of POM-only modules, no network beyond the wrapper's
  * own distribution) over a build that puts dependencies everywhere they can
  * hide. Needs a JDK; runs when SUPPLY_CHAIN_GRADLE_TESTS=1.
+ *
+ * Then the reference init script on another build: a plan applied by Gradle moves declarations in place, keeping a
+ * strict version strict, reaches the buildscript classpath, adds floors next to a configuration's defaults, and marks a
+ * moved declaration wherever it's inherited (what the tools then check the plan lists). Both suites live in this one
+ * file so their Gradle runs never overlap (vitest runs files in parallel).
  */
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { gradleLocated, gradleResolutionProblems, type GradleInventory, parseGradleInventory, runGradleInventory } from "../src/gradle.ts";
+import { gradleLocated, gradleLocation, gradleResolutionProblems, type GradleInventory, parseGradleInventory, runGradleInventory } from "../src/gradle.ts";
 import { runProcess } from "../src/process.ts";
 
 const WRAPPER = fileURLToPath(new URL("./fixtures/gradle-wrapper", import.meta.url));
@@ -217,5 +222,107 @@ dependencies { runtimeOnly "fixture:missing:9.9" }
       expect.stringMatching(/^Gradle :sub:testRuntimeClasspath couldn't resolve fixture:missing:9.9: /),
     ]);
     expect(gradleResolutionProblems(broken, [":sub:runtimeClasspath", ":sub:testRuntimeClasspath"])).toEqual([]);
+  }, 600_000);
+});
+
+// The reference suite is in this file, not its own, on purpose: vitest runs files in parallel, and two real Gradle
+// builds at once made one time out connecting to its daemon in CI. Suites of one file run one after the other.
+const REFERENCE = fileURLToPath(new URL("../gradle/supply-chain-reference.init.gradle", import.meta.url));
+
+/** group:artifact:version → its dependencies, each a POM-only module. */
+const REFERENCE_MODULES: Record<string, string[]> = {
+  "fixture:plain:1.0": ["fixture:transitive:1.0"],
+  "fixture:plain:2.0": ["fixture:transitive:1.0"],
+  "fixture:transitive:1.0": [],
+  "fixture:transitive:2.0": [],
+  "fixture:strict:1.0": [],
+  "fixture:strict:2.0": [],
+  "fixture:strict:3.0": [],
+  "fixture:wants-strict:1.0": ["fixture:strict:3.0"],
+  "fixture:classpath-dep:1.0": [],
+  "fixture:classpath-dep:2.0": [],
+  "fixture:defaulted:1.0": [],
+  "fixture:defaulted-extra:1.0": [],
+};
+const IMPLEMENTATION = [":compileClasspath", ":runtimeClasspath", ":testCompileClasspath", ":testRuntimeClasspath"];
+
+let referenceRoot: string;
+let referenceBuild: string;
+
+async function reference(plan: { moves?: unknown[]; floors?: unknown[] }): Promise<GradleInventory> {
+  const file = join(referenceRoot, `plan-${Math.random().toString(36).slice(2)}.json`);
+  await writeFile(file, JSON.stringify({ repositoryRoot: referenceBuild, moves: plan.moves ?? [], floors: plan.floors ?? [] }));
+  return runGradleInventory(referenceBuild, ["."], "worktree", runProcess, { additionalInitScripts: [REFERENCE], systemProperties: { "supplyChain.reference.file": file } });
+}
+
+function at(inventory: GradleInventory, location: string) {
+  const found = inventory.builds.flatMap((entry) => entry.configurations.map((configuration) => ({ location: gradleLocation(entry.build, configuration.id), configuration })))
+    .find((entry) => entry.location === location)?.configuration;
+  if (found === undefined) throw new Error(`no ${location}`);
+  return {
+    resolved: found.resolved.map((module) => `${module.name}:${module.version}`).sort(),
+    declared: found.declared.map((declared) => `${declared.name}:${declared.version}`).sort(),
+    error: found.error,
+  };
+}
+
+describe.skipIf(process.env["SUPPLY_CHAIN_GRADLE_TESTS"] !== "1")("Gradle reference", () => {
+  beforeAll(async () => {
+    referenceRoot = await mkdtemp(join(tmpdir(), "supply-chain-gradle-reference-"));
+    const repo = join(referenceRoot, "repo");
+    for (const [coordinates, dependencies] of Object.entries(REFERENCE_MODULES)) {
+      const [group, artifact, version] = coordinates.split(":");
+      await write(repo, `${group!.replaceAll(".", "/")}/${artifact}/${version}/${artifact}-${version}.pom`, pom(coordinates, dependencies));
+    }
+    referenceBuild = join(referenceRoot, "build");
+    await cp(WRAPPER, referenceBuild, { recursive: true });
+    const repository = `repositories { maven { url = uri("${repo}") } }`;
+    await write(referenceBuild, "settings.gradle", `rootProject.name = "fixture"\n`);
+    await write(referenceBuild, "build.gradle", `buildscript {
+  ${repository}
+  dependencies { classpath "fixture:classpath-dep:1.0" }
+}
+plugins { id "java" }
+${repository}
+configurations { defaulted { defaultDependencies { it.add(project.dependencies.create("fixture:defaulted:1.0")) } } }
+dependencies {
+  implementation "fixture:plain:1.0"
+  implementation("fixture:strict") { version { strictly "1.0" } }
+  implementation "fixture:wants-strict:1.0"
+}
+`);
+  }, 600_000);
+
+  afterAll(async () => {
+    if (referenceRoot !== undefined) await rm(referenceRoot, { recursive: true, force: true });
+  });
+
+  it("moves declarations in place, a strict version staying strict, on the buildscript classpath too", async () => {
+    const inventory = await reference({ moves: [
+      { name: "fixture:plain", from: "1.0", to: "2.0", locations: IMPLEMENTATION },
+      { name: "fixture:strict", from: "1.0", to: "2.0", locations: IMPLEMENTATION },
+      { name: "fixture:classpath-dep", from: "1.0", to: "2.0", locations: [":buildscript.classpath"] },
+    ] });
+    for (const location of IMPLEMENTATION) {
+      // wants-strict asks for strict 3.0: still strictly 2.0 after the move.
+      expect(at(inventory, location)).toMatchObject({ resolved: ["plain:2.0", "strict:2.0", "transitive:1.0", "wants-strict:1.0"], declared: ["plain:2.0", "strict:2.0", "wants-strict:1.0"], error: undefined });
+    }
+    expect(at(inventory, ":buildscript.classpath")).toMatchObject({ resolved: ["classpath-dep:2.0"], declared: ["classpath-dep:2.0"] });
+  }, 600_000);
+
+  it("adds floors through a parent, next to a configuration's defaults", async () => {
+    const inventory = await reference({ floors: [
+      { name: "fixture:transitive", version: "2.0", reason: "GHSA-test", locations: [":runtimeClasspath"] },
+      { name: "fixture:defaulted-extra", version: "1.0", reason: "GHSA-test", locations: [":defaulted"] },
+    ] });
+    expect(at(inventory, ":runtimeClasspath")).toMatchObject({ resolved: expect.arrayContaining(["transitive:2.0"]), declared: expect.arrayContaining(["transitive:2.0"]) });
+    expect(at(inventory, ":compileClasspath").resolved).toContain("transitive:1.0");
+    expect(at(inventory, ":defaulted")).toMatchObject({ resolved: ["defaulted-extra:1.0", "defaulted:1.0"], declared: ["defaulted-extra:1.0", "defaulted:1.0"] });
+  }, 600_000);
+
+  it("marks a moved declaration wherever it's inherited, at a configuration the plan doesn't list too, its reason untouched", async () => {
+    const inventory = await reference({ moves: [{ name: "fixture:plain", from: "1.0", to: "2.0", locations: [":runtimeClasspath"] }] });
+    const plain = (location: string) => inventory.builds[0]!.configurations.find((configuration) => configuration.id === location)!.declared.filter((declared) => declared.name === "plain");
+    for (const location of [":runtimeClasspath", ":compileClasspath"]) expect(plain(location)).toEqual([{ group: "fixture", name: "plain", version: "2.0", reason: undefined, moved: true }]);
   }, 600_000);
 });

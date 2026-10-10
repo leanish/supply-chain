@@ -12,6 +12,7 @@ import { type SecurityCandidates, type SecurityFix, securityCandidates } from ".
 import { type CooldownEvaluation, heldUntil } from "../../ci/src/cooldown.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
+import type { GradleInventory } from "../../ci/src/gradle.ts";
 import { namingFailures } from "../../ci/src/http.ts";
 import { NpmRegistry, releaseSignals } from "../../ci/src/npm-registry.ts";
 import type { HeldVersion } from "../../ci/src/release-age.ts";
@@ -22,7 +23,8 @@ import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command
 import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
 import { writeLocalFile } from "../../remediation/src/local-files.ts";
 import { gradleSourceIndex } from "../../ci/src/gradle-sources.ts";
-import { changedSince, modeChangedSince } from "../../remediation/src/git-copies.ts";
+import { changedSince } from "../../remediation/src/git-copies.ts";
+import { referenceTransform } from "../../remediation/src/gradle-reference.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
 import { formatManifest } from "../../remediation/src/manifest-format.ts";
@@ -35,6 +37,7 @@ import { revertToBase } from "../../remediation/src/reconcile.ts";
 import { clearLeftoverBranch, closeAndDelete, ownOpenPullRequests, type PublicationContext, publishNew, publishUpdate, recoverPublication } from "../../remediation/src/publication.ts";
 import { type BaseMerge, type CooldownState, reviewOpenPullRequests, type ReviewSteps } from "../../remediation/src/review.ts";
 
+import { removalTransform } from "./floor-gradle.ts";
 import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { reconcileNpmFloors } from "./npm-floor-history.ts";
@@ -45,7 +48,7 @@ import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.t
 import { type ChangePlan, coupledWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit } from "./plan.ts";
 import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
-import { verifyPlan, type VerifyInputs } from "./verify.ts";
+import { referencePlan, verifyPlan, type VerifyInputs } from "./verify.ts";
 
 export const RULES = ownPullRequests("secure-it");
 const SKILLS_DIR = fileURLToPath(new URL("../skills", import.meta.url));
@@ -69,7 +72,6 @@ export interface SecureItDeps {
   readonly verify: (inputs: VerifyInputs) => Promise<string[]>;
   readonly staleScan: (context: ToolRunContext) => Promise<StaleScan>;
   readonly changedSince: (workingCopy: WorkingCopy, sha: string) => Promise<string[]>;
-  readonly modeChangedSince: (workingCopy: WorkingCopy, sha: string) => Promise<string[]>;
   readonly journal: (context: ToolRunContext) => PublicationJournal;
   /** Writes `content` at `path` (relative to the working copy): taking the base's side of a conflicted dependency file. */
   readonly writeFile: (workingCopy: WorkingCopy, path: string, content: string) => Promise<void>;
@@ -97,7 +99,6 @@ export function defaultDeps(): SecureItDeps {
     verify: verifyPlan,
     staleScan: (context) => staleScanStatus(context.repo.repo, context.base, context.readToken, context.now, context.config.staleScanHours ?? 36),
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
-    modeChangedSince: (workingCopy, sha) => modeChangedSince(workingCopy, sha),
     journal: (context) => new FileJournal(context.config.dirs.state),
     writeFile: (workingCopy, path, content) => writeLocalFile(workingCopy.path, path, content),
     revert: (workingCopy, baseSha) => revertToBase(workingCopy, baseSha),
@@ -491,10 +492,32 @@ async function verifyEdit(
 ): Promise<string[]> {
   const head = deps.trees.working(context.workingCopy);
   const headGradle = await inventories.ofWorkingTree(head);
+  let reference: GradleInventory | undefined;
+  try {
+    reference = await referenceOf(plan, base, baseGradle, inventories);
+  } catch (err) {
+    return [`the plan's Gradle reference can't be built: ${(err as Error).message}`];
+  }
   return deps.verify({
-    plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id),
-    modeChanged: await deps.modeChangedSince(context.workingCopy, base.id), ...(cooldown === undefined ? {} : { cooldown }),
+    plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, reference, changedFiles: await deps.changedSince(context.workingCopy, base.id),
+    ...(cooldown === undefined ? {} : { cooldown }),
   });
+}
+
+/**
+ * The base with the plan applied by Gradle (`gradle-reference.ts`): its floors removed for a floor removal, its
+ * declaration moves and floors otherwise. The base's own inventory when the plan changes nothing there, or when its
+ * moves can't be applied faithfully (verification reports why).
+ */
+async function referenceOf(plan: ChangePlan, base: Tree, baseGradle: GradleInputs["head"], inventories: GradleInventories): Promise<GradleInventory | undefined> {
+  if (baseGradle === undefined) return undefined;
+  if (plan.kind === "floor-removal") {
+    const floors = (plan.floorRemoval?.floors ?? []).filter((floor) => floor.ecosystem === "Maven");
+    return floors.length === 0 ? baseGradle : inventories.ofCommit(base, { transform: removalTransform(floors) });
+  }
+  const { moves, floors, problems } = referencePlan(plan, baseGradle);
+  if (problems.length > 0 || (moves.length === 0 && floors.length === 0)) return baseGradle;
+  return inventories.ofCommit(base, { transform: referenceTransform(moves, floors) });
 }
 
 async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Readonly<Record<string, unknown>>> {

@@ -7,7 +7,7 @@
  *     reads its policy from head);
  *   - planned action pins landed (the tag's commit with `# <tag>`), and no
  *     other action use changed;
- *   - the declared versions, per declaration, to compare base with head;
+ *   - the declared npm versions, per declaration, to compare base with head;
  *   - which files are dependency files (an edit that isn't a major may only
  *     touch those) and which conflicted files take the base's side when the
  *     default branch is merged in.
@@ -86,26 +86,14 @@ export async function actionsOutsidePlan(pins: ReadonlyArray<PlannedPin>, base: 
   return changed.map((label) => `the action use ${label} changed outside the plan`);
 }
 
-/** `ecosystem|name|where` → version, for every direct declaration: npm per lockfile, workspace and key; Gradle per configuration, every declared version (sorted, comma-separated). */
-export async function directVersions(tree: Tree, gradle: GradleInventory | undefined): Promise<Map<string, string>> {
+/** `npm|name|where` → version, for every direct npm declaration: per lockfile, workspace and key. Gradle's are compared with the plan's reference (`gradle-reference.ts`). */
+export async function directVersions(tree: Tree): Promise<Map<string, string>> {
   const versions = new Map<string, string>();
   for (const [path, lock] of await lockfilesOf(tree)) {
     for (const dependency of directDependencies(lock)) {
       versions.set(`npm|${dependency.name}|${path}#${dependency.workspace || "."}:${dependency.declaredAs}`, dependency.version);
     }
   }
-  // Every declaration of a package in a configuration counts (a plugin's next to a floor, say): all its versions, sorted.
-  const declared = new Map<string, string[]>();
-  for (const build of gradle?.builds ?? []) {
-    for (const configuration of build.configurations) {
-      for (const dependency of configuration.declared) {
-        if (dependency.version === undefined) continue;
-        const key = `Maven|${dependency.group}:${dependency.name}|${gradleLocation(build.build, configuration.id)}`;
-        declared.set(key, [...declared.get(key) ?? [], dependency.version]);
-      }
-    }
-  }
-  for (const [key, list] of declared) versions.set(key, list.sort().join(", "));
   return versions;
 }
 
@@ -132,12 +120,15 @@ export function directChangesOutside(before: ReadonlyMap<string, string>, after:
   return problems;
 }
 
-/** The versions a configuration declares (or inherits) for `name`. */
+/** How a declaration without a version (a BOM's or a constraint's to set) counts among a configuration's versions. */
+export const UNVERSIONED = "(no version)";
+
+/** The versions a configuration declares (or inherits) for `name`, one per declaration (`UNVERSIONED` for one without). */
 export function declaredAt(gradle: GradleInventory | undefined, location: string, name: string): string[] {
   for (const build of gradle?.builds ?? []) {
     for (const configuration of build.configurations) {
       if (gradleLocation(build.build, configuration.id) !== location) continue;
-      return configuration.declared.filter((declared) => `${declared.group}:${declared.name}` === name && declared.version !== undefined).map((declared) => declared.version!);
+      return configuration.declared.filter((declared) => `${declared.group}:${declared.name}` === name).map((declared) => declared.version ?? UNVERSIONED);
     }
   }
   return [];

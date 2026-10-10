@@ -139,20 +139,6 @@ export async function changedSince(workingCopy: WorkingCopy, sha: string, run: R
   return [...new Set([...tracked.stdout.split("\0"), ...untracked.stdout.split("\0")].filter((path) => path !== ""))].sort();
 }
 
-/** Tracked paths whose mode (executable bit, symlink, submodule) differs from `sha`'s, added and removed ones included. */
-export async function modeChangedSince(workingCopy: WorkingCopy, sha: string, run: RunProcess = runProcess): Promise<string[]> {
-  const raw = await git(workingCopy, ["diff", "--raw", "-z", "--no-renames", sha, "--"], run);
-  if (raw.code !== 0) throw new Error(`git diff --raw ${sha} failed: ${raw.stderr.trim()}`);
-  // Each entry is `:<old mode> <new mode> <old blob> <new blob> <status>` and its path, NUL-separated.
-  const fields = raw.stdout.split("\0");
-  const changed: string[] = [];
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const [oldMode, newMode] = fields[index]!.slice(1).split(" ");
-    if (oldMode !== newMode) changed.push(fields[index + 1]!);
-  }
-  return changed.sort();
-}
-
 /** Whether the working tree has exactly `sha`'s files. */
 export async function sameTreeAs(workingCopy: WorkingCopy, sha: string, run: RunProcess = runProcess): Promise<boolean> {
   return (await changedSince(workingCopy, sha, run)).length === 0;

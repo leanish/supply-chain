@@ -4,14 +4,14 @@ import { isDeepStrictEqual } from "node:util";
 
 import { type CooldownEvaluation, heldLines } from "../../ci/src/cooldown.ts";
 import { type GateEnvironment, type GradleInputs, readSettings, runCompare, treeSources } from "../../ci/src/gate.ts";
+import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, FLOORS_FILE, isDependencyFile, policyFence } from "../../remediation/src/edit-checks.ts";
 
 import type { WrapperFile } from "./wrapper-generation.ts";
 import { WRAPPER_FILES, type WrapperPlanner } from "./gradle-wrapper.ts";
 import { plannedPinsLanded } from "./action-pins.ts";
-import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
-import { gradleDeclarationProblems } from "./gradle-declarations.ts";
+import { referenceDifferences, type ReferenceMove, referenceProblems } from "../../remediation/src/gradle-reference.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, dependencyDigest, sha256 } from "./plan.ts";
 
 export interface VerifyInputs {
@@ -24,9 +24,14 @@ export interface VerifyInputs {
   readonly head: Tree;
   readonly env: GateEnvironment;
   readonly gradle: GradleInputs;
+  /** The base's inventory with the plan's Gradle moves (and wrapper) applied by Gradle: what head's must be. */
+  readonly reference: GradleInventory | undefined;
   readonly changedFiles: ReadonlyArray<string>;
-  /** Tracked paths whose file mode changed. */
-  readonly modeChanged: ReadonlyArray<string>;
+}
+
+/** The plan's declaration moves, for its reference. */
+export function referenceMoves(plan: BumpPlan): ReferenceMove[] {
+  return plan.moves.filter((move) => move.mechanism === "gradle-declared").map(({ name, from, to, locations }) => ({ name, from, to, locations }));
 }
 
 export const isNpmLock = (path: string) => ["package-lock.json", "npm-shrinkwrap.json"].includes(basename(path));
@@ -53,22 +58,9 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     problems.push("bump-it may not change dependency floors");
   }
   problems.push(...await floorProblems(base, head, gradle));
-  const before = await directVersions(base, gradle.base);
-  const after = await directVersions(head, gradle.head);
-  // Verified exactly by their own checks: npm files holding the planned text and planned pins' files (masked but for
-  // the pins) by text, the wrapper's files by hash and mode.
-  const exactNpm: string[] = [];
-  for (const [path, text] of inputs.npmFiles) if (await head.read(path) === text) exactNpm.push(path);
-  const edits = {
-    changedFiles: inputs.changedFiles,
-    modeChanged: inputs.modeChanged,
-    textChecked: new Set([...exactNpm, ...pins.flatMap((pin) => pin.locations)]),
-    bytesChecked: new Set(wrapperMoves.length > 0 ? WRAPPER_FILES : []),
-  };
-  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits);
-  const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
-  problems.push(...directChangesOutside(before, after, planned));
-  problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));
+  problems.push(...directChangesOutside(await directVersions(base), await directVersions(head), (ecosystem, name, where) => includesDeclaration(plan, ecosystem, name, where)));
+  // Gradle: the plan landed in the reference, and head resolves and declares exactly what the reference does.
+  problems.push(...referenceProblems(gradle.base, inputs.reference, referenceMoves(plan), []), ...referenceDifferences(inputs.reference, gradle.head));
   problems.push(...await plannedPinsLanded(plan.moves, base, head), ...await actionsOutsidePlan(pins, base, head));
   if (plan.kind !== "major") {
     const outside = inputs.changedFiles.filter((path) => !isDependencyFile(path, pins.length > 0) && !(wrapperMoves.length > 0 && WRAPPER_FILES.includes(path)));
@@ -158,15 +150,8 @@ async function npmProblems(inputs: VerifyInputs): Promise<string[]> {
 }
 
 function includesDeclaration(plan: BumpPlan, ecosystem: string, name: string, where: string): boolean {
-  return plan.moves.some((move) => {
-    if (move.ecosystem !== ecosystem || move.name !== name) {
-      return false;
-    }
-    if (move.ecosystem === "npm") {
-      return move.declarations.some((declaration) => where === `${declaration.lockfile}#${declaration.workspace}:${declaration.declaredAs}`);
-    }
-    return move.locations.includes(where);
-  });
+  return plan.moves.some((move) => move.ecosystem === "npm" && move.ecosystem === ecosystem && move.name === name &&
+    move.declarations.some((declaration) => where === `${declaration.lockfile}#${declaration.workspace}:${declaration.declaredAs}`));
 }
 
 function matchesPlannedFile(plan: BumpPlan, file: BumpPlan["npmFiles"][number], text: string | undefined): text is string {

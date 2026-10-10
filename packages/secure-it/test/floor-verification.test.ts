@@ -30,7 +30,7 @@ function fixture() {
   const now = { ...was, [FLOORS_PATH]: withoutFloorRecords(records, [floors[0]!]), "package.json": withoutOverrides(manifest, [floors[0]!]) };
   const plan: ChangePlan = { kind: "floor-removal", topic: "floor-removal", moves: [], packages: ["npm|lib"], malware: false, severity: undefined,
     floorRemoval: { floors: [floors[0]!], files: Object.entries(now).map(([path, text]) => ({ path, sha256: hash(text) })), notes: [] } };
-  const input: VerifyInputs = { modeChanged: [], plan, base: tree("base", was), head: tree("head", now), env, gradle: {}, changedFiles: [FLOORS_PATH, "package.json", "package-lock.json"] };
+  const input: VerifyInputs = { reference: undefined, plan, base: tree("base", was), head: tree("head", now), env, gradle: {}, changedFiles: [FLOORS_PATH, "package.json", "package-lock.json"] };
   return { input, was, now, floors };
 }
 
@@ -88,9 +88,11 @@ describe("floor-removal verification", () => {
     const after = before.slice(2);
     const text = withoutFloorRecords(records, removed);
     const plan: ChangePlan = { kind: "floor-removal", topic: "floor-removal", malware: false, severity: undefined, packages: ["Maven|g:lib", "Maven|g:other"], moves: [], floorRemoval: { floors: removed, files: [{ path: FLOORS_PATH, sha256: hash(text) }], notes: [] } };
-    const input: VerifyInputs = { modeChanged: [], plan, base: tree("base", { [FLOORS_PATH]: records, "build.gradle.kts": "before" }), head: tree("head", { [FLOORS_PATH]: text, "build.gradle.kts": "after" }), env,
-      gradle: { base: gradle(before), head: gradle(after) }, changedFiles: [FLOORS_PATH, "build.gradle.kts"] };
+    const input: VerifyInputs = { plan, base: tree("base", { [FLOORS_PATH]: records, "build.gradle.kts": "before" }), head: tree("head", { [FLOORS_PATH]: text, "build.gradle.kts": "after" }), env,
+      gradle: { base: gradle(before), head: gradle(after) }, reference: gradle(after), changedFiles: [FLOORS_PATH, "build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
+    // The reference, the base with the floors removed by Gradle, must have lost them; head must match it.
+    expect(await verifyPlan({ ...input, reference: gradle([...after, before[0]!]) })).toContain("the plan's reference still declares g:lib 2.0 at :runtimeClasspath");
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle([...after, before[0]!]) } })).toContainEqual(expect.stringContaining("exactly the planned"));
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle(after.map((entry) => ({ ...entry, version: "9.0" }))) } })).toContainEqual(expect.stringContaining("compatibility floor"));
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle([after[0]!]) } })).toContainEqual(expect.stringContaining("exactly the planned"));
