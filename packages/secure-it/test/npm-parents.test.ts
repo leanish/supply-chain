@@ -9,6 +9,7 @@ import type { GateEnvironment } from "../../ci/src/gate.ts";
 import { runProcess, type RunProcess } from "../../ci/src/process.ts";
 import { fakeFetch } from "../../ci/test/fake-fetch.ts";
 import { withParents } from "../src/npm-parents.ts";
+import { withParentsPlanned } from "../src/secure-it.ts";
 import { coupledWork, planFor } from "../src/plan.ts";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
@@ -248,5 +249,48 @@ describe("npm parents, second round", () => {
       return { additions: [], blocked: [], sets: [] };
     } });
     expect(anchors.sort()).toEqual(["parent@1.1.0", "x@1.1.0"]);
+  });
+});
+
+describe("npm parents, third round", () => {
+  const fixAt = (location: string, from: string, to: string): SecurityFix => ({
+    ecosystem: "npm", name: "x", from, locations: [location], targets: ["GHSA-x"], unfixable: [], malicious: false, severity: "HIGH",
+    to: { version: to, line: to.split(".")[0]!, aged: true, major: false, blockers: [] }, problem: undefined,
+  });
+  const lock = (parent: string, x: string, range: string) => ({ lockfileVersion: 3, packages: {
+    "": { name: "app", dependencies: { parent: `^${parent}` } },
+    "node_modules/parent": { version: parent, dependencies: { x: range } },
+    "node_modules/x": { version: x },
+  } });
+  const registry: Registry = { parent: {
+    "1.0.0": { time: OLD, dependencies: { x: "~1.0.0" } }, "1.1.0": { time: OLD, dependencies: { x: "^1.1.0" } },
+    "2.0.0": { time: OLD, dependencies: { x: "~1.0.0" } }, "2.1.0": { time: OLD, dependencies: { x: "^1.1.0" } },
+  } };
+
+  it("keeps each occurrence's own transition when lockfiles hold different versions of the parent", async () => {
+    const lockfiles = new Map<string, unknown>([["package-lock.json", lock("1.0.0", "1.0.0", "~1.0.0")], ["sub/package-lock.json", lock("2.0.0", "1.0.0", "~1.0.0")]]);
+    const fixes = await withParents([fixAt("node_modules/x", "1.0.0", "1.1.0"), fixAt("sub/node_modules/x", "1.0.0", "1.1.0")],
+      { lockfiles, env: environment(registry), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+    expect(fixes.filter((fix) => fix.name === "parent").map((fix) => [fix.from, fix.to?.version, fix.locations])).toEqual([
+      ["1.0.0", "1.1.0", ["node_modules/parent"]],
+      ["2.0.0", "2.1.0", ["sub/node_modules/parent"]],
+    ]);
+  });
+
+  it("rebuilds the direct-peer closure with the parents it adds", async () => {
+    const files: Record<string, string> = { "package-lock.json": JSON.stringify(lock("1.0.0", "1.0.0", "~1.0.0")) };
+    const tree = { id: "base", read: async (path: string) => files[path], list: async () => [] };
+    const asked: string[][] = [];
+    const found = {
+      fixes: [fixAt("node_modules/x", "1.0.0", "1.1.0")], incomplete: [], gaps: [], osvScannerVersion: "2.6.0",
+      npmPeers: { resolve: async () => ({ additions: [], blocked: [], sets: [] }) },
+      peersWith: async (extra: ReadonlyArray<{ name: string; version: string }>) => {
+        asked.push(extra.map((pkg) => `${pkg.name}@${pkg.version}`));
+        return { resolve: async () => ({ additions: [], blocked: [], sets: [] }) };
+      },
+    };
+    const planned = await withParentsPlanned(found, { tree, gradle: undefined }, environment(registry), { ofCommit: async () => undefined, ofWorkingTree: async () => undefined });
+    expect(asked).toEqual([["parent@1.1.0"]]);
+    expect(planned.fixes.map((fix) => fix.name).sort()).toEqual(["parent", "x"]);
   });
 });

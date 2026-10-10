@@ -233,7 +233,8 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(tree, env, { head: base.gradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const selection = await coupledWork(await parentsFirst(found.fixes, base, env, inventories), found.npmPeers);
+  const planned = await withParentsPlanned(found, base, env, inventories);
+  const selection = await coupledWork(planned.fixes, planned.peers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
 
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps), npmFiles: new Map<string, string>() };
@@ -260,6 +261,17 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   }
   if (results.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
   return { ...report, ...(results.length === 1 ? results[0]! : { outcome: "completed" }), waiting, blocked: selection.blocked, units: results };
+}
+
+/**
+ * The run's fixes with their parents (`parentsFirst`), and the direct-peer planner that sees the npm parents they
+ * added: a parent may need a peer of its own to move.
+ */
+export async function withParentsPlanned(found: SecurityCandidates, base: PlanBase, env: GateEnvironment, inventories: GradleInventories): Promise<{ readonly fixes: FixWork[]; readonly peers: NpmPeerPlanner | undefined }> {
+  const fixes = await parentsFirst(found.fixes, base, env, inventories);
+  const added = fixes.filter((fix) => fix.ecosystem === "npm" && fix.to !== undefined && !found.fixes.some((other) => other.ecosystem === "npm" && other.name === fix.name && other.from === fix.from));
+  if (added.length === 0 || found.peersWith === undefined) return { fixes, peers: found.npmPeers };
+  return { fixes, peers: await found.peersWith(added.map((fix) => ({ ecosystem: "npm" as const, name: fix.name, version: fix.to!.version }))) };
 }
 
 /**
@@ -580,7 +592,8 @@ async function review(context: ToolRunContext, deps: SecureItDeps): Promise<Read
         await publishUpdate(publication, merge.prepared, pr.number, content);
         return "rebased";
       }
-      const { units, blocked } = await reviewUnits(previous, found.fixes, found.npmPeers);
+      const planned = await withParentsPlanned(found, { tree: base, gradle: baseGradle }, env, inventories);
+      const { units, blocked } = await reviewUnits(previous, planned.fixes, planned.peers);
       if (blocked.length > 0) notes.push({ number: pr.number, blocked });
       // Split exactly as a run would, required-dependency moves included, before telling which unit is this PR's.
       const unit = unitOf(previous, await holdRequiredYoung(execution, units, { tree: base, gradle: baseGradle }));

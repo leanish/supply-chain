@@ -93,6 +93,11 @@ export interface SecurityCandidates {
   readonly fixes: ReadonlyArray<SecurityFix>;
   /** Direct-peer closure on the same snapshot as these security targets. */
   readonly npmPeers?: NpmPeerPlanner;
+  /**
+   * The closure again with more npm versions to move (parents a fix's range needs), on a snapshot that covers them
+   * and their direct peers' candidates too.
+   */
+  readonly peersWith?: (extra: ReadonlyArray<PackageVersion>) => Promise<NpmPeerPlanner>;
   /** What makes the inventory incomplete (a configuration that didn't resolve, an unrecorded bundle): the list can't be trusted to be whole. */
   readonly incomplete: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
@@ -172,6 +177,11 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
   return {
     fixes: found,
     npmPeers: { resolve: (moves) => peers.resolve(moves, snapshot) },
+    peersWith: async (extra) => {
+      const more = await preparePeers(head, state, registry, catalogs.npm, [...candidates, ...extra], identity, now, true);
+      const wider = await takeSnapshot([...bases, ...more.bases], snapshotOptions(config, env, state.github), [...candidates, ...extra, ...more.candidates]);
+      return { resolve: (moves) => more.resolve(moves, wider) };
+    },
     incomplete: inventoryProblems(state.inventory, config),
     gaps: [...state.snapshot.gaps, ...snapshot.gaps, ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,

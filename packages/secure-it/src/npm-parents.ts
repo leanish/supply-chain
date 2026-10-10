@@ -127,19 +127,21 @@ export async function withParents(fixes: ReadonlyArray<FixWork>, inputs: ParentI
  * before the batch splits into units, and it anchors the direct-peer closure like any move.
  */
 function parentFixes(fixes: ReadonlyArray<FixWork>): FixWork[] {
-  const byName = new Map<string, FixWork>();
+  // One fix per transition: occurrences in different lockfiles can start from, and move to, different versions.
+  const byTransition = new Map<string, FixWork>();
   for (const fix of fixes) {
     for (const parent of fix.parents ?? []) {
       if (fixes.some((other) => other.ecosystem === "npm" && other.name === parent.name)) continue;
-      const existing = byName.get(parent.name);
+      const key = `${parent.name}|${parent.from}|${parent.to}`;
+      const existing = byTransition.get(key);
       const locations = [...new Set([...(existing?.locations ?? []), parent.location])].sort();
-      byName.set(parent.name, existing !== undefined ? { ...existing, locations } : {
+      byTransition.set(key, existing !== undefined ? { ...existing, locations } : {
         ecosystem: "npm", name: parent.name, from: parent.from, locations, targets: [], unfixable: [], malicious: false, severity: fix.severity,
         to: { version: parent.to, line: parent.line, aged: true, major: false, blockers: [] }, problem: undefined,
       });
     }
   }
-  return [...byName.values()];
+  return [...byTransition.values()];
 }
 
 class ParentSearch {
