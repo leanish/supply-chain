@@ -68,9 +68,10 @@ function removalSection(plan: ChangePlan): string {
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
 function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
   if (move.carries !== undefined) {
-    const carried = new Set(move.carries.flatMap((entry) => entry.advisories));
-    const own = move.advisories.filter((advisory) => !carried.has(advisory));
-    const inside = move.carries.map((entry) => `${entry.advisories.join(", ")} in bundled \`${entry.name}\` ${entry.from.join(", ")} → ${entry.to.length === 0 ? "removed" : entry.to.join(", ")}`);
+    const own = move.advisories;
+    const where = move.ecosystem === "npm" ? "in bundled" : "in the";
+    const brought = move.ecosystem === "npm" ? "" : " it brings";
+    const inside = move.carries.map((entry) => `${entry.advisories.join(", ")} ${where} \`${entry.name}\`${brought} ${entry.from.join(", ")} → ${entry.to.length === 0 ? "removed" : entry.to.join(", ")}`);
     return [...(own.length === 0 ? [] : [own.join(", ")]), ...inside].join("; ");
   }
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");

@@ -14,6 +14,7 @@ import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import { type GateEnvironment, type GradleInputs, readSettings } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import { namingFailures } from "../../ci/src/http.ts";
+import { BundleReader } from "../../ci/src/npm-bundles.ts";
 import { NpmRegistry, releaseSignals } from "../../ci/src/npm-registry.ts";
 import type { HeldVersion } from "../../ci/src/release-age.ts";
 import { runProcess } from "../../ci/src/process.ts";
@@ -42,6 +43,7 @@ import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { reconcileNpmFloors } from "./npm-floor-history.ts";
 import { materializeOnBase } from "./npm-materialize.ts";
+import { withGradleParents } from "./gradle-parents.ts";
 import { withParents } from "./npm-parents.ts";
 import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
@@ -91,7 +93,7 @@ export function defaultDeps(): SecureItDeps {
       // Outside everything sandboxed commands can write, and checked right before each run.
       const writable = [context.config.dirs.cache, context.workingCopy.path, tmpdir(), "/tmp", ...(context.isolation.buildCacheRoot === undefined ? [] : [context.isolation.buildCacheRoot])];
       const osv = await ensureOsvScanner(context.config.dirs.state, writable);
-      return { run: verifyingRun(runProcess, osv), fetch: namingFailures((url, init) => fetch(url, init)), now: () => new Date(), osvScanner: osv.path, githubToken: context.readToken };
+      return { run: verifyingRun(runProcess, osv), fetch: namingFailures((url, init) => fetch(url, init)), now: () => new Date(), osvScanner: osv.path, githubToken: context.readToken, bundles: new BundleReader() };
     },
     gradle: (context) => sandboxedGradleInventories(context.isolation, context.workingCopy),
     trees: { commit: (workingCopy, sha) => gitTree(workingCopy.path, sha, runProcess), working: (workingCopy) => workingTree(workingCopy.path) },
@@ -337,8 +339,12 @@ async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase
   const lockfiles = await lockfilesOf(base.tree);
   const { config, exceptions } = await readSettings(base.tree);
   const parented = await withParents(unit.work, { lockfiles, env: execution.env, config, exceptions });
-  const planned = await planFor(parented.fixes, { lockfiles, gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
-  const plan = parented.notes.length === 0 ? planned : { ...planned, notes: [...(planned.notes ?? []), ...parented.notes] };
+  const gradleParented = base.gradle === undefined || sources === undefined
+    ? { fixes: parented.fixes, notes: [] }
+    : await withGradleParents(parented.fixes, { base: base.tree, gradle: base.gradle, named: sources.named, inventories: execution.inventories, env: execution.env, config });
+  const planned = await planFor(gradleParented.fixes, { lockfiles, gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const notes = [...parented.notes, ...gradleParented.notes];
+  const plan = notes.length === 0 ? planned : { ...planned, notes: [...(planned.notes ?? []), ...notes] };
   return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 

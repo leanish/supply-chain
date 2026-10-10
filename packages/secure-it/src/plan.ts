@@ -47,7 +47,7 @@ export interface PlannedMove {
   readonly commitSha: string | undefined;
   /** npm: the key it's installed and declared under when that isn't its name (an `npm:` alias). */
   readonly declaredAs: string | undefined;
-  /** A carrier move: the bundled packages its tarball replaces, whose advisories are in `advisories` too. */
+  /** A carrier move: the packages it replaces (bundled npm copies, or the Gradle module a parent brings), each with its advisories. */
   readonly carries?: ReadonlyArray<CarriedPackage>;
 }
 
@@ -184,7 +184,9 @@ async function completedWork(fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerP
       severity: undefined, problem: undefined,
       to: { version: move.to, line: move.line, aged: move.aged, major: false, blockers: [] },
     }));
-    const coupled = result.sets.filter((set) => !set.some((name) => omitted.has(name))).map((set) => set.map((name) => `npm|${name}`));
+    const peerSets = result.sets.filter((set) => !set.some((name) => omitted.has(name))).map((set) => set.map((name) => `npm|${name}`));
+    const kept = new Set(work.map(packageKey));
+    const coupled = [...(unit.coupled ?? []).filter((set) => set.every((key) => kept.has(key))), ...peerSets];
     units.push({ ...unit, work: [...work, ...companions], coupled });
   }
   return { units, blocked };
@@ -209,19 +211,56 @@ export function selectWork(fixes: ReadonlyArray<SecurityFix>): Selection {
   }
   const groups = rankedGroups(fixes);
   const blocked: Array<{ packages: string[]; reasons: string[] }> = [];
-  const routine: SecurityFix[] = [];
-  const majors: SecurityUnit[] = [];
+  const actionable = new Map<string, SecurityFix[]>();
   for (const [key, group] of groups) {
     const stuck = group.filter((fix) => !isActionable(fix));
-    if (stuck.length > 0) {
-      blocked.push({ packages: [key], reasons: stuck.map(reasonOf) });
-      continue;
-    }
-    if (group.some((fix) => fix.to!.major)) majors.push({ kind: "major", topic: `${group[0]!.name}-major`, work: group });
-    else routine.push(...group);
+    if (stuck.length > 0) blocked.push({ packages: [key], reasons: stuck.map(reasonOf) });
+    else actionable.set(key, group);
   }
-  const units: SecurityUnit[] = routine.length === 0 ? [] : [{ kind: "routine", topic: "security", work: routine }];
+  // Packages tied by a carried target land together or not at all: verification checks every copy of it.
+  const carried = carriedSets(fixes).filter((set) => set.every((key) => actionable.has(key)));
+  const routine: SecurityFix[] = [];
+  const majors: SecurityUnit[] = [];
+  const placed = new Set<string>();
+  for (const [key, group] of actionable) {
+    if (placed.has(key)) continue;
+    const tied = connected(key, carried).filter((other) => actionable.has(other));
+    for (const other of tied) placed.add(other);
+    const work = tied.flatMap((other) => actionable.get(other)!);
+    const coupled = carried.filter((set) => set.some((other) => tied.includes(other)));
+    if (work.some((fix) => fix.to!.major)) majors.push({ kind: "major", topic: `${group[0]!.name}-major`, work, ...(coupled.length === 0 ? {} : { coupled }) });
+    else routine.push(...work);
+  }
+  const routineCoupled = carried.filter((set) => set.every((key) => routine.some((fix) => packageKey(fix) === key)));
+  const units: SecurityUnit[] = routine.length === 0 ? [] : [{ kind: "routine", topic: "security", work: routine, ...(routineCoupled.length === 0 ? {} : { coupled: routineCoupled }) }];
   return { units: [...units, ...majors], blocked };
+}
+
+/**
+ * For each package a carrier move carries: the carriers that carry it and the package's own fix, when there's more
+ * than one of them.
+ */
+function carriedSets(fixes: ReadonlyArray<SecurityFix>): string[][] {
+  const byPackage = new Map<string, Set<string>>();
+  for (const fix of fixes) {
+    for (const carried of fix.carries ?? []) {
+      const key = `${fix.ecosystem}|${carried.name}`;
+      const set = byPackage.get(key) ?? new Set<string>();
+      set.add(packageKey(fix));
+      if (fixes.some((other) => packageKey(other) === key)) set.add(key);
+      byPackage.set(key, set);
+    }
+  }
+  return [...byPackage.values()].filter((set) => set.size > 1).map((set) => [...set].sort());
+}
+
+/** Every key reachable from `key` through sets sharing a key, `key` first. */
+function connected(key: string, sets: ReadonlyArray<ReadonlyArray<string>>): string[] {
+  const found = [key];
+  for (let at = 0; at < found.length; at++) {
+    for (const set of sets) if (set.includes(found[at]!)) for (const other of set) if (!found.includes(other)) found.push(other);
+  }
+  return found;
 }
 
 function rankedGroups(fixes: ReadonlyArray<SecurityFix>): Array<[string, SecurityFix[]]> {
@@ -241,8 +280,8 @@ export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, 
     const to = fix.to;
     if (to === undefined) throw new Error(`${fix.name}@${fix.from} has no move: ${fix.problem ?? "unknown"}`);
     // Only what can be fixed is a target: an advisory no version fixes stays, inherited (fixing A and leaving B).
-    const carried = (fix.carries ?? []).flatMap((entry) => entry.advisories);
-    const advisories = [...new Set([...fix.targets.filter((target) => !fix.unfixable.includes(target)), ...carried])];
+    // A carrier's own targets only: what it carries stays with each carried package (`carries`).
+    const advisories = fix.targets.filter((target) => !fix.unfixable.includes(target));
     const base = { ecosystem: fix.ecosystem, name: fix.name, from: fix.from, to: to.version, advisories, major: to.major, ...(fix.carries === undefined ? {} : { carries: fix.carries }) };
     if (fix.ecosystem === "GitHub Actions") {
       const commitSha = await inputs.tagCommit(fix.name, to.version);
@@ -293,7 +332,7 @@ export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, 
  */
 export function withUnsupportedCarriers(fixes: ReadonlyArray<SecurityFix>, lockfiles: ReadonlyMap<string, unknown>): SecurityFix[] {
   return fixes.map((fix) => {
-    if (fix.carries === undefined || fix.to === undefined) return fix;
+    if (fix.ecosystem !== "npm" || fix.carries === undefined || fix.to === undefined) return fix;
     const to = fix.to;
     const overridden = fix.locations.filter((location) => npmMechanism(lockfiles, fix.name, location, to.version).mechanism === "npm-override");
     if (overridden.length === 0) return fix;
@@ -379,7 +418,7 @@ export function satisfies(version: string, range: string): boolean {
  * A declaration the repository's own sources name is moved; anything else gets a floor (an explicit dependency with
  * `because(...)`), the transitive and the plugin-added alike: no file holds a plugin's declaration to edit.
  */
-function gradleMechanism(inputs: Pick<PlanInputs, "gradle" | "named">, name: string, location: string): Mechanism {
+export function gradleMechanism(inputs: Pick<PlanInputs, "gradle" | "named">, name: string, location: string): Mechanism {
   const { gradle, named } = inputs;
   if (gradle === undefined || named === undefined) throw new Error(`a Maven move for ${name} at ${location} without a Gradle inventory and its source index`);
   const [group, artifact] = name.split(":") as [string, string];

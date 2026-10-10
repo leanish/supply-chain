@@ -19,7 +19,8 @@
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
  *      pass `compare` as inherited, not here), using compare's head snapshot,
- *      nor any version of a package a carrier move carries; and each carrier's
+ *      nor any version of a package a carrier move carries (a bundled npm copy,
+ *      or the Gradle module a moved parent brings); and each npm carrier's
  *      head copies lock the registry's archive of its target and record exactly
  *      the bundle that archive ships;
  *   4. no direct npm dependency outside the planned packages changed version,
@@ -31,11 +32,11 @@
  */
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
 import { registryIntegrity } from "../../ci/src/carrier-fixes.ts";
-import { BundleReader, bundleMismatches } from "../../ci/src/npm-bundles.ts";
+import { type BundleReader, bundleMismatches } from "../../ci/src/npm-bundles.ts";
 import { lockedPackages } from "../../ci/src/npm-lock.ts";
 import { NpmRegistry } from "../../ci/src/npm-registry.ts";
 import type { CooldownEvaluation } from "../../ci/src/cooldown.ts";
-import { type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
+import { bundleReader, type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { versionScheme } from "../../ci/src/versions.ts";
@@ -102,14 +103,16 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
 
   const planned = new Set(plan.packages);
   for (const finding of compared.headFindings) {
-    const carriers = plan.moves.filter((move) => move.ecosystem === "npm" && finding.ecosystem === "npm" &&
-      (move.carries ?? []).some((carried) => carried.name === finding.name && carried.advisories.some((advisory) => finding.ids.includes(advisory))));
+    // By alias group, as the comparison groups them: the same advisory can come back under another id.
+    const isTarget = (advisory: string) => compared.group(advisory) === finding.advisory;
+    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem &&
+      (move.carries ?? []).some((carried) => carried.name === finding.name && carried.advisories.some(isTarget)));
     if (carriers.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which moving ${carriers.map((move) => move.name).join(", ")} was to fix`);
     if (!planned.has(packageKey(finding))) continue;
-    const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some((advisory) => finding.ids.includes(advisory)));
+    const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some(isTarget));
     if (targeted.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which the plan was to fix`);
   }
-  problems.push(...(await carriersShipped(plan, head, inputs.bundles ?? new BundleReader(env.fetchArchive), new NpmRegistry(env.fetch))));
+  problems.push(...(await carriersShipped(plan, head, inputs.bundles ?? bundleReader(env), new NpmRegistry(env.fetch))));
 
   problems.push(...directChangesOutside(await directVersions(base), await directVersions(head), (ecosystem, name) => planned.has(`${ecosystem}|${name}`)));
   const reference = referencePlan(plan, gradle.base);

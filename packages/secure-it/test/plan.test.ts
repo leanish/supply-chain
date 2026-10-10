@@ -183,9 +183,9 @@ describe("planFor", () => {
       "node_modules/carrier/node_modules/brace": { version: "5.0.9", inBundle: true },
     } }]]);
 
-    it("moves the carrier the way its position allows, targeting its own and its carried advisories", async () => {
+    it("moves the carrier the way its position allows, its own advisories apart from those it carries", async () => {
       const plan = await planFor([carrierFix()], { named: undefined, lockfiles: lockfiles("^1.0.0", true), gradle: undefined, tagCommit: NO_TAGS });
-      expect(plan.moves).toEqual([expect.objectContaining({ name: "carrier", mechanism: "npm-direct", to: "1.1.0", advisories: ["GHSA-own", "GHSA-brace"], carries: [carried] })]);
+      expect(plan.moves).toEqual([expect.objectContaining({ name: "carrier", mechanism: "npm-direct", to: "1.1.0", advisories: ["GHSA-own"], carries: [carried] })]);
     });
 
     it("is blocked rather than overridden when a dependent's range excludes it", () => {
@@ -200,6 +200,26 @@ describe("planFor", () => {
     const lockfiles = new Map([["package-lock.json", { packages: { "": { name: "app", dependencies: { a: "^1", b: "^1" } }, "node_modules/a": { version: "1.0.1" }, "node_modules/b": { version: "1.0.1" } } }]]);
     const plan = await planFor([fix({ name: "a", from: "1.0.1", malicious: true }), fix({ name: "b", from: "1.0.1", malicious: true })], { named: undefined, lockfiles, gradle: undefined, tagCommit: NO_TAGS });
     expect(plan).toMatchObject({ topic: "malware", malware: true, packages: ["npm|a", "npm|b"] });
+  });
+});
+
+describe("packages tied by a carried target", () => {
+  const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+  const carrier = (major = false) => fix({ name: "carrier", from: "1.0.0", targets: [], carries: [carried], to: { version: "1.1.0", line: major ? "2" : "1", aged: true, major, blockers: [] } });
+  const brace = (aged: boolean) => fix({ name: "brace", from: "5.0.9", targets: ["GHSA-brace"], to: { version: "5.0.12", line: "5", aged, major: false, blockers: [] } });
+
+  it("go to the held unit together when one of them is young", async () => {
+    const { units } = await coupledWork([carrier(), brace(false), fix({ name: "other", from: "1.0.0" })]);
+    expect(units.map((unit) => [unit.topic, unit.work.map((entry) => entry.name).sort()])).toEqual([["security", ["other"]], ["security-cooldown", ["brace", "carrier"]]]);
+  });
+
+  it("go to one major unit together when either needs a major", async () => {
+    const { units } = await coupledWork([carrier(true), brace(true)]);
+    expect(units.map((unit) => [unit.kind, unit.work.map((entry) => entry.name).sort()])).toEqual([["major", ["brace", "carrier"]]]);
+  });
+
+  it("aren't tied when nothing else fixes the carried package", async () => {
+    expect((await coupledWork([carrier(), fix({ name: "other", from: "1.0.0" })])).units[0]?.coupled).toBeUndefined();
   });
 });
 

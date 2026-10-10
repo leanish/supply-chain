@@ -9,6 +9,7 @@ import type { GateEnvironment } from "../src/gate.ts";
 import { runProcess, type RunProcess } from "../src/process.ts";
 import { workingTree } from "../src/tree.ts";
 import { fakeFetch } from "./fake-fetch.ts";
+import { archive, manifest, serving } from "./tarballs.ts";
 
 const NOW = new Date("2026-10-07T12:00:00Z");
 const OLD = "2026-01-01T00:00:00Z";
@@ -460,5 +461,46 @@ describe("bumpCandidates", () => {
       ["@acme/kit", "1.0.0", [".:scoped=npm:@acme/kit"], "1.1.0"],
       ["lib", "1.0.0", [".:any=npm:lib", ".:compat=npm:lib@^1.0.0", "apps/a:lib=^1.0.0", "apps/a/b:lib=^1.0.0"], "1.1.0"],
     ]);
+  });
+});
+
+describe("securityCandidates, bundled copies", () => {
+  const carrierTarball = (version: string) => `https://registry.npmjs.org/carrier/-/carrier-${version}.tgz`;
+  const archives = {
+    "1.0.0": archive([{ path: "package/package.json", body: manifest("carrier", "1.0.0") }, { path: "package/node_modules/brace/package.json", body: manifest("brace", "5.0.9") }]),
+    "1.1.0": archive([{ path: "package/package.json", body: manifest("carrier", "1.1.0") }, { path: "package/node_modules/brace/package.json", body: manifest("brace", "5.0.12") }]),
+  };
+  const carrierManifests = Object.fromEntries(Object.entries(archives).map(([version, { integrity }]) => [`carrier@${version}`, { dist: { integrity } }]));
+  const head = (braceAtRoot = false) => tree(braceAtRoot ? { brace: "5.0.9" } : {}, {}, { name: "app", dependencies: { carrier: "^1.0.0" } }, {
+    "node_modules/carrier": { version: "1.0.0", resolved: carrierTarball("1.0.0"), integrity: archives["1.0.0"].integrity },
+    "node_modules/carrier/node_modules/brace": { version: "5.0.9", inBundle: true },
+  });
+  const registry: Registry = { carrier: { "1.0.0": OLD, "1.1.0": OLD }, brace: { "5.0.9": OLD, "5.0.12": OLD } };
+  const withArchives = (env: GateEnvironment): GateEnvironment => ({ ...env, fetchArchive: serving({ [carrierTarball("1.0.0")]: archives["1.0.0"].bytes, [carrierTarball("1.1.0")]: archives["1.1.0"].bytes }) });
+
+  it("moves the carrier for a bundled copy, and fixes the same package's own copy apart", async () => {
+    const found = await securityCandidates(await head(true), withArchives(environment({ "brace@5.0.9": ["GHSA-brace"] }, registry, [], carrierManifests)));
+    expect(moves(found.fixes)).toEqual([["brace@5.0.9", "5.0.12", undefined], ["carrier@1.0.0", "1.1.0", undefined]]);
+    expect(found.fixes.find((fix) => fix.name === "carrier")).toMatchObject({
+      locations: ["node_modules/carrier"], targets: [], unfixable: [],
+      carries: [{ name: "brace", from: ["5.0.9"], to: ["5.0.12"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"] }],
+    });
+  });
+
+  it("leaves the carrier's own advisory no version fixes, without holding back the bundled fix", async () => {
+    const affected = { "brace@5.0.9": ["GHSA-brace"], "carrier@1.0.0": ["GHSA-forever"], "carrier@1.1.0": ["GHSA-forever"] };
+    const found = await securityCandidates(await head(), withArchives(environment(affected, registry, [], carrierManifests)));
+    expect(found.fixes).toEqual([expect.objectContaining({ name: "carrier", targets: ["GHSA-forever"], unfixable: ["GHSA-forever"], to: expect.objectContaining({ version: "1.1.0" }) })]);
+  });
+
+  it("reports a carrier it can't decide on, without failing the rest", async () => {
+    const env = withArchives(environment({ "brace@5.0.9": ["GHSA-brace"] }, registry, [], carrierManifests));
+    // The carrier search's own advisory scans fail; the batch's don't include the carrier's candidates once it fails.
+    const failing: GateEnvironment = { ...env, run: async (command, args, options) => {
+      if (command === "osv-scanner" && args[0] !== "--version" && (await readFile(args[args.indexOf("--lockfile") + 1]!.replace(/^osv-scanner:/, ""), "utf8")).includes('"version":"1.1.0"')) throw new Error("scanner crashed");
+      return env.run(command, args, options);
+    } };
+    const found = await securityCandidates(await head(true), failing);
+    expect(moves(found.fixes)).toEqual([["brace@5.0.9", "5.0.12", undefined], ["carrier@1.0.0", undefined, expect.stringContaining("carrier move can't be decided")]]);
   });
 });

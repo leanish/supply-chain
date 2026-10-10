@@ -22,12 +22,13 @@
  * Bumps (`bumpCandidates`): see there.
  */
 import { actionGaps } from "./actions-changes.ts";
-import { type CarriedPackage, type CarrierContext, decideCarrier, splitBundled } from "./carrier-candidates.ts";
+import { type CarriedPackage, type CarrierContext, type CarrierGroup, decideCarrier, splitBundled } from "./carrier-candidates.ts";
 import { type Config, isOwnPackage } from "./config.ts";
 import { type Exceptions, unexcusedProblem } from "./exceptions.ts";
 import { findingsOf, type Located } from "./findings.ts";
 import type { Floor } from "./floors.ts";
 import {
+  bundleReader,
   type GateEnvironment,
   type GradleInputs,
   inventoryProblems,
@@ -39,7 +40,6 @@ import {
 import { gradleLocation } from "./gradle.ts";
 import { gradleSourceIndex } from "./gradle-sources.ts";
 import type { NpmLockfile } from "./inventory.ts";
-import { BundleReader } from "./npm-bundles.ts";
 import { directDependencies, type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "./node-runtime.ts";
@@ -128,18 +128,26 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
 
   const registry = new NpmRegistry(env.fetch);
   const catalogs = versionCatalogs(config, env, state.github, registry);
+  const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
+  // Carriers are decided first, on snapshots of their own: their choices then join the peer closure and its snapshot.
+  const carrierContext: CarrierContext = {
+    reader: bundleReader(env), registry, catalog: catalogs.npm, config, now,
+    scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, state.github)),
+    identity: (pkg, to) => identity.problems(pkg, to),
+  };
+  const carried: SecurityFix[] = [];
+  for (const group of carriers) carried.push(await carrierFix(group, carrierOwn.get(versionKey({ ecosystem: "npm", name: group.name, version: group.version })), carrierContext));
   const listings = new Map<string, ReadonlyArray<string> | undefined>();
-  const candidates: PackageVersion[] = [];
+  const candidates: PackageVersion[] = carried.flatMap((fix) => (fix.to === undefined ? [] : [{ ecosystem: "npm" as const, name: fix.name, version: fix.to.version }]));
   for (const { pkg, malicious } of failing.values()) {
     const listed = await catalogs[pkg.ecosystem].versions(pkg);
     const moves = listed === undefined ? undefined : movesFrom(pkg, pkg.version, listed, malicious ? "any" : "above");
     listings.set(versionKey(pkg), moves);
     candidates.push(...(moves ?? []).map((version) => ({ ...pkg, version })));
   }
-  const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
   const peers = await preparePeers(head, state, registry, catalogs.npm, candidates, identity, now, true);
   // Direct-peer candidates join the security candidates: one snapshot decides the entire batch.
-  const bases = [...failing.values()].map(({ pkg }) => pkg);
+  const bases: Located[] = [...[...failing.values()].map(({ pkg }) => pkg), ...carried.map((fix): Located => ({ ecosystem: "npm", name: fix.name, version: fix.from, locations: fix.locations }))];
   const snapshot = await takeSnapshot([...bases, ...peers.bases], snapshotOptions(config, env, state.github), [...candidates, ...peers.candidates]);
 
   const found: SecurityFix[] = [];
@@ -160,35 +168,35 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
       found.push(await chooseMove(pkg, targets, malicious, moves, { snapshot, catalog: catalogs[pkg.ecosystem], config, now, identity }, base));
     }
   }
-  const carrierContext: CarrierContext = {
-    reader: new BundleReader(env.fetchArchive), registry, catalog: catalogs.npm, config, now,
-    scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, state.github)),
-    identity: (pkg, to) => identity.problems(pkg, to),
-  };
-  for (const group of carriers) {
-    const own = carrierOwn.get(versionKey({ ecosystem: "npm", name: group.name, version: group.version }));
-    const malicious = group.malicious || own?.malicious === true;
-    const decision = await decideCarrier(group, own?.advisories ?? [], malicious, carrierContext);
-    found.push({
-      ecosystem: "npm",
-      name: group.name,
-      from: group.version,
-      locations: [...new Set([...decision.locations, ...(own?.pkg.locations ?? [])])].sort(),
-      targets: [...new Set(own?.advisories ?? [])],
-      unfixable: [],
-      malicious,
-      severity: highestSeverity([...group.severities, ...(own?.severities ?? [])]),
-      to: decision.to,
-      problem: decision.problem,
-      carries: decision.carries,
-    });
-  }
+  found.push(...carried);
   return {
     fixes: found,
     npmPeers: { resolve: (moves) => peers.resolve(moves, snapshot) },
     incomplete: inventoryProblems(state.inventory, config),
     gaps: [...state.snapshot.gaps, ...snapshot.gaps, ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
+  };
+}
+
+/** A carrier version's fix; a decision that can't be made (an archive, a scan) is the fix's problem, not the run's. */
+async function carrierFix(group: CarrierGroup, own: { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> } | undefined, context: CarrierContext): Promise<SecurityFix> {
+  const malicious = group.malicious || own?.malicious === true;
+  const decision = await decideCarrier(group, own?.advisories ?? [], malicious, context).catch((error: unknown) => ({
+    from: group.version, locations: [], carries: [], unfixable: [], to: undefined,
+    problem: `${group.name}@${group.version}'s carrier move can't be decided: ${error instanceof Error ? error.message : String(error)}`,
+  }));
+  return {
+    ecosystem: "npm",
+    name: group.name,
+    from: group.version,
+    locations: [...new Set([...decision.locations, ...(own?.pkg.locations ?? [])])].sort(),
+    targets: [...new Set(own?.advisories ?? [])],
+    unfixable: decision.unfixable,
+    malicious,
+    severity: highestSeverity([...group.severities, ...(own?.severities ?? [])]),
+    to: decision.to,
+    problem: decision.problem,
+    carries: decision.carries,
   };
 }
 

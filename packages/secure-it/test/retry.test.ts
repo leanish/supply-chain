@@ -36,7 +36,7 @@ describe("batch retry", () => {
 
   it("attributes a carried package's problem to its carrier, and keeps the carrier in the plan's text and block", () => {
     const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
-    const carrier: PlannedMove = { ...move("carrier"), mechanism: "npm-direct", advisories: ["GHSA-brace"], carries: [carried] };
+    const carrier: PlannedMove = { ...move("carrier"), mechanism: "npm-direct", advisories: [], carries: [carried] };
     const original = plan(carrier, move("other"));
     const section = planSection(original);
     expect(section).toContain("| npm | `carrier` | 1.0.0 → 1.0.1 | npm-direct | GHSA-brace in bundled `brace` 5.0.9 → 5.0.12 |");

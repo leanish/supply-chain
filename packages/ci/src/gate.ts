@@ -52,6 +52,8 @@ export interface GateEnvironment {
   readonly githubToken: string | undefined;
   /** Registry archive downloads (`npm-bundles.ts`); plain `fetch` refusing redirects when absent. */
   readonly fetchArchive?: FetchArchive;
+  /** One archive reader for a whole run, so its cache and download budget span every stage; a fresh one when absent. */
+  readonly bundles?: BundleReader;
 }
 
 export interface GateOutcome {
@@ -67,6 +69,8 @@ export interface GateOutcome {
 export interface CompareOutcome extends GateOutcome {
   readonly headFindings: ReadonlyArray<Finding>;
   readonly cooldown: CooldownEvaluation;
+  /** The canonical id of an advisory's alias group, in the comparison's snapshot. */
+  readonly group: (id: string) => string;
 }
 
 export interface Settings {
@@ -212,7 +216,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   // A young carrier is proved on snapshots of its own, over the bundles it reads.
   const bundleFixes = young.some((change) => change.pkg.ecosystem === "npm")
     ? await bundleFixProofs(young, {
-      base: baseInventory, head: headInventory, reader: new BundleReader(env.fetchArchive), registry, catalog: catalogs.npm, config, now,
+      base: baseInventory, head: headInventory, reader: bundleReader(env), registry, catalog: catalogs.npm, config, now,
       scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, github)),
     })
     : new Map<string, string | undefined>();
@@ -238,7 +242,13 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
     gaps: [...snapshot.gaps, ...actions.gaps],
     osvScannerVersion: version,
     configText,
+    group: (id) => snapshot.group(id),
   };
+}
+
+/** The run's archive reader, or a fresh one. */
+export function bundleReader(env: GateEnvironment): BundleReader {
+  return env.bundles ?? new BundleReader(env.fetchArchive);
 }
 
 /** One entry per version, with every version it replaces in any lockfile. */

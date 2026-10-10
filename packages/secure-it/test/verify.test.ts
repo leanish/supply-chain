@@ -140,7 +140,7 @@ describe("verifying a carrier move", () => {
   } });
   const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
   const plan: ChangePlan = { topic: "security", malware: false, packages: ["npm|carrier"], severity: "HIGH", moves: [
-    { ecosystem: "npm", name: "carrier", from: "1.0.0", to: "1.1.0", mechanism: "npm-direct", locations: ["node_modules/carrier"], advisories: ["GHSA-brace"], major: false, commitSha: undefined, declaredAs: undefined, carries: [carried] },
+    { ecosystem: "npm", name: "carrier", from: "1.0.0", to: "1.1.0", mechanism: "npm-direct", locations: ["node_modules/carrier"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined, carries: [carried] },
   ] };
   const routes = {
     "https://registry.npmjs.org/carrier": { body: { time: { "1.0.0": OLD, "1.1.0": OLD }, versions: Object.fromEntries(Object.entries(archives).map(([version, { integrity }]) => [version, { _npmUser: { name: "maintainer" }, dist: { integrity } }])) } },
@@ -165,6 +165,42 @@ describe("verifying a carrier move", () => {
       "brace@5.0.9 still has GHSA-brace, which moving carrier was to fix",
       "node_modules/carrier: node_modules/carrier ships brace@5.0.12 at node_modules/brace, but the lockfile records brace@5.0.9",
     ]));
+  });
+
+  it("fails a carried advisory left under another id of its alias group", async () => {
+    // brace 5.0.8 stays at the root, where the scanner reports the bundled copy's CVE under another GHSA id only.
+    const lockWithRoot = (version: "1.0.0" | "1.1.0", bundled: string) => {
+      const parsed = JSON.parse(carrierLock(version, bundled));
+      parsed.packages["node_modules/brace"] = { version: "5.0.8", resolved: "https://registry.npmjs.org/brace/-/brace-5.0.8.tgz", integrity: "sha512-AAAA" };
+      return JSON.stringify(parsed);
+    };
+    const env = environment({}, { ...routes, "https://registry.npmjs.org/brace/5.0.8": { body: {} } });
+    const run = env.run;
+    const aliased: GateEnvironment = {
+      ...env,
+      fetchArchive: serving({ [url("1.0.0")]: archives["1.0.0"].bytes, [url("1.1.0")]: archives["1.1.0"].bytes }),
+      run: async (command, args, options) => {
+        if (command !== "osv-scanner" || args[0] === "--version") return run(command, args, options);
+        const inventory = JSON.parse(await readFile(args[args.indexOf("--lockfile") + 1]!.replace(/^osv-scanner:/, ""), "utf8")) as {
+          results: Array<{ packages: Array<{ package: { name: string; version: string; ecosystem: string } }> }>;
+        };
+        const packages = inventory.results[0]!.packages.map(({ package: pkg }) => ({
+          package: pkg,
+          vulnerabilities: pkg.name !== "brace" ? [] : pkg.version === "5.0.8" ? [{ id: "GHSA-a", aliases: ["CVE-2026-1"], summary: "a" }]
+            : pkg.version === "5.0.9" ? [{ id: "GHSA-z", aliases: ["CVE-2026-1"], summary: "z" }] : [],
+        }));
+        return { code: 1, stdout: JSON.stringify({ results: [{ packages }] }), stderr: "" };
+      },
+    };
+    const carriedZ = { ...carried, advisories: ["GHSA-z"] };
+    const problems = await verifyPlan({
+      reference: undefined, gradle: {}, changedFiles: ["package.json", "package-lock.json"],
+      plan: { ...plan, moves: [{ ...plan.moves[0]!, carries: [carriedZ] }] },
+      base: tree("b".repeat(40), { "package-lock.json": lockWithRoot("1.0.0", "5.0.9") }),
+      head: tree("worktree", { "package-lock.json": lockWithRoot("1.1.0", "5.0.12") }),
+      env: aliased,
+    });
+    expect(problems).toEqual(expect.arrayContaining(["brace@5.0.8 still has GHSA-a, which moving carrier was to fix"]));
   });
 
   it("fails a carrier locking another archive than the registry's", async () => {

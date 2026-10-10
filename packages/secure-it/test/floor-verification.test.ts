@@ -12,7 +12,7 @@ import { verifyPlan, type VerifyInputs } from "../src/verify.ts";
 vi.mock("../../ci/src/gate.ts", async (load) => ({ ...await load<typeof import("../../ci/src/gate.ts")>(), runCompare: vi.fn() }));
 beforeEach(() => {
   vi.mocked(runCompare).mockReset();
-  vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
+  vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
 });
 const ID = "CVE-2026-12345";
 const raw = (name: string, ecosystem = "npm", purpose = "security") => ({ ecosystem, package: name, version: ecosystem === "npm" ? "2.0.0" : "2.0", declaredIn: ecosystem === "npm" ? "package.json" : "build.gradle.kts",
@@ -49,9 +49,9 @@ describe("floor-removal verification", () => {
   it("rejects a removal that the cooldown holds, or whose cooldown wasn't evaluated", async () => {
     const { input } = fixture();
     const held = { ecosystem: "Maven" as const, name: "g:lib", version: "2.1", replaced: ["2.0"], published: "2026-10-06T00:00:00.000Z", eligibleAt: "2026-10-13T00:00:00.000Z", justification: "security-fix" as const };
-    vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [held] } });
+    vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [held] } });
     expect(await verifyPlan(input)).toEqual([expect.stringContaining("a floor removal can't take a version under the release-age wait: Maven g:lib@2.1")]);
-    vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: false, reason: "base broke" } });
+    vi.mocked(runCompare).mockResolvedValue({ failures: [], headFindings: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: false, reason: "base broke" } });
     expect(await verifyPlan(input)).toEqual(["the cooldown can't be evaluated: base broke"]);
   });
 
@@ -77,7 +77,7 @@ describe("floor-removal verification", () => {
   });
   it("checks recorded advisory aliases even if compare calls them inherited, and forwards all compare failures", async () => {
     const { input } = fixture();
-    vi.mocked(runCompare).mockResolvedValue({ failures: ["identity changed"], headFindings: [{ ecosystem: "npm", name: "lib", version: "1.0.0", advisory: "GHSA-rq7h-c2jc-7f22", ids: [ID], malicious: false, locations: ["node_modules/lib"], summary: undefined, severity: undefined }], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
+    vi.mocked(runCompare).mockResolvedValue({ failures: ["identity changed"], headFindings: [{ ecosystem: "npm", name: "lib", version: "1.0.0", advisory: "GHSA-rq7h-c2jc-7f22", ids: [ID], malicious: false, locations: ["node_modules/lib"], summary: undefined, severity: undefined }], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
     expect(await verifyPlan(input)).toEqual(["compare: identity changed", "lib@1.0.0 still has GHSA-rq7h-c2jc-7f22"]);
   });
   it("removes multiple Gradle floors jointly and preserves every other declaration", async () => {

@@ -100,6 +100,7 @@ describe("deciding a carrier move", () => {
       from: "1.0.0",
       locations: ["node_modules/carrier"],
       carries: [{ name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] }],
+      unfixable: [],
       to: { version: "1.1.0", line: "1", aged: true, major: false, blockers: ["an identity break"] },
       problem: undefined,
     });

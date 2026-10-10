@@ -192,10 +192,12 @@ that rewrites a lockfile. Never lower/unset the window or add exclusions of your
 
 - `npm-direct`, `npm-lock`, `npm-override`: already applied by the tool. Preserve its exact lockfiles, dependency
   fields and any floor records. Never re-resolve, install a different target, or hand-edit a transitive.
-- A move with `carries` moves a carrier: the vulnerable packages ship inside its tarball (`inBundle`), so only another
-  carrier version replaces them. Its `advisories` are the carried packages' (each `carries` entry names its package,
-  its versions before and after, `to` empty when the new bundle no longer ships it). Nothing extra to edit: the tool
-  applied it like any npm move.
+- A move with `carries` moves a carrier: on npm, the vulnerable packages ship inside its tarball (`inBundle`), so only
+  another carrier version replaces them; on Gradle, it's a declared dependency whose new version brings a fixed
+  version of the vulnerable module (no floor for that module). Its own `advisories` are listed as usual (often none);
+  each `carries` entry names a replaced package, its versions before and after (`to` empty when it's no longer there)
+  and its advisories. npm: nothing extra to edit, the tool applied it. Gradle: edit the declaration as for
+  `gradle-declared`.
 - `gradle-declared`: a dependency the build declares. Change its version where it's declared (the version catalog if
   it comes from there, else the build file).
 - `gradle-floor`: a transitive dependency, or one a plugin declares (no file of the repository declares it, so leave the

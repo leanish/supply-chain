@@ -17,7 +17,7 @@ import type { LockedPackage } from "./npm-lock.ts";
 import type { NpmRegistry } from "./npm-registry.ts";
 import { type PackageVersion, versionKey } from "./package-version.ts";
 import type { Snapshot } from "./snapshot.ts";
-import { compatibleLine, movesFrom, type VersionCatalog } from "./young-fixes.ts";
+import { compatibleLine, fixes, movesFrom, type VersionCatalog } from "./young-fixes.ts";
 
 /** A bundled package a carrier move replaces. */
 export interface CarriedPackage {
@@ -108,6 +108,8 @@ export interface CarrierDecision {
   readonly from: string;
   readonly locations: ReadonlyArray<string>;
   readonly carries: ReadonlyArray<CarriedPackage>;
+  /** The carrier's own advisories no listed version fixes: left, inherited, as for any fix. */
+  readonly unfixable: ReadonlyArray<string>;
   readonly to: { readonly version: string; readonly line: string; readonly aged: boolean; readonly major: boolean; readonly blockers: ReadonlyArray<string> } | undefined;
   readonly problem: string | undefined;
 }
@@ -120,7 +122,7 @@ export async function decideCarrier(group: CarrierGroup, own: ReadonlyArray<stri
   const carries = (to: (name: string) => ReadonlyArray<string>): CarriedPackage[] => [...group.carried.entries()]
     .map(([name, entry]) => ({ name, from: [...entry.versions].sort(), locations: [...entry.locations].sort(), advisories: [...entry.advisories].sort(), to: to(name) }))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const none = (problem: string): CarrierDecision => ({ from: group.version, locations, carries: carries(() => []), to: undefined, problem });
+  const none = (problem: string): CarrierDecision => ({ from: group.version, locations, carries: carries(() => []), unfixable: [], to: undefined, problem });
 
   const integrities = new Set(group.copies.map(({ copy }) => copy.integrity));
   if (integrities.size !== 1) return none(`the copies of ${group.name}@${group.version} lock different archives`);
@@ -130,14 +132,19 @@ export async function decideCarrier(group: CarrierGroup, own: ReadonlyArray<stri
   if (recorded.length > 0) return none(recorded.join("; "));
   const listed = await context.catalog.versions(pkg);
   if (listed === undefined) return none(`the registry doesn't list ${group.name}'s versions completely, so the rule can't be applied`);
+  const versions = movesFrom(pkg, group.version, listed, malicious ? "any" : "above");
+  // An own advisory no version fixes is left, as for any fix: it can't hold back the bundled one.
+  const ownSnapshot = own.length === 0 ? undefined : await context.scan([pkg, ...versions.map((version) => ({ ...pkg, version }))]);
+  const fixable = ownSnapshot === undefined ? [] : own.filter((advisory) => versions.some((version) => fixes(ownSnapshot, pkg, group.version, [ownSnapshot.group(advisory)], version)));
+  const unfixable = own.filter((advisory) => !fixable.includes(advisory));
   const choice = await chooseCarrier({
     carrier: group.name,
     from: group.version,
     fromBundle,
     carried: carriedTargets,
-    own,
+    own: fixable,
     malicious,
-    versions: movesFrom(pkg, group.version, listed, malicious ? "any" : "above"),
+    versions,
     ownPackage: isOwnPackage(context.config.ownPackages, pkg),
   }, {
     bundles: async (version) => context.reader.read(group.name, version, await registryIntegrity(context.registry, group.name, version)),
@@ -146,12 +153,13 @@ export async function decideCarrier(group: CarrierGroup, own: ReadonlyArray<stri
     config: context.config,
     now: context.now,
   });
-  if (choice.kind !== "chosen") return none(choice.reason);
+  if (choice.kind !== "chosen") return { ...none(choice.reason), unfixable };
   const line = (version: string) => compatibleLine(context.config, pkg, version);
   return {
     from: group.version,
     locations,
     carries: carries((name) => [...new Set(choice.bundle.packages.filter((entry) => entry.name === name).map((entry) => entry.version))].sort()),
+    unfixable,
     to: { version: choice.version, line: choice.line, aged: choice.aged, major: line(choice.version) !== line(group.version), blockers: await context.identity(pkg, choice.version) },
     problem: undefined,
   };
