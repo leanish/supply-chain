@@ -37,7 +37,8 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | npm | otherwise | a lasting override plus a floor entry (the PR notes why no parent could move) |
    | npm | a copy its parent bundles (`inBundle`) | move the carrier (the nearest non-bundled ancestor) to the version the security rule picks for its bundle, read from the registry archive (`carries` in the plan); a carrier that would need an override is reported instead |
    | Gradle | a dependency the repository's sources declare | change its version |
-   | Gradle | a transitive one, or one only a plugin declares | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
+   | Gradle | a transitive one, or one only a plugin declares, that a dependency the sources declare brings in every affected configuration | first, that declaration's lowest version in its own line, past the wait, that brings a fixed version (proved by a reference resolution, at most 6 per vulnerable module; the declaration moves wherever it's declared, `carries` in the plan) |
+   | Gradle | otherwise, or when no such version is proved | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` (the PR notes why no parent could move) |
    | Actions | any | pin to the tag's commit |
    - **Young fixes go apart.** Fixes whose target is younger than the release-age wait, everything coupled to them,
      and any fix whose required npm dependency is young form their own routine unit (topic `security-cooldown`), so

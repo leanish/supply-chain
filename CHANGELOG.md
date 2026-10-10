@@ -24,6 +24,21 @@
   publisher, movable without an override itself), and moves both, the copy
   locked inside the parent's new range. Only when no parent can move does it
   fall back to the override and floor, with the reason in the PR's notes.
+- In Gradle, before flooring a vulnerable transitive (or plugin-declared)
+  module, secure-it looks for a dependency the sources declare that brings it
+  in every affected configuration, and that dependency's lowest version in its
+  own line past the wait which, applied by Gradle in a reference resolution,
+  brings a version without the advisories (okhttp 4.9.3 → 4.12.0 for okio's,
+  say). That declaration then moves wherever it's declared, and verification
+  checks the module's advisories are gone. At most 6 reference runs per
+  module; a failed or spent search falls back to the floor, with a note.
+
+### Changed
+
+- The Gradle inventory (schema 2) records each configuration's resolved
+  edges, who brought what, so secure-it can find the declaration behind a
+  transitive. Inventory jobs and the comparison must run the same release, as
+  they do through the reusable workflow.
 
 ### Fixed
 
