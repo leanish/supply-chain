@@ -148,14 +148,17 @@ export function commentTag(use: Pick<ActionUse, "comment">): string | undefined 
   return use.comment?.split(/\s+/).map((word) => TAG.exec(word)?.[1]).find((word) => word !== undefined);
 }
 
-/** Uses that resolve the same way: same action, ref and named tag. */
+/** Uses that resolve the same way: same action, ref and named tag. Structured, so no field's characters can blur two apart. */
 export function resolutionKey(use: ActionUse): string {
-  return `${use.name}@${use.ref}#${commentTag(use) ?? ""}`;
+  return JSON.stringify([use.name, use.ref, commentTag(use) ?? null]);
 }
 
-/** One occurrence: where, what (subdirectory included) and how it's annotated; a changed comment or a new file is a change. */
+/**
+ * One occurrence: where, what (subdirectory included) and how it's annotated; a changed comment or a new file is a
+ * change. Structured, so a ref or comment holding a separator can't pass for another occurrence.
+ */
 export function occurrenceKey(use: ActionUse): string {
-  return `${use.file}|${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}|${use.comment ?? ""}`;
+  return JSON.stringify([use.file, use.name, use.path ?? null, use.ref, use.comment ?? null]);
 }
 
 /** Whether a use is pinned to a commit whose comment names a tag that GitHub says points at it. */
