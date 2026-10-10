@@ -15,7 +15,7 @@ const NOW = new Date("2026-10-06T12:00:00Z");
 function lock(entries: Record<string, string>): string {
   const packages: Record<string, object> = { "": { name: "app" } };
   for (const [name, version] of Object.entries(entries)) {
-    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: "sha512-AAAA" };
+    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity: "sha512-AAAA" };
   }
   return JSON.stringify({ lockfileVersion: 3, packages });
 }

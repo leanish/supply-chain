@@ -29,6 +29,15 @@
   that proof too, so a security fix that updates a plugin no longer fails on
   what the plugin brings; a fix that also adds a floor still keeps the strict
   checks.
+- The gate requires every locked npm package's tarball to be its own: on the
+  npm registry exactly `<name>/-/<unscoped name>-<version>.tgz` (elsewhere the
+  full scoped name followed by that tarball or the exact version, as GitHub
+  Packages serves it). Before, a lockfile could keep
+  `safe@1.0.0` while fetching another package's tarball with that archive's
+  integrity, and neither the comparison nor the signature audit noticed.
+- Verification compares every declaration of an unplanned Gradle dependency in
+  a configuration, not only the last one read, so an unplanned change to one
+  of two declarations of the same package is caught.
 - secure-it fixes a vulnerable dependency a Gradle plugin declares (java-conventions'
   Guava, Commons Lang or Plexus Utils in a consumer) with a floor, as it does a
   transitive one: an explicit dependency with `because(...)` next to the

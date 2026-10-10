@@ -123,18 +123,57 @@ function bundledEntry(packages: Record<string, LockEntry>, root: string, from: s
   }
 }
 
-/** Locked packages that don't come from an allowed registry (git, tarball URLs, local files, other registries). */
+/**
+ * Locked packages that don't come from an allowed registry as themselves (git, tarball URLs, local files, other
+ * registries, or another package's tarball).
+ */
 export function sourceProblems(packages: ReadonlyArray<LockedPackage>, registries: ReadonlyArray<string> = [NPM_REGISTRY]): string[] {
   return packages
     .filter((pkg) => !pkg.bundled && !fromRegistry(pkg, registries))
     .map(
       (pkg) =>
-        `${pkg.name}@${pkg.version} (${pkg.path}) doesn't come from an allowed registry: ${pkg.resolved ?? "no resolved URL"}`,
+        `${pkg.name}@${pkg.version} (${pkg.path}) doesn't come from an allowed registry as its own tarball: ${pkg.resolved ?? "no resolved URL"}`,
     );
 }
 
+/**
+ * Whether the locked tarball is the package's own on an allowed registry: npm's registry serves it at exactly
+ * `<registry>/<name>/-/<unscoped name>-<version>.tgz`; another registry's path must hold the full name (scope
+ * included) as consecutive segments, followed by that same `-/<unscoped name>-<version>.tgz` or by the exact version
+ * as a segment (GitHub Packages: `download/@scope/name/<version>/<hash>`), with no `.`, `..` or empty segment; the URL
+ * must already be in the normalized form npm fetches. A
+ * lockfile can't keep a package's name and version while fetching another package's tarball (its integrity would
+ * then only vouch for the wrong archive).
+ */
 export function fromRegistry(pkg: LockedPackage, registries: ReadonlyArray<string>): boolean {
-  return pkg.resolved !== undefined && registries.some((registry) => pkg.resolved!.startsWith(`${registry}/`));
+  const resolved = pkg.resolved;
+  if (resolved === undefined) return false;
+  // What npm would fetch: only a URL already in its normalized form (no backslashes, control characters, dot segments,
+  // query or fragment) is judged as written.
+  let url: URL;
+  try {
+    url = new URL(resolved);
+  } catch {
+    return false;
+  }
+  if (url.href !== resolved || url.search !== "" || url.hash !== "") return false;
+  return registries.some((registry) => {
+    if (!resolved.startsWith(`${registry}/`)) return false;
+    let path: string;
+    try {
+      path = decodeURIComponent(resolved.slice(registry.length + 1));
+    } catch {
+      return false;
+    }
+    const unscoped = pkg.name.slice(pkg.name.lastIndexOf("/") + 1);
+    const tarball = `${pkg.name}/-/${unscoped}-${pkg.version}.tgz`;
+    if (registry === NPM_REGISTRY) return path === tarball;
+    const segments = path.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+    const name = pkg.name.split("/");
+    return segments.some((_, at) => name.every((part, offset) => segments[at + offset] === part)
+      && (segments.slice(at + name.length).join("/") === `-/${unscoped}-${pkg.version}.tgz` || segments[at + name.length] === pkg.version));
+  });
 }
 
 /** Packages in `head` that are new or at a different version than in `base`. */

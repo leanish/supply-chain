@@ -27,7 +27,7 @@ afterEach(async () => {
 async function tree(locked: Record<string, string>, files: Record<string, string> = {}, root: object = { name: "app" }, extra: Record<string, object> = {}) {
   const packages: Record<string, object> = { "": root, ...extra };
   for (const [name, version] of Object.entries(locked)) {
-    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, integrity: "sha512-AAAA" };
+    packages[`node_modules/${name}`] = { version, resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`, integrity: "sha512-AAAA" };
   }
   await writeFile(join(repo, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, packages }));
   for (const [path, content] of Object.entries(files)) {
@@ -94,7 +94,7 @@ describe("securityCandidates", () => {
     const lock = { lockfileVersion: 3, packages: {
       "": { devDependencies: Object.fromEntries(names.map((name) => [name, "^4.1.7"])) },
       ...Object.fromEntries(names.map((name) => [`node_modules/${name}`, {
-        version: "4.1.7", resolved: `https://registry.npmjs.org/${name}/-/${name}-4.1.7.tgz`, integrity: "sha512-AAAA", ...manifests[`${name}@4.1.7`],
+        version: "4.1.7", resolved: `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-4.1.7.tgz`, integrity: "sha512-AAAA", ...manifests[`${name}@4.1.7`],
       }])),
     } };
     const head = await tree({}, { "package-lock.json": JSON.stringify(lock) });
