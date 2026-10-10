@@ -37,7 +37,7 @@ on:
         type: string
         default: supply-chain / supply-chain
       required-cooldown-check:
-        description: The name the required cooldown check shows as (`<calling job id> / cooldown`, or a bridge job's); the daily rescan posts the current cooldown under it.
+        description: The name the required cooldown check shows as (`<calling job id> / cooldown`, or a bridge job's); the daily rescan posts the current cooldown under it. secure-it and bump-it recognise a hold only under `cooldown` or a name ending in ` / cooldown`.
         type: string
         default: supply-chain / cooldown
     outputs:

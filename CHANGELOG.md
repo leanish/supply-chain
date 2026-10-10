@@ -9,7 +9,9 @@
   `acme/actions/safe@main`), a second copy of an existing use, or a step
   repeated through a YAML alias is new and must be pinned, while the unchanged
   ones stay reported gaps. Before, the subdirectory was ignored, copies were
-  merged, and an aliased step was read once.
+  merged, and an aliased step was read once. Occurrences are also told apart
+  structurally, so a ref or comment holding a separator (`sha|reviewed`) can't
+  pass for an unchanged one.
 - The daily rescan re-judges the cooldown under the base's current policy and
   posts it as a status named like the required cooldown check (new
   `required-cooldown-check` input, default `supply-chain / cooldown`; bridge
