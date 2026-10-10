@@ -278,7 +278,12 @@ describe("lockfile reading", () => {
       "https://npm.pkg.github.com/download/@trusted/name/11.0.0/abc123",
       "https://npm.pkg.github.com/download/@trusted/name/1.0.0/../../../@attacker/name/1.0.0/abc123",
       "https://npm.pkg.github.com/download/@trusted/other/1.0.0/abc123",
+      // URL parsing would normalize these into another package's path.
+      String.raw`https://npm.pkg.github.com/download/@trusted/name/1.0.0/hash\..\..\..\..\@attacker/name/1.0.0/evilhash`,
+      "https://npm.pkg.github.com/download/@trusted/name/1.0.0/.\t./.\t./.\t./.\t./@attacker/name/1.0.0/evilhash",
+      "https://npm.pkg.github.com/download/@trusted/name/1.0.0/abc123?x=1",
     ]) expect(at(resolved), resolved).toHaveLength(1);
+    expect(sourceProblems(pkgs({}, { "node_modules/safe": { version: "1.0.0", resolved: "https://registry.npmjs.org/safe/-/safe-1.0.0.tgz#x" } }))).toHaveLength(1);
   });
 });
 

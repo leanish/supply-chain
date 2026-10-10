@@ -140,18 +140,28 @@ export function sourceProblems(packages: ReadonlyArray<LockedPackage>, registrie
  * Whether the locked tarball is the package's own on an allowed registry: npm's registry serves it at exactly
  * `<registry>/<name>/-/<unscoped name>-<version>.tgz`; another registry's path must hold the full name (scope
  * included) as consecutive segments, followed by that same `-/<unscoped name>-<version>.tgz` or by the exact version
- * as a segment (GitHub Packages: `download/@scope/name/<version>/<hash>`), with no `.`, `..` or empty segment. A
+ * as a segment (GitHub Packages: `download/@scope/name/<version>/<hash>`), with no `.`, `..` or empty segment; the URL
+ * must already be in the normalized form npm fetches. A
  * lockfile can't keep a package's name and version while fetching another package's tarball (its integrity would
  * then only vouch for the wrong archive).
  */
 export function fromRegistry(pkg: LockedPackage, registries: ReadonlyArray<string>): boolean {
   const resolved = pkg.resolved;
   if (resolved === undefined) return false;
+  // What npm would fetch: only a URL already in its normalized form (no backslashes, control characters, dot segments,
+  // query or fragment) is judged as written.
+  let url: URL;
+  try {
+    url = new URL(resolved);
+  } catch {
+    return false;
+  }
+  if (url.href !== resolved || url.search !== "" || url.hash !== "") return false;
   return registries.some((registry) => {
     if (!resolved.startsWith(`${registry}/`)) return false;
     let path: string;
     try {
-      path = decodeURIComponent(resolved.slice(registry.length + 1).split(/[?#]/)[0]!);
+      path = decodeURIComponent(resolved.slice(registry.length + 1));
     } catch {
       return false;
     }
