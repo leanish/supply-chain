@@ -13,9 +13,10 @@
  *      changed, transitives a parent update pulled in included);
  *   2. every planned move landed exactly: npm, the lockfile entry at each
  *      planned location is `to`; Gradle, each planned configuration declares
- *      exactly `to` and resolves it (or above: then the exact declaration shows
- *      Gradle's conflict resolution picked a version another path requires,
- *      which `compare` has judged); Actions, every use in each planned file is
+ *      what base did with `from` declared as `to` (a floor: `to` added), and
+ *      nothing else, and resolves it (or above: then the exact declarations
+ *      show Gradle's conflict resolution picked a version another path
+ *      requires, which `compare` has judged); Actions, every use in each planned file is
  *      pinned to the tag's commit with `# <to>`;
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
@@ -48,7 +49,7 @@ import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
 
 import { preservedFloors } from "./floor-checks.ts";
 import { verifyRemovalEdit } from "./floor-verification.ts";
-import { type ChangePlan, lockfileOf, packageKey } from "./plan.ts";
+import { type ChangePlan, lockfileOf, packageKey, type PlannedMove } from "./plan.ts";
 
 export interface VerifyInputs {
   readonly npmFiles?: ReadonlyMap<string, string>;
@@ -84,7 +85,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));
   inputs.cooldown?.(compared.cooldown);
 
-  problems.push(...(await landed(plan, head, gradle.head)));
+  problems.push(...(await landed(plan, head, gradle.base, gradle.head)));
   problems.push(...(await pinsLanded(pins, head)));
 
   const planned = new Set(plan.packages);
@@ -101,7 +102,10 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits);
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  problems.push(...directChangesOutside(before, after, (ecosystem, name, where) => planned.has(`${ecosystem}|${name}`) || ecosystem === "Maven" && driven(name, where)));
+  // A planned Gradle package is exempt only where it's planned (`landed` checks those exactly); npm's are checked by lockfile.
+  const plannedAt = (name: string, where: string) => plan.moves.some((move) => move.ecosystem === "Maven" && move.name === name && move.locations.includes(where));
+  problems.push(...directChangesOutside(before, after, (ecosystem, name, where) =>
+    ecosystem === "Maven" ? plannedAt(name, where) || driven(name, where) : planned.has(`${ecosystem}|${name}`)));
   problems.push(...(await actionsOutsidePlan(pins, base, head)));
 
   if (!plan.moves.some((move) => move.major)) {
@@ -112,7 +116,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   return problems;
 }
 
-async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | undefined): Promise<string[]> {
+async function landed(plan: ChangePlan, head: Tree, baseGradle: GradleInventory | undefined, gradle: GradleInventory | undefined): Promise<string[]> {
   const problems: string[] = [];
   const locks = await lockfilesOf(head);
   for (const move of plan.moves) {
@@ -122,15 +126,41 @@ async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | un
         const entry = ((lock ?? {}) as { packages?: Record<string, { version?: string; name?: string }> }).packages?.[key];
         if (entry?.version !== move.to) problems.push(`${move.name} at ${location} is ${entry?.version ?? "gone"}, not ${move.to}`);
       } else if (move.ecosystem === "Maven") {
+        const was = declaredAt(baseGradle, location, move.name);
         const declared = declaredAt(gradle, location, move.name);
         const resolved = resolvedAt(gradle, location, move.name);
-        if (!declared.includes(move.to)) problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : declared.join(", ")}, not ${move.to}`);
+        if (!plannedDeclarations(was, declared, move)) {
+          problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : [...declared].sort().join(", ")} (was ${was.length === 0 ? "nothing" : [...was].sort().join(", ")}), not just ${move.mechanism === "gradle-floor" ? `${move.to} added` : `one version declared as ${move.to}`}`);
+        }
         if (resolved === undefined) problems.push(`${location} no longer resolves ${move.name}`);
         else if (versionScheme("Maven").compare(resolved, move.to) < 0) problems.push(`${location} resolves ${move.name} ${resolved}, below ${move.to}`);
       }
     }
   }
   return problems;
+}
+
+/**
+ * Whether a configuration's declarations changed exactly as planned: a floor adds one `to` and removes nothing; a
+ * declaration move turns the copies of one version (the one that resolved to `from`, which needn't equal it) into
+ * `to`, adding and removing nothing else.
+ */
+function plannedDeclarations(was: ReadonlyArray<string>, now: ReadonlyArray<string>, move: PlannedMove): boolean {
+  const added = without(now, was);
+  const removed = without(was, now);
+  if (added.length === 0 || added.some((version) => version !== move.to)) return false;
+  if (move.mechanism === "gradle-floor") return added.length === 1 && removed.length === 0;
+  return removed.length === added.length && removed.every((version) => version === removed[0]);
+}
+
+/** `from` with one copy of each of `minus`'s entries taken out (multisets). */
+function without(from: ReadonlyArray<string>, minus: ReadonlyArray<string>): string[] {
+  const left = [...from];
+  for (const version of minus) {
+    const at = left.indexOf(version);
+    if (at !== -1) left.splice(at, 1);
+  }
+  return left;
 }
 
 function pinsOf(plan: ChangePlan): PlannedPin[] {

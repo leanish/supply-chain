@@ -248,6 +248,16 @@ describe("rescan", () => {
     expect(await cooldownPost({ ...pass, completed: false })).toBeUndefined();
   });
 
+  it("posts no cooldown verdict from a conflicting PR's merge base, whose policy isn't the base's", async () => {
+    await inventory(["base", "head"]);
+    const posts: Array<{ url: string; body: { context: string } }> = [];
+    const conflicted = { ...steps(pass), prepare: async () => ({ base: "d".repeat(40), head: HEAD }) };
+    await rescan(conflicted, github({}, posts));
+    expect(posts.find((post) => post.body.context === "supply-chain / cooldown")?.body).toMatchObject({
+      state: "error", description: "Daily rescan: the PR conflicts with main, so the cooldown can't be judged under its current policy",
+    });
+  });
+
   it("fails closed when GitHub doesn't answer", async () => {
     await expect(rescan(steps(pass), github({ [`${API}/pulls/7`]: { status: 502 } }))).rejects.toThrow("HTTP 502");
   });

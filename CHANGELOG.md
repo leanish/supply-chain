@@ -17,6 +17,8 @@
   `required-cooldown-check` input, default `supply-chain / cooldown`; bridge
   callers such as this repository's own CI pass `gate / cooldown`). Before, a
   PR that went green under a 7-day wait stayed green when the base raised it.
+  A PR that conflicts with its base (compared with its merge base instead)
+  gets an `error` cooldown status rather than a verdict under old policy.
 - The Gradle inventory reads each configuration's declarations only once every
   configuration of the build has resolved. Resolving adds some (a plugin's
   `defaultDependencies`: Checkstyle's, JaCoCo's and PITest's tools, Kotlin's
@@ -39,7 +41,11 @@
   integrity, and neither the comparison nor the signature audit noticed.
 - Verification compares every declaration of an unplanned Gradle dependency in
   a configuration, not only the last one read, so an unplanned change to one
-  of two declarations of the same package is caught.
+  of two declarations of the same package is caught. secure-it also requires
+  each planned configuration to declare exactly what base did with the fix
+  applied (`from` declared as `to`, or a floor's `to` added), and a planned
+  package to stay unchanged where it isn't planned: an extra declaration
+  overriding the selected target no longer passes.
 - secure-it fixes a vulnerable dependency a Gradle plugin declares (java-conventions'
   Guava, Commons Lang or Plexus Utils in a consumer) with a floor, as it does a
   transitive one: an explicit dependency with `because(...)` next to the
