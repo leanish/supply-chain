@@ -95,7 +95,7 @@ A floor forces a minimum version on a dependency, usually a transitive one: a se
 
 For every version a PR adds or changes:
 
-- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or its independently proved required npm dependency (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
+- **Release age:** published at least `releaseAgeDays` (default 7) ago, unless it's an own package, or it's the security fix the version rule picks (below), or a carrier version that rule picks for the bundled advisories it drops (below), or its independently proved required npm dependency (below), or a `releaseAge` exception names an advisory that, in this run's snapshot, affects a version the PR replaces and not this one (malware advisories don't count).
 - **Source:** every locked package comes from an allowed registry (`npm.registries`, default the npm registry) as its own tarball: on the npm registry exactly `<name>/-/<unscoped name>-<version>.tgz`; elsewhere the full name (scope included) as consecutive path segments followed by that same `-/<unscoped name>-<version>.tgz` or by the exact version (GitHub Packages' `download/@scope/name/<version>/…`), so a lockfile can't keep a name and version while fetching another package's archive. The gate checks age and identity only against the npm registry, so a package from another allowed registry fails, unless it's an own package with an unexpired `identity` exception recording that its publish was reviewed (own packages skip only the wait).
 - **Identity:** a version that replaces another fails on a publisher identity break: provenance dropped or from another repository or workflow, provenance from a repository the replaced version doesn't declare, or (without provenance) a publisher who hadn't published the package up to the replaced version. Every provenance statement must name the exact package, version and locked sha512.
 - Bundles the lockfile doesn't fully record fail: every `bundleDependencies` entry, and what it depends on, needs an `inBundle` entry inside the package that ships it.
@@ -115,6 +115,38 @@ A version younger than the wait passes without an exception when it's the fix th
 - V passes only if it's that version. If an older fix in the line turns 7 days old before CI runs, the check fails on purpose: that one is safer, and secure-it picks it up.
 
 Candidates join the same advisory snapshot as base and head, so the rule and the comparison read the same data. On sqs-codec's snappy-java 1.1.10.8 → 1.1.10.10, three days old, it passes with no exception: 1.1.10.9 leaves two of the seven advisories, and 1.1.10.10 is the lowest that fixes them all.
+
+## A young carrier with a bundled fix (npm)
+
+A package's tarball can ship its dependencies inside it (`bundleDependencies`; the lockfile marks them `inBundle`).
+A vulnerable bundled copy can't move on its own: only another version of its **carrier** (the nearest locked ancestor
+that isn't bundled itself) replaces it. A young carrier version V replacing R passes as a `bundle-fix` when, for every
+head copy of V:
+
+- **In place:** base had R at the same lockfile path. A copy of V anywhere else has no evidence of its own, so V isn't
+  justified.
+- **Authenticated archives:** the gate reads R's and V's archives from the npm registry (their own tarball URLs, no
+  redirects) and checks each against the sha512 integrity its lockfile records; head's must also be the one the
+  registry publishes. Each lockfile's bundled entries under the copy must be exactly what its archive ships, path by
+  path, name and version included, both ways.
+- **Targets:** the bundled package + advisory groups R's bundle has and V's doesn't (wherever in the bundle a package
+  sits: a package that moved inside the bundle still counts), plus R's own advisories V no longer has. Malware isn't a
+  target.
+- **The rule:** the young-fix rule above, applied to the carrier: a candidate fixes when its bundle has none of the
+  targets anywhere, adds no package + advisory group pair R's bundle lacked, holds no malware, and the carrier version
+  itself fixes R's own targets without a new advisory. Candidates are read lazily, in order; each batch of newly read
+  bundles extends one advisory snapshot over everything read, and the choice is made again on the last one.
+
+Anything that can't be established leaves V unjustified with the reason, and the comparison goes on: an unreadable,
+truncated or unauthenticated archive, an entry type npm doesn't pack (links, devices), a path twice, a bundled package
+whose files have no `package.json` (Node could still run it), an unknown publish time, a failed advisory scan, or a
+budget: 128 MB compressed, 512 MB unpacked and 50,000 entries per archive, 1 MB per manifest, 3 minutes per download,
+1 GB downloaded per run (aws-cdk-lib 2.273.0 is 37 MB compressed and 137 MB unpacked). The archive is read as it
+streams, keeping only package manifests; nothing is extracted or run.
+
+Known limitation: a carrier proved this way doesn't seed the required-dependency proof below, so a young non-bundled
+dependency it needs stays unjustified and the comparison fails (secure-it then reports the fix instead of publishing
+it). Every bundled copy itself follows its archive, never a separate age or requirement check.
 
 ## npm dependencies required by a security fix
 
@@ -285,6 +317,7 @@ What runs where:
 - **Targets:** the version's failing advisory groups (an excepted one stays as it is), as that second snapshot groups them (a candidate can link aliases). A target no listed version fixes is reported as `unfixable` and left: fixing A and leaving B is allowed.
 - **The choice:** the rule's first line, lowest aged fix, else lowest fix; a choice outside the version's own line is flagged `major`, for the agent to adapt the code. Own packages skip the wait.
 - **Malware:** the nearest clean version at least `releaseAgeDays` old (own packages: any age): newer in its line first, then older in its line (a downgrade), then a newer line.
+- **Bundled copies:** a failing copy a carrier's tarball ships isn't moved itself: its advisories become targets of a move of its carrier, chosen by the carrier rule above (one entry per carrier version, with `carries` listing each bundled package, its versions before and after, and its advisories; the carrier's own failing advisories join the same move). The carrier's locked archive must match what each lockfile records, or the entry says why there's no choice.
 - **Blockers:** an npm choice whose publisher identity `compare` would reject keeps the rule's version and lists the break: it needs a reviewed `identity` exception.
 - **No choice:** each entry says why (no version fixes, an older fix's publish time is unknown, the registry can't list the versions).
 - **Incomplete inventories:** a Gradle configuration that didn't resolve or an unrecorded bundle is listed under `incomplete`, and the command exits 2: an empty list then doesn't mean nothing fails. Coverage gaps (actions included) are listed too.

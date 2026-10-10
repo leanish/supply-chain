@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Added
+
+- secure-it fixes a vulnerable copy an npm package bundles in its tarball
+  (`inBundle`, e.g. brace-expansion inside aws-cdk-lib) by moving that
+  carrier: to the version the security rule picks for the advisories its
+  bundle drops (and its own, if it has failing ones), reading each carrier
+  version's bundle from its registry archive, authenticated against its
+  sha512. Before, a bundled copy couldn't be fixed at all. The PR's table
+  says which bundled packages change and to what; a carrier that would need an
+  npm override is reported instead.
+- The gate accepts a young carrier version as a `bundle-fix` (still held by the
+  cooldown): every head copy must replace the old version in place, both
+  archives must authenticate and match what each lockfile records, and it must
+  be the version the rule picks. Before, a young carrier failed the release-age
+  rule, since the advisory isn't on the carrier itself. Required dependencies
+  of such a carrier aren't proved (a young one fails the comparison).
+- When a parent's range excludes a transitive npm copy's security target,
+  secure-it first looks for that parent's lowest version in its own line, past
+  the release-age wait, whose range admits the target (no new advisory, same
+  publisher, movable without an override itself), and moves both, the copy
+  locked inside the parent's new range. Only when no parent can move does it
+  fall back to the override and floor, with the reason in the PR's notes.
+- In Gradle, before flooring a vulnerable transitive (or plugin-declared)
+  module, secure-it looks for a dependency the sources declare that brings it
+  in every affected configuration, and that dependency's lowest version in its
+  own line past the wait which, applied by Gradle in a reference resolution,
+  brings a version without the advisories (okhttp 4.9.3 → 4.12.0 for okio's,
+  say). That declaration then moves wherever it's declared, and verification
+  checks the module's advisories are gone. At most 6 reference runs per
+  module; a failed or spent search falls back to the floor, with a note.
+
+### Changed
+
+- The Gradle inventory (schema 2) records each configuration's resolved
+  edges, who brought what, so secure-it can find the declaration behind a
+  transitive. Inventory jobs and the comparison must run the same release, as
+  they do through the reusable workflow.
+
 ### Fixed
 
 - The gate counts each unpinned (or unverified) action use: a use of another

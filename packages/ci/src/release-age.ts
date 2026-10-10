@@ -3,6 +3,8 @@
  * or changes must be at least `releaseAgeDays` old, unless
  *   - it's an own package (own packages skip only this wait), or
  *   - it's the security fix the version rule picks (`young-fixes.ts`), or
+ *   - it's a carrier version that rule picks for the bundled advisories it
+ *     drops (`bundle-fix-proof.ts`), or
  *   - npm needs it for that fix and no aged version satisfies the requirement
  *     (only the lowest satisfying version, independently proved), or
  *   - a `releaseAge` exception names an advisory that, in the comparison's
@@ -38,6 +40,8 @@ export interface AgeContext {
   readonly required?: ReadonlySet<string>;
   /** `versionKey` of a young version → replaced version → its candidates, all in the snapshot. */
   readonly candidates: ReadonlyMap<string, ReadonlyMap<string, ReadonlyArray<string>>>;
+  /** `versionKey` of a young carrier version → undefined when its bundle fix is proved, else why it isn't. */
+  readonly bundleFixes?: ReadonlyMap<string, string | undefined>;
 }
 
 /** Under the wait and not an own package: what the proof or an exception must justify. */
@@ -47,7 +51,7 @@ export function isYoung(change: ChangedVersion, config: Config, now: Date): bool
 }
 
 /** What let a young version through: the fix proof, the required-dependency proof, an exception; or nothing. */
-export type YoungJustification = "security-fix" | "required" | "exception" | "unjustified";
+export type YoungJustification = "security-fix" | "bundle-fix" | "required" | "exception" | "unjustified";
 
 /** A version the change adds or changes that is still under the wait. */
 export interface HeldVersion {
@@ -105,6 +109,8 @@ async function judgeYoung(change: ChangedVersion, context: AgeContext): Promise<
     context.now,
   );
   if (proof === undefined) return { justification: "security-fix" };
+  const bundled = context.bundleFixes?.get(versionKey(pkg));
+  if (context.bundleFixes?.has(versionKey(pkg)) === true && bundled === undefined) return { justification: "bundle-fix" };
   const exception = context.exceptions.releaseAge.find(
     (entry) => (entry.ecosystem === undefined || entry.ecosystem === pkg.ecosystem) && entry.package === pkg.name && entry.version === pkg.version,
   );
@@ -114,7 +120,7 @@ async function judgeYoung(change: ChangedVersion, context: AgeContext): Promise<
       justification: "unjustified",
       problem: `${label(pkg)} was published ${change.published.toISOString()} (${ageDays.toFixed(1)} days ago, under ${
         context.config.releaseAgeDays
-      }), and it isn't the security fix the version rule would take: ${proof}`,
+      }), and it isn't the security fix the version rule would take: ${proof}${bundled === undefined ? "" : `; nor a bundled fix: ${bundled}`}`,
     };
   }
   if (exception.expires < context.now.toISOString().slice(0, 10)) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { planBlock } from "../../remediation/src/plan-blocks.ts";
 import { planOf, planSection, withPlanSection } from "../src/plan-block.ts";
 import type { ChangePlan, PlannedMove } from "../src/plan.ts";
 import { retryWithoutNamed } from "../src/retry.ts";
@@ -31,6 +32,19 @@ describe("batch retry", () => {
     expect(retry.plan?.requiredNpm).toEqual([]);
     expect(retry.plan?.notes).toEqual([]);
     expect(retry.leftOut[0]?.problems).toEqual(["compare: child@2.0.0 adds an advisory"]);
+  });
+
+  it("attributes a carried package's problem to its carrier, and keeps the carrier in the plan's text and block", () => {
+    const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+    const carrier: PlannedMove = { ...move("carrier"), mechanism: "npm-direct", advisories: [], carries: [carried] };
+    const original = plan(carrier, move("other"));
+    const section = planSection(original);
+    expect(section).toContain("| npm | `carrier` | 1.0.0 → 1.0.1 | npm-direct | GHSA-brace in bundled `brace` 5.0.9 → 5.0.12 |");
+    expect(planOf(section)).toEqual(original);
+    expect(planOf(planBlock({ ...original, moves: [{ ...carrier, carries: [{ ...carried, to: "5.0.12" }] }] }))).toBeUndefined();
+    const retry = retryWithoutNamed(original, ["brace@5.0.9 still has GHSA-brace, which moving carrier was to fix"]);
+    expect(retry.plan?.packages).toEqual(["npm|other"]);
+    expect(retry.leftOut[0]?.moves).toEqual([carrier]);
   });
 
   it("drops all copies of a named package rather than silently publishing only some", () => {

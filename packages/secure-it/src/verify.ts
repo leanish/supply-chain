@@ -18,7 +18,12 @@
  *      planned file is pinned to the tag's commit with `# <to>`;
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
- *      pass `compare` as inherited, not here), using compare's head snapshot;
+ *      pass `compare` as inherited, not here), using compare's head snapshot,
+ *      nor an advisory a carrier move carries: on the carried npm package, or
+ *      on any Gradle coordinate (a replacement such as okio-jvm keeps it too);
+ *      and each npm carrier's
+ *      head copies lock the registry's archive of its target and record exactly
+ *      the bundle that archive ships;
  *   4. no direct npm dependency outside the planned packages changed version,
  *      no action use outside the plan changed, and Gradle resolves and declares
  *      exactly what the plan's reference does (the base with the planned
@@ -27,8 +32,12 @@
  *   5. only dependency files changed, unless a move is a major.
  */
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
+import { registryIntegrity } from "../../ci/src/carrier-fixes.ts";
+import { type BundleReader, bundleMismatches } from "../../ci/src/npm-bundles.ts";
+import { lockedPackages } from "../../ci/src/npm-lock.ts";
+import { NpmRegistry } from "../../ci/src/npm-registry.ts";
 import type { CooldownEvaluation } from "../../ci/src/cooldown.ts";
-import { type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
+import { bundleReader, type GateEnvironment, type GradleInputs, runCompare } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { versionScheme } from "../../ci/src/versions.ts";
@@ -67,6 +76,8 @@ export interface VerifyInputs {
   readonly changedFiles: ReadonlyArray<string>;
   /** Told what the verifying comparison's cooldown holds, whenever the comparison runs. */
   readonly cooldown?: (evaluation: CooldownEvaluation) => void;
+  /** Reads carrier archives; one shared with planning saves downloads. */
+  readonly bundles?: BundleReader;
 }
 
 /** What's wrong with the edit; empty when it can be published. */
@@ -93,10 +104,18 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
 
   const planned = new Set(plan.packages);
   for (const finding of compared.headFindings) {
+    // By alias group, as the comparison groups them: the same advisory can come back under another id.
+    const isTarget = (advisory: string) => compared.group(advisory) === finding.advisory;
+    // npm targets a package + group, as its findings do. Gradle checks any coordinate too: a replacement (okio →
+    // okio-jvm) can keep the advisory a parent move carried away.
+    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem &&
+      (move.carries ?? []).some((carried) => (move.ecosystem !== "npm" || carried.name === finding.name) && carried.advisories.some(isTarget)));
+    if (carriers.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which moving ${carriers.map((move) => move.name).join(", ")} was to fix`);
     if (!planned.has(packageKey(finding))) continue;
-    const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some((advisory) => finding.ids.includes(advisory)));
+    const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some(isTarget));
     if (targeted.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which the plan was to fix`);
   }
+  problems.push(...(await carriersShipped(plan, head, inputs.bundles ?? bundleReader(env), new NpmRegistry(env.fetch))));
 
   problems.push(...directChangesOutside(await directVersions(base), await directVersions(head), (ecosystem, name) => planned.has(`${ecosystem}|${name}`)));
   const reference = referencePlan(plan, gradle.base);
@@ -107,6 +126,33 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     const actions = plan.moves.some((move) => move.mechanism === "action-pin");
     const outside = inputs.changedFiles.filter((path) => !isDependencyFile(path, actions));
     if (outside.length > 0) problems.push(`the edit changed ${outside.join(", ")}, which only a major move may touch`);
+  }
+  return problems;
+}
+
+/**
+ * Each carrier move's head copies lock the registry's archive of `to`, and record exactly the bundle that archive
+ * ships: npm wrote the bundled entries, and they're what the gate scanned.
+ */
+async function carriersShipped(plan: ChangePlan, head: Tree, reader: BundleReader, registry: NpmRegistry): Promise<string[]> {
+  const problems: string[] = [];
+  const locks = await lockfilesOf(head);
+  for (const move of plan.moves.filter((move) => move.ecosystem === "npm" && move.carries !== undefined)) {
+    let published: string | undefined;
+    for (const location of move.locations) {
+      const { lock, key } = lockfileOf(locks, location);
+      const copy = lockedPackages(lock).find((pkg) => pkg.path === key);
+      // A copy that didn't land is `landed`'s to report.
+      if (copy === undefined || copy.version !== move.to) continue;
+      published ??= await registryIntegrity(registry, move.name, move.to);
+      if (published === undefined || copy.integrity !== published) {
+        problems.push(`${move.name} at ${location} doesn't lock the registry's ${move.to} archive`);
+        continue;
+      }
+      const bundle = await reader.read(move.name, move.to, copy.integrity);
+      if (!bundle.complete) problems.push(`${move.name} at ${location}: its bundle can't be checked: ${bundle.reason}`);
+      else problems.push(...bundleMismatches(lockedPackages(lock), key, bundle).map((problem) => `${location}: ${problem}`));
+    }
   }
   return problems;
 }

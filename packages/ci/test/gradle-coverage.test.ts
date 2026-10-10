@@ -161,6 +161,14 @@ dependencies { implementation "fixture:included-dep:1.0" }
     expect(locations("fixture:sub-runtime:1.0")).toEqual(expect.arrayContaining([":sub:runtimeClasspath"]));
   });
 
+  it("records who brought what, so a declared dependency that brings a vulnerable one can be found", () => {
+    const runtime = inventory.builds.find((entry) => entry.build === ".")!.configurations.find((configuration) => configuration.id === ":runtimeClasspath")!;
+    expect(runtime.edges).toEqual(expect.arrayContaining([
+      { from: "root project 'fixture'", to: "fixture:runtime-lib:1.0", constraint: false },
+      { from: "fixture:runtime-lib:1.0", to: "fixture:transitive:2.0", constraint: false },
+    ]));
+  });
+
   it("covers the buildscript, plugins DSL and settings classpaths", () => {
     expect(locations("fixture:buildscript-dep:1.0")).toEqual([":buildscript.classpath"]);
     expect(locations("fixture:plugin-impl:1.0")).toEqual([":sub:buildscript.classpath"]);

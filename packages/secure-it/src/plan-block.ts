@@ -67,6 +67,14 @@ function removalSection(plan: ChangePlan): string {
 
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
 function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
+  if (move.carries !== undefined) {
+    const own = move.advisories;
+    const where = move.ecosystem === "npm" ? "in bundled" : "in the";
+    const brought = move.ecosystem === "npm" ? "" : " it brings";
+    const inside = move.carries.map((entry) => `${entry.advisories.join(", ")} ${where} \`${entry.name}\`${brought} ${entry.from.join(", ")} → ${entry.to.length === 0 ? "removed" : entry.to.join(", ")}`);
+    return [...(own.length === 0 ? [] : [own.join(", ")]), ...inside].join("; ");
+  }
+  if (move.unblocks !== undefined && move.advisories.length === 0) return `a range admitting the fix at ${move.unblocks.map((location) => `\`${location}\``).join(", ")}`;
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
   if (plan.requiredNpm?.some((target) => target.name === move.name && target.version === move.to)) return "required dependency compatibility";
   const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
@@ -109,7 +117,7 @@ export function cooldownWarning(held: ReadonlyArray<PlannedHold>): string | unde
   if (until === undefined) return undefined;
   const cell = (text: string) => text.replaceAll("|", "\\|").replace(/\s+/g, " ");
   const minute = (instant: string) => `${instant.slice(0, 10)} ${instant.slice(11, 16)}`;
-  const why = { "security-fix": "the security fix the version rule picks", required: "required by a security fix", exception: "a release-age exception", unjustified: "not justified: the gate fails it" } as const;
+  const why = { "security-fix": "the security fix the version rule picks", "bundle-fix": "the carrier version the rule picks for advisories in its bundle", required: "required by a security fix", exception: "a release-age exception", unjustified: "not justified: the gate fails it" } as const;
   const rows = held.map((entry) =>
     `> | ${entry.ecosystem} \`${cell(entry.name)}\` | ${entry.replaced.length === 0 ? "new" : cell(entry.replaced.join(", "))} → ${cell(entry.version)} | ${minute(entry.published)} | ${minute(entry.eligibleAt)} | ${why[entry.justification]} | ${cell(entry.signals.join("; ")) || "—"} |`);
   return [
@@ -152,7 +160,15 @@ function validMetadata(plan: ChangePlan): boolean {
 function isMove(move: unknown): move is PlannedMove {
   if (typeof move !== "object" || move === null) return false;
   const m = move as Record<string, unknown>;
-  return typeof m["name"] === "string" && typeof m["from"] === "string" && typeof m["to"] === "string" && typeof m["mechanism"] === "string" && Array.isArray(m["locations"]);
+  return typeof m["name"] === "string" && typeof m["from"] === "string" && typeof m["to"] === "string" && typeof m["mechanism"] === "string" && Array.isArray(m["locations"]) &&
+    (m["carries"] === undefined || (Array.isArray(m["carries"]) && m["carries"].every(isCarried)));
+}
+
+function isCarried(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const c = entry as Record<string, unknown>;
+  const strings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
+  return typeof c["name"] === "string" && strings(c["from"]) && strings(c["to"]) && strings(c["locations"]) && strings(c["advisories"]);
 }
 
 function validHolds(held: unknown): boolean {

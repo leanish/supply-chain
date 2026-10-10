@@ -8,7 +8,7 @@ import { routineUnit, majorUnits } from "../src/units.ts";
 import { plannedFiles, verifyPlan, type VerifyInputs } from "../src/verify.ts";
 import { candidate } from "./fixtures.ts";
 
-vi.mock("../../ci/src/gate.ts", async (original) => ({ ...await original<object>(), runCompare: vi.fn(async () => ({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } })) }));
+vi.mock("../../ci/src/gate.ts", async (original) => ({ ...await original<object>(), runCompare: vi.fn(async () => ({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } })) }));
 const tree = (id: string, files: Record<string, string>): Tree => ({ id, read: async (path) => files[path], list: async (dir) => Object.keys(files).filter((path) => dir === "." || path.startsWith(`${dir}/`)) });
 const manifest = (lib = "^1.0.0", scripts: object = {}) => JSON.stringify({ dependencies: { lib }, scripts });
 const lock = (lib = "1.0.0", other = "1.0.0") => JSON.stringify({ packages: { "": { dependencies: { lib: `^${lib}`, other: "^1" } }, "node_modules/lib": { version: lib }, "node_modules/other": { version: other } } });
@@ -31,7 +31,7 @@ function markMoved(inventory: GradleInventory, name: string, version: string, lo
   return { ...inventory, builds: inventory.builds.map((build) => ({ ...build, configurations: build.configurations.map((configuration) => ({ ...configuration,
     declared: configuration.declared.map((entry) => (locations.includes(configuration.id) && `${entry.group}:${entry.name}` === name && entry.version === version ? { ...entry, moved: true as const } : entry)) })) })) };
 }
-beforeEach(() => { vi.mocked(runCompare).mockClear(); vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } }); });
+beforeEach(() => { vi.mocked(runCompare).mockClear(); vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } }); });
 describe("bump verification", () => {
   it("verifies official wrapper targets before compare and only permits wrapper files with a planned move", async () => {
     const sum = "a".repeat(64);
@@ -69,15 +69,15 @@ describe("bump verification", () => {
   it("accepts exactly planned files and forwards the full comparison failure", async () => {
     const { input } = await fixture();
     expect(await verifyPlan(input)).toEqual([]);
-    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: ["new advisory"], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
+    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: ["new advisory"], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } });
     expect(await verifyPlan(input)).toEqual(["compare: new advisory"]);
   });
   it("refuses anything the cooldown holds, or a cooldown it couldn't evaluate", async () => {
     const { input } = await fixture();
     const held = { ecosystem: "npm" as const, name: "lib", version: "1.0.1", replaced: ["1.0.0"], published: "2026-10-06T00:00:00.000Z", eligibleAt: "2026-10-13T00:00:00.000Z", justification: "exception" as const };
-    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [held] } });
+    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: true, releaseAgeDays: 7, held: [held] } });
     expect(await verifyPlan(input)).toEqual(["under the release-age wait: npm lib@1.0.1: published 2026-10-06T00:00:00.000Z, held until 2026-10-13T00:00:00.000Z (a release-age exception)"]);
-    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: false, reason: "base broke" } });
+    vi.mocked(runCompare).mockResolvedValue({ headFindings: [], failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, group: (id: string) => id, cooldown: { evaluated: false, reason: "base broke" } });
     expect(await verifyPlan(input)).toEqual(["the cooldown can't be evaluated: base broke"]);
   });
   it("preserves tool-computed transitives absent from the explicit moves", async () => {

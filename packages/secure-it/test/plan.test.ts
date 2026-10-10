@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SecurityFix } from "../../ci/src/candidates.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
-import { coupledWork, planFor, selectWork, splitByAge } from "../src/plan.ts";
+import { coupledWork, planFor, selectWork, splitByAge, withUnsupportedCarriers } from "../src/plan.ts";
 
 function fix(overrides: Partial<SecurityFix> & Pick<SecurityFix, "name" | "from">): SecurityFix {
   return {
@@ -173,10 +173,53 @@ describe("planFor", () => {
     expect(plan.moves).toEqual([expect.objectContaining({ mechanism: "npm-direct", declaredAs: "compat", advisories: ["GHSA-a"] })]);
   });
 
+  describe("a carrier move", () => {
+    const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+    const carrierFix = (to = "1.1.0") => fix({ name: "carrier", from: "1.0.0", targets: ["GHSA-own"], carries: [carried], to: { version: to, line: "1", aged: true, major: false, blockers: [] } });
+    const lockfiles = (range: string, declared: boolean) => new Map([["package-lock.json", { packages: {
+      "": { name: "app", dependencies: declared ? { carrier: range } : { parent: "^1.0.0" } },
+      ...(declared ? {} : { "node_modules/parent": { version: "1.0.0", dependencies: { carrier: range } } }),
+      "node_modules/carrier": { version: "1.0.0" },
+      "node_modules/carrier/node_modules/brace": { version: "5.0.9", inBundle: true },
+    } }]]);
+
+    it("moves the carrier the way its position allows, its own advisories apart from those it carries", async () => {
+      const plan = await planFor([carrierFix()], { named: undefined, lockfiles: lockfiles("^1.0.0", true), gradle: undefined, tagCommit: NO_TAGS });
+      expect(plan.moves).toEqual([expect.objectContaining({ name: "carrier", mechanism: "npm-direct", to: "1.1.0", advisories: ["GHSA-own"], carries: [carried] })]);
+    });
+
+    it("is blocked rather than overridden when a dependent's range excludes it", () => {
+      expect(withUnsupportedCarriers([carrierFix("2.0.0")], lockfiles("^1.0.0", false))[0]!.to!.blockers).toEqual([
+        "carrier@2.0.0 would need an npm override at node_modules/carrier, which secure-it doesn't do for a carrier",
+      ]);
+      expect(withUnsupportedCarriers([carrierFix("1.1.0")], lockfiles("^1.0.0", false))[0]!.to!.blockers).toEqual([]);
+    });
+  });
+
   it("names a malware plan `malware` and lists every package", async () => {
     const lockfiles = new Map([["package-lock.json", { packages: { "": { name: "app", dependencies: { a: "^1", b: "^1" } }, "node_modules/a": { version: "1.0.1" }, "node_modules/b": { version: "1.0.1" } } }]]);
     const plan = await planFor([fix({ name: "a", from: "1.0.1", malicious: true }), fix({ name: "b", from: "1.0.1", malicious: true })], { named: undefined, lockfiles, gradle: undefined, tagCommit: NO_TAGS });
     expect(plan).toMatchObject({ topic: "malware", malware: true, packages: ["npm|a", "npm|b"] });
+  });
+});
+
+describe("packages tied by a carried target", () => {
+  const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+  const carrier = (major = false) => fix({ name: "carrier", from: "1.0.0", targets: [], carries: [carried], to: { version: "1.1.0", line: major ? "2" : "1", aged: true, major, blockers: [] } });
+  const brace = (aged: boolean) => fix({ name: "brace", from: "5.0.9", targets: ["GHSA-brace"], to: { version: "5.0.12", line: "5", aged, major: false, blockers: [] } });
+
+  it("go to the held unit together when one of them is young", async () => {
+    const { units } = await coupledWork([carrier(), brace(false), fix({ name: "other", from: "1.0.0" })]);
+    expect(units.map((unit) => [unit.topic, unit.work.map((entry) => entry.name).sort()])).toEqual([["security", ["other"]], ["security-cooldown", ["brace", "carrier"]]]);
+  });
+
+  it("go to one major unit together when either needs a major", async () => {
+    const { units } = await coupledWork([carrier(true), brace(true)]);
+    expect(units.map((unit) => [unit.kind, unit.work.map((entry) => entry.name).sort()])).toEqual([["major", ["brace", "carrier"]]]);
+  });
+
+  it("aren't tied when nothing else fixes the carried package", async () => {
+    expect((await coupledWork([carrier(), fix({ name: "other", from: "1.0.0" })])).units[0]?.coupled).toBeUndefined();
   });
 });
 

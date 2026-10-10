@@ -66,7 +66,7 @@ describe("a commit's Gradle inventory with a transform", () => {
       const [, , ...args] = request.command;
       input = JSON.parse(await readFile(flag(args, "--define").split("=")[1]!, "utf8"));
       mode = (await stat(join(exported, "gradlew"))).mode & 0o777;
-      await writeFile(flag(args, "--out"), JSON.stringify({ schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [] }] }));
+      await writeFile(flag(args, "--out"), JSON.stringify({ schemaVersion: 2, tree: "worktree", builds: [{ build: ".", configurations: [] }] }));
       return { code: 0, stdout: "", stderr: "" };
     });
     const inventory = await sandboxedGradleInventories({}, workingCopy).ofCommit({ ...tree, id: "b".repeat(40) }, { transform, overlay: [{ path: "gradlew", bytes: Buffer.from("#!/bin/sh\n"), executable: true }] });
@@ -83,7 +83,7 @@ describe("a commit's Gradle inventory with a transform", () => {
     vi.mocked(runSandboxed).mockImplementation(async (_isolation, request) => {
       const [, , ...args] = request.command;
       await writeFile(flag(args, "--define").split("=")[1]!, "{}");
-      await writeFile(flag(args, "--out"), JSON.stringify({ schemaVersion: 1, tree: "worktree", builds: [{ build: ".", configurations: [] }] }));
+      await writeFile(flag(args, "--out"), JSON.stringify({ schemaVersion: 2, tree: "worktree", builds: [{ build: ".", configurations: [] }] }));
       return { code: 0, stdout: "", stderr: "" };
     });
     await expect(sandboxedGradleInventories({}, workingCopy).ofCommit({ ...tree, id: "b".repeat(40) }, { transform })).rejects.toThrow("the Gradle transform's input changed");

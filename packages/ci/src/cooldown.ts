@@ -65,7 +65,7 @@ export function cooldownOf(raw: unknown, expectedHead: string): CooldownVerdict 
 }
 
 const ECOSYSTEMS: ReadonlySet<string> = new Set<Ecosystem>(["npm", "Maven", "GitHub Actions"]);
-const JUSTIFICATIONS: ReadonlySet<string> = new Set<YoungJustification>(["security-fix", "required", "exception", "unjustified"]);
+const JUSTIFICATIONS: ReadonlySet<string> = new Set<YoungJustification>(["security-fix", "bundle-fix", "required", "exception", "unjustified"]);
 
 /** One held entry, validated field by field. */
 export function heldEntry(raw: unknown): HeldVersion {
@@ -99,6 +99,7 @@ export function heldEntry(raw: unknown): HeldVersion {
 
 const WHY: Readonly<Record<YoungJustification, string>> = {
   "security-fix": "the security fix the version rule picks",
+  "bundle-fix": "the carrier version the rule picks for advisories in its bundle",
   required: "required by a security fix",
   exception: "a release-age exception",
   unjustified: "not justified (the supply-chain check fails too)",

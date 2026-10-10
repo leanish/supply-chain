@@ -41,6 +41,7 @@ export async function gatherRequiredProofs(changes: ReadonlyArray<ChangedVersion
           verifiedRoot: (path) => verified.get(path),
           registry, days: config.releaseAgeDays, now,
           placement: (parent, key, peer) => requiredPath(packages, parent.path, key, peer),
+          bundled: (path) => isObject(packages[path]) && packages[path]["inBundle"] === true,
           selected: (target) => {
             const actual = packages[target.path];
             trusted[target.path] = { ...(isObject(actual) ? actual : {}), name: target.name, version: target.version };

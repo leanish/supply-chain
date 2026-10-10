@@ -38,8 +38,10 @@ export function retryWithoutNamed(plan: ChangePlan, problems: ReadonlyArray<stri
 }
 
 export function namedProblems(plan: ChangePlan, problems: ReadonlyArray<string>): ProblemMoves[] {
+  // A carried package's problem belongs to its carrier's move: only the carrier can change it.
   return problems.map((problem) => ({ problem, moves: plan.moves.filter((move) => namesMove(problem, move) || plan.requiredNpm?.some((target) =>
-    target.root.name === move.name && target.root.version === move.to && namesMove(problem, { ...move, name: target.name }))) }));
+    target.root.name === move.name && target.root.version === move.to && namesMove(problem, { ...move, name: target.name })) ||
+    (move.carries ?? []).some((carried) => namesMove(problem, { ...move, name: carried.name }))) }));
 }
 
 const moveKey = (move: PlannedMove) => `${move.ecosystem}|${move.name}`;

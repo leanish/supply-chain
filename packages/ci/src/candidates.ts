@@ -22,11 +22,13 @@
  * Bumps (`bumpCandidates`): see there.
  */
 import { actionGaps } from "./actions-changes.ts";
+import { type CarriedPackage, type CarrierContext, type CarrierGroup, decideCarrier, splitBundled } from "./carrier-candidates.ts";
 import { type Config, isOwnPackage } from "./config.ts";
 import { type Exceptions, unexcusedProblem } from "./exceptions.ts";
 import { findingsOf, type Located } from "./findings.ts";
 import type { Floor } from "./floors.ts";
 import {
+  bundleReader,
   type GateEnvironment,
   type GradleInputs,
   inventoryProblems,
@@ -83,12 +85,19 @@ export interface SecurityFix {
   readonly to: SecurityMove | undefined;
   /** Why there's no `to`. */
   readonly problem: string | undefined;
+  /** A carrier move: the bundled packages it replaces, and their advisories (`carrier-candidates.ts`). */
+  readonly carries?: ReadonlyArray<CarriedPackage>;
 }
 
 export interface SecurityCandidates {
   readonly fixes: ReadonlyArray<SecurityFix>;
   /** Direct-peer closure on the same snapshot as these security targets. */
   readonly npmPeers?: NpmPeerPlanner;
+  /**
+   * The closure again with more npm versions to move (parents a fix's range needs), on a snapshot that covers them
+   * and their direct peers' candidates too.
+   */
+  readonly peersWith?: (extra: ReadonlyArray<PackageVersion>) => Promise<NpmPeerPlanner>;
   /** What makes the inventory incomplete (a configuration that didn't resolve, an unrecorded bundle): the list can't be trusted to be whole. */
   readonly incomplete: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
@@ -101,28 +110,49 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
   const { config, exceptions } = state.settings;
   const now = env.now();
   const today = now.toISOString().slice(0, 10);
-  const failing = new Map<string, { pkg: Located; malicious: boolean }>();
-  for (const finding of unexcused(state.packages, state.snapshot, exceptions, today)) {
+  const failing = new Map<string, { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> }>();
+  // Bundled copies can only move with their carrier: their findings become the carrier's targets.
+  const { rest, carriers } = splitBundled(unexcused(state.packages, state.snapshot, exceptions, today), state.inventory.npm);
+  for (const finding of rest) {
     const pkg: Located = { ecosystem: finding.ecosystem, name: finding.name, version: finding.version, locations: finding.locations };
-    const entry = failing.get(versionKey(pkg)) ?? { pkg, malicious: false };
+    const entry = failing.get(versionKey(pkg)) ?? { pkg, malicious: false, advisories: [], severities: [] };
     entry.malicious ||= finding.malicious;
+    entry.advisories.push(finding.advisory);
+    entry.severities.push(finding.severity);
     failing.set(versionKey(pkg), entry);
+  }
+  // A carrier failing on its own too is one move with both kinds of targets.
+  const carrierOwn = new Map<string, { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> }>();
+  for (const group of carriers) {
+    const key = versionKey({ ecosystem: "npm", name: group.name, version: group.version });
+    const own = failing.get(key);
+    if (own === undefined) continue;
+    carrierOwn.set(key, own);
+    failing.delete(key);
   }
 
   const registry = new NpmRegistry(env.fetch);
   const catalogs = versionCatalogs(config, env, state.github, registry);
+  const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
+  // Carriers are decided first, on snapshots of their own: their choices then join the peer closure and its snapshot.
+  const carrierContext: CarrierContext = {
+    reader: bundleReader(env), registry, catalog: catalogs.npm, config, now,
+    scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, state.github)),
+    identity: (pkg, to) => identity.problems(pkg, to),
+  };
+  const carried: SecurityFix[] = [];
+  for (const group of carriers) carried.push(await carrierFix(group, carrierOwn.get(versionKey({ ecosystem: "npm", name: group.name, version: group.version })), carrierContext));
   const listings = new Map<string, ReadonlyArray<string> | undefined>();
-  const candidates: PackageVersion[] = [];
+  const candidates: PackageVersion[] = carried.flatMap((fix) => (fix.to === undefined ? [] : [{ ecosystem: "npm" as const, name: fix.name, version: fix.to.version }]));
   for (const { pkg, malicious } of failing.values()) {
     const listed = await catalogs[pkg.ecosystem].versions(pkg);
     const moves = listed === undefined ? undefined : movesFrom(pkg, pkg.version, listed, malicious ? "any" : "above");
     listings.set(versionKey(pkg), moves);
     candidates.push(...(moves ?? []).map((version) => ({ ...pkg, version })));
   }
-  const identity = new IdentityCheck(registry, state.inventory.npm, exceptions, today);
   const peers = await preparePeers(head, state, registry, catalogs.npm, candidates, identity, now, true);
   // Direct-peer candidates join the security candidates: one snapshot decides the entire batch.
-  const bases = [...failing.values()].map(({ pkg }) => pkg);
+  const bases: Located[] = [...[...failing.values()].map(({ pkg }) => pkg), ...carried.map((fix): Located => ({ ecosystem: "npm", name: fix.name, version: fix.from, locations: fix.locations }))];
   const snapshot = await takeSnapshot([...bases, ...peers.bases], snapshotOptions(config, env, state.github), [...candidates, ...peers.candidates]);
 
   const found: SecurityFix[] = [];
@@ -143,12 +173,40 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
       found.push(await chooseMove(pkg, targets, malicious, moves, { snapshot, catalog: catalogs[pkg.ecosystem], config, now, identity }, base));
     }
   }
+  found.push(...carried);
   return {
     fixes: found,
     npmPeers: { resolve: (moves) => peers.resolve(moves, snapshot) },
+    peersWith: async (extra) => {
+      const more = await preparePeers(head, state, registry, catalogs.npm, [...candidates, ...extra], identity, now, true);
+      const wider = await takeSnapshot([...bases, ...more.bases], snapshotOptions(config, env, state.github), [...candidates, ...extra, ...more.candidates]);
+      return { resolve: (moves) => more.resolve(moves, wider) };
+    },
     incomplete: inventoryProblems(state.inventory, config),
     gaps: [...state.snapshot.gaps, ...snapshot.gaps, ...actionGaps(state.inventory.actions, state.resolutions)],
     osvScannerVersion: state.osvScannerVersion,
+  };
+}
+
+/** A carrier version's fix; a decision that can't be made (an archive, a scan) is the fix's problem, not the run's. */
+async function carrierFix(group: CarrierGroup, own: { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> } | undefined, context: CarrierContext): Promise<SecurityFix> {
+  const malicious = group.malicious || own?.malicious === true;
+  const decision = await decideCarrier(group, own?.advisories ?? [], malicious, context).catch((error: unknown) => ({
+    from: group.version, locations: [], carries: [], unfixable: [], to: undefined,
+    problem: `${group.name}@${group.version}'s carrier move can't be decided: ${error instanceof Error ? error.message : String(error)}`,
+  }));
+  return {
+    ecosystem: "npm",
+    name: group.name,
+    from: group.version,
+    locations: [...new Set([...decision.locations, ...(own?.pkg.locations ?? [])])].sort(),
+    targets: [...new Set(own?.advisories ?? [])],
+    unfixable: decision.unfixable,
+    malicious,
+    severity: highestSeverity([...group.severities, ...(own?.severities ?? [])]),
+    to: decision.to,
+    problem: decision.problem,
+    carries: decision.carries,
   };
 }
 
