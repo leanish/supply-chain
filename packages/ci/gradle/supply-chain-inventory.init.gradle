@@ -23,6 +23,7 @@
 import groovy.json.JsonOutput
 import org.gradle.api.artifacts.ExternalModuleDependency
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
 import org.gradle.api.artifacts.result.UnresolvedDependencyResult
 
 def outPath = System.getProperty("supplyChain.out")
@@ -46,8 +47,11 @@ def relativeToRequested = { File dir ->
 }
 
 // What the configuration resolved; its declarations come later, once everything has resolved.
+// A component in the resolved graph: `group:name:version` for a module, Gradle's display name otherwise (`project :app`).
+def componentKey = { id -> id instanceof ModuleComponentIdentifier ? "${id.group}:${id.module}:${id.version}".toString() : id.displayName }
+
 def resolveEntry = { configuration, String id, String kind ->
-    def entry = [id: id, kind: kind, resolved: [], unresolved: [], declared: [], error: null]
+    def entry = [id: id, kind: kind, resolved: [], unresolved: [], declared: [], edges: [], error: null]
     try {
         def result = configuration.incoming.resolutionResult
         result.allComponents.each { component ->
@@ -58,6 +62,9 @@ def resolveEntry = { configuration, String id, String kind ->
         result.allDependencies.each { dependency ->
             if (dependency instanceof UnresolvedDependencyResult) {
                 entry.unresolved << [requested: dependency.requested.displayName, failure: dependency.failure.message]
+            } else if (dependency instanceof ResolvedDependencyResult) {
+                // Who brought what: secure-it looks for a declared dependency whose newer version brings a fix.
+                entry.edges << [from: componentKey(dependency.from.id), to: componentKey(dependency.selected.id), constraint: dependency.constraint]
             }
         }
     } catch (Exception failure) {
@@ -99,7 +106,7 @@ def declareProject = { resolved -> resolved.collect { configuration, entry -> de
 // One file per (build, project), named so no two can collide.
 def write = { String build, String project, Map content ->
     def name = URLEncoder.encode(build + "|" + project, "UTF-8") + ".json"
-    new File(outDir, name).text = JsonOutput.prettyPrint(JsonOutput.toJson([schemaVersion: 1, build: build, project: project] + content))
+    new File(outDir, name).text = JsonOutput.prettyPrint(JsonOutput.toJson([schemaVersion: 2, build: build, project: project] + content))
 }
 
 settingsEvaluated { settings ->

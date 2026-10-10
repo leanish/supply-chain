@@ -28,13 +28,14 @@ const configuration = (id: string, resolved: string[], extra: object = {}) => ({
   }),
   unresolved: [],
   declared: [],
+  edges: [],
   error: null,
   ...extra,
 });
 
 describe("Gradle inventory files", () => {
   const valid = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     tree: "abc123",
     builds: [{ build: ".", configurations: [configuration(":runtimeClasspath", ["com.acme:lib:1.0"])] }],
   };
@@ -49,8 +50,10 @@ describe("Gradle inventory files", () => {
     expect(() => parseGradleInventory(valid, "abc123", [".", "build-logic"])).toThrow("covers builds ., missing build-logic from supply-chain.json");
     expect(parseGradleInventory({ ...valid, builds: [...valid.builds, { build: "buildSrc", configurations: [] }] }, "abc123", ["."]).builds).toHaveLength(2);
     expect(() => parseGradleInventory({ ...valid, builds: [...valid.builds, ...valid.builds] }, "abc123", ["."])).toThrow("lists a build twice");
-    expect(() => parseGradleInventory({ ...valid, schemaVersion: 2 }, "abc123", ["."])).toThrow("schemaVersion must be 1");
+    expect(() => parseGradleInventory({ ...valid, schemaVersion: 1 }, "abc123", ["."])).toThrow("schemaVersion must be 2");
     const broken = (config: object) => ({ ...valid, builds: [{ build: ".", configurations: [config] }] });
+    expect(() => parseGradleInventory(broken({ ...configuration(":x", []), edges: undefined }), "abc123", ["."])).toThrow(":x.edges must be a list");
+    expect(() => parseGradleInventory(broken(configuration(":x", [], { edges: [{ from: "project :", to: "a:b:1" }] })), "abc123", ["."])).toThrow("malformed edge");
     expect(() => parseGradleInventory(broken({ id: ":x", kind: "weird" }), "abc123", ["."])).toThrow("malformed configuration");
     expect(() => parseGradleInventory(broken(configuration(":x", ["com.acme:lib:"])), "abc123", ["."])).toThrow("malformed version");
     expect(() => parseGradleInventory(broken({ ...configuration(":x", []), resolved: "all" }), "abc123", ["."])).toThrow(":x.resolved must be a list");
@@ -62,7 +65,7 @@ describe("Gradle inventory files", () => {
   it("names configurations of other builds by their directory, and reports resolution failures unless ignored", () => {
     const inventory = parseGradleInventory(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         tree: "abc123",
         builds: [
           { build: ".", configurations: [configuration(":runtimeClasspath", [], { unresolved: [{ requested: "com.acme:gone:1.0", failure: "not found" }] })] },
@@ -103,11 +106,11 @@ describe("running the Gradle inventory", () => {
       const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
       for (const build of builds) {
         const file = (project: string) => join(out, `${encodeURIComponent(`${build}|${project}`)}.json`);
-        await writeFile(file(":"), JSON.stringify({ schemaVersion: 1, build, project: ":", configurations: [configuration(":runtimeClasspath", [])] }));
+        await writeFile(file(":"), JSON.stringify({ schemaVersion: 2, build, project: ":", configurations: [configuration(":runtimeClasspath", [])] }));
         const requested = args[args.indexOf("-p") + 1];
         const manifest = { projects: [":"], nestedBuilds: build === "." && requested === "." ? nested : [] };
-        await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 1, build, project: "manifest", manifest }));
-        await writeFile(file("settings"), JSON.stringify({ schemaVersion: 1, build, project: "settings", configurations: [] }));
+        await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 2, build, project: "manifest", manifest }));
+        await writeFile(file("settings"), JSON.stringify({ schemaVersion: 2, build, project: "settings", configurations: [] }));
       }
       return { code: 0, stdout: "", stderr: "" };
     };
@@ -136,7 +139,7 @@ describe("running the Gradle inventory", () => {
       const result = await gradlew(["."], [], [])(command, args, options);
       const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
       const manifest = { projects: [":", ":a:b"], nestedBuilds: [] };
-      await writeFile(join(out, `${encodeURIComponent(".|manifest")}.json`), JSON.stringify({ schemaVersion: 1, build: ".", project: "manifest", manifest }));
+      await writeFile(join(out, `${encodeURIComponent(".|manifest")}.json`), JSON.stringify({ schemaVersion: 2, build: ".", project: "manifest", manifest }));
       return result;
     };
     await expect(runGradleInventory(repo, ["."], "worktree", missingProject)).rejects.toThrow("Gradle inventory of build . has no output for project(s) :a:b");
@@ -157,7 +160,7 @@ describe("running the Gradle inventory", () => {
     const twice: RunProcess = async (command, args, options) => {
       const result = await gradlew(["."], [], [])(command, args, options);
       const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
-      await writeFile(join(out, `${encodeURIComponent(".|:other")}.json`), JSON.stringify({ schemaVersion: 1, build: ".", project: ":other", configurations: [configuration(":runtimeClasspath", [])] }));
+      await writeFile(join(out, `${encodeURIComponent(".|:other")}.json`), JSON.stringify({ schemaVersion: 2, build: ".", project: ":other", configurations: [configuration(":runtimeClasspath", [])] }));
       return result;
     };
     await expect(runGradleInventory(repo, ["."], "worktree", twice)).rejects.toThrow("Gradle inventory of build . has more than one configuration at :runtimeClasspath");

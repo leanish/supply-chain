@@ -70,6 +70,7 @@ function rawConfiguration(
     id,
     kind,
     resolved: [],
+    edges: [],
     unresolved: [],
     declared: declared.map((dependency) => ({ reason: null, ...dependency })),
     error: null,
@@ -78,9 +79,9 @@ function rawConfiguration(
 
 async function writeInventory(out: string, build: string, configs: ReadonlyArray<object>, nestedBuilds: ReadonlyArray<string> = []): Promise<void> {
   const file = (project: string) => join(out, `${encodeURIComponent(`${build}|${project}`)}.json`);
-  await writeFile(file(":"), JSON.stringify({ schemaVersion: 1, build, project: ":", configurations: configs }));
-  await writeFile(file("settings"), JSON.stringify({ schemaVersion: 1, build, project: "settings", configurations: [] }));
-  await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 1, build, project: "manifest", manifest: { projects: [":"], nestedBuilds } }));
+  await writeFile(file(":"), JSON.stringify({ schemaVersion: 2, build, project: ":", configurations: configs }));
+  await writeFile(file("settings"), JSON.stringify({ schemaVersion: 2, build, project: "settings", configurations: [] }));
+  await writeFile(file("manifest"), JSON.stringify({ schemaVersion: 2, build, project: "manifest", manifest: { projects: [":"], nestedBuilds } }));
 }
 
 describe("unlockedGradle", () => {
@@ -138,7 +139,7 @@ describe("unlockedGradle", () => {
         // The settings configuration is emitted separately by the inventory init script.
         await writeFile(
           join(out, `${encodeURIComponent(".|settings")}.json`),
-          JSON.stringify({ schemaVersion: 1, build: ".", project: "settings", configurations: [rawConfiguration("settings.classpath", "settings")] }),
+          JSON.stringify({ schemaVersion: 2, build: ".", project: "settings", configurations: [rawConfiguration("settings.classpath", "settings")] }),
         );
         return { code: 0, stdout: "", stderr: "" };
       };

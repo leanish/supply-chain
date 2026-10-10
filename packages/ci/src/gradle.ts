@@ -20,7 +20,7 @@ import { isObject } from "./json.ts";
 import { versionKey } from "./package-version.ts";
 import { type RunProcess, withoutCredentials } from "./process.ts";
 
-export const GRADLE_INVENTORY_SCHEMA_VERSION = 1;
+export const GRADLE_INVENTORY_SCHEMA_VERSION = 2;
 const INIT_SCRIPT = fileURLToPath(new URL("../gradle/supply-chain-inventory.init.gradle", import.meta.url));
 
 export interface Coordinates {
@@ -46,7 +46,19 @@ export interface GradleConfiguration {
   readonly resolved: ReadonlyArray<Coordinates>;
   readonly unresolved: ReadonlyArray<{ readonly requested: string; readonly failure: string }>;
   readonly declared: ReadonlyArray<DeclaredDependency>;
+  /**
+   * The resolved graph's edges: who brought what, as `group:name:version` for modules and Gradle's display name for
+   * anything else (`project :app`, the configuration's own root). A constraint edge only raised a version. Every
+   * inventory read from Gradle has them; absent (a configuration built by hand), the graph is unknown, never empty.
+   */
+  readonly edges?: ReadonlyArray<GradleEdge>;
   readonly error: string | undefined;
+}
+
+export interface GradleEdge {
+  readonly from: string;
+  readonly to: string;
+  readonly constraint: boolean;
 }
 
 export interface GradleBuild {
@@ -288,6 +300,11 @@ function parseConfiguration(raw: unknown, where: string): GradleConfiguration {
         reason: optional(item["reason"], "reason"),
         ...movedFlag(item["moved"]),
       };
+    }),
+    edges: list("edges").map((entry) => {
+      const item = isObject(entry) ? entry : {};
+      if (typeof item["constraint"] !== "boolean") throw new Error(`Gradle inventory (${where}): ${id} has a malformed edge`);
+      return { from: text(item["from"], "edge"), to: text(item["to"], "edge"), constraint: item["constraint"] };
     }),
     error: optional(raw["error"], "error"),
   };
