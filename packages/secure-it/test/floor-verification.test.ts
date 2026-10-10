@@ -30,7 +30,7 @@ function fixture() {
   const now = { ...was, [FLOORS_PATH]: withoutFloorRecords(records, [floors[0]!]), "package.json": withoutOverrides(manifest, [floors[0]!]) };
   const plan: ChangePlan = { kind: "floor-removal", topic: "floor-removal", moves: [], packages: ["npm|lib"], malware: false, severity: undefined,
     floorRemoval: { floors: [floors[0]!], files: Object.entries(now).map(([path, text]) => ({ path, sha256: hash(text) })), notes: [] } };
-  const input: VerifyInputs = { plan, base: tree("base", was), head: tree("head", now), env, gradle: {}, changedFiles: [FLOORS_PATH, "package.json", "package-lock.json"] };
+  const input: VerifyInputs = { modeChanged: [], plan, base: tree("base", was), head: tree("head", now), env, gradle: {}, changedFiles: [FLOORS_PATH, "package.json", "package-lock.json"] };
   return { input, was, now, floors };
 }
 
@@ -88,7 +88,7 @@ describe("floor-removal verification", () => {
     const after = before.slice(2);
     const text = withoutFloorRecords(records, removed);
     const plan: ChangePlan = { kind: "floor-removal", topic: "floor-removal", malware: false, severity: undefined, packages: ["Maven|g:lib", "Maven|g:other"], moves: [], floorRemoval: { floors: removed, files: [{ path: FLOORS_PATH, sha256: hash(text) }], notes: [] } };
-    const input: VerifyInputs = { plan, base: tree("base", { [FLOORS_PATH]: records, "build.gradle.kts": "before" }), head: tree("head", { [FLOORS_PATH]: text, "build.gradle.kts": "after" }), env,
+    const input: VerifyInputs = { modeChanged: [], plan, base: tree("base", { [FLOORS_PATH]: records, "build.gradle.kts": "before" }), head: tree("head", { [FLOORS_PATH]: text, "build.gradle.kts": "after" }), env,
       gradle: { base: gradle(before), head: gradle(after) }, changedFiles: [FLOORS_PATH, "build.gradle.kts"] };
     expect(await verifyPlan(input)).toEqual([]);
     expect(await verifyPlan({ ...input, gradle: { ...input.gradle, head: gradle([...after, before[0]!]) } })).toContainEqual(expect.stringContaining("exactly the planned"));

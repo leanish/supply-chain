@@ -21,7 +21,7 @@ import { failingCheckNames } from "../../remediation/src/ci-state.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
 import { writeLocalFile } from "../../remediation/src/local-files.ts";
-import { changedSince } from "../../remediation/src/git-copies.ts";
+import { changedSince, modeChangedSince } from "../../remediation/src/git-copies.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
 import { formatManifest } from "../../remediation/src/manifest-format.ts";
@@ -68,6 +68,7 @@ export interface SecureItDeps {
   readonly verify: (inputs: VerifyInputs) => Promise<string[]>;
   readonly staleScan: (context: ToolRunContext) => Promise<StaleScan>;
   readonly changedSince: (workingCopy: WorkingCopy, sha: string) => Promise<string[]>;
+  readonly modeChangedSince: (workingCopy: WorkingCopy, sha: string) => Promise<string[]>;
   readonly journal: (context: ToolRunContext) => PublicationJournal;
   /** Writes `content` at `path` (relative to the working copy): taking the base's side of a conflicted dependency file. */
   readonly writeFile: (workingCopy: WorkingCopy, path: string, content: string) => Promise<void>;
@@ -95,6 +96,7 @@ export function defaultDeps(): SecureItDeps {
     verify: verifyPlan,
     staleScan: (context) => staleScanStatus(context.repo.repo, context.base, context.readToken, context.now, context.config.staleScanHours ?? 36),
     changedSince: (workingCopy, sha) => changedSince(workingCopy, sha),
+    modeChangedSince: (workingCopy, sha) => modeChangedSince(workingCopy, sha),
     journal: (context) => new FileJournal(context.config.dirs.state),
     writeFile: (workingCopy, path, content) => writeLocalFile(workingCopy.path, path, content),
     revert: (workingCopy, baseSha) => revertToBase(workingCopy, baseSha),
@@ -488,7 +490,8 @@ async function verifyEdit(
   const head = deps.trees.working(context.workingCopy);
   const headGradle = await inventories.ofWorkingTree(head);
   return deps.verify({
-    plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id), ...(cooldown === undefined ? {} : { cooldown }),
+    plan, base, head, env, npmFiles, gradle: { base: baseGradle, head: headGradle }, changedFiles: await deps.changedSince(context.workingCopy, base.id),
+    modeChanged: await deps.modeChangedSince(context.workingCopy, base.id), ...(cooldown === undefined ? {} : { cooldown }),
   });
 }
 

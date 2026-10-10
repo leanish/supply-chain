@@ -29,7 +29,7 @@ describe("secure-it floor preservation", () => {
     expect(await preservedFloors(plan, base, tree([]), {})).toEqual([expect.stringContaining("was removed")]);
     expect(await preservedFloors(plan, base, tree([floor({ selector: [":testRuntimeClasspath"] })]), {})).toContainEqual(expect.stringContaining("selector changed"));
     const unreachable = async () => { throw new Error("compare must not run"); };
-    expect(await verifyPlan({ plan, base, head: tree([]), gradle: {}, changedFiles: [".github/dependency-floors.json"],
+    expect(await verifyPlan({ modeChanged: [], plan, base, head: tree([]), gradle: {}, changedFiles: [".github/dependency-floors.json"],
       env: { run: unreachable, fetch: unreachable, now: () => new Date(), osvScanner: "osv-scanner", githubToken: undefined } })).toEqual([expect.stringContaining("was removed")]);
   });
 
