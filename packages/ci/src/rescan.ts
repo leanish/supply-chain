@@ -16,7 +16,9 @@
  * A completed comparison also re-judges the cooldown under the base's
  * current policy, posted as a status named like the required cooldown check:
  * held versions (or a cooldown that can't be evaluated) fail it, so a PR that
- * was green under a shorter wait is held again when the base raises it.
+ * was green under a shorter wait is held again when the base raises it. A PR
+ * that conflicts with its base is compared with its merge base instead, whose
+ * policy isn't current: its cooldown status is an `error` until it merges cleanly.
  *
  * A PR that closed, got a new head, or whose base moved is skipped (its
  * verdict would be stale); a newer status from another run is never
@@ -205,7 +207,13 @@ export async function runRescan(
     }
     await steps.record(pr, { state, description, compared, outcome, error });
     const statuses: Array<{ context: string; state: "success" | "failure" | "error"; description: string }> = [{ context: options.context, state, description }];
-    if (outcome?.completed === true) statuses.push({ context: options.cooldownContext, ...cooldownStatus(outcome.cooldown) });
+    if (outcome?.completed === true) {
+      // A conflicting PR was compared with its merge base, whose policy is no longer the base's: no verdict on the wait.
+      const conflicted = compared !== undefined && compared.base !== pr.base;
+      statuses.push({ context: options.cooldownContext, ...conflicted
+        ? { state: "error" as const, description: `Daily rescan: the PR conflicts with ${pr.baseRef}, so the cooldown can't be judged under its current policy` }
+        : cooldownStatus(outcome.cooldown) });
+    }
     for (const status of statuses) {
       // Again right before posting: the PR or its base may have moved while it was being scanned.
       if (!(await stillAsPlanned(pr, api, options))) break;

@@ -222,7 +222,7 @@ describe("verifyPlan", () => {
         changedFiles: ["build.gradle.kts"],
       });
     const overshoot = await verifyWith("1.2", "1.2");
-    expect(overshoot).toContain(":runtimeClasspath declares g:lib 1.2, not 1.1");
+    expect(overshoot).toContain(":runtimeClasspath declares g:lib 1.2 (was 1.0), not just one version declared as 1.1");
     const resolvedHigher = await verifyWith("1.1", "1.2");
     // Only the landing checks here (compare can't date g:lib in this fake registry).
     expect(resolvedHigher.filter((problem) => !problem.startsWith("compare:"))).toEqual([]);
@@ -274,6 +274,37 @@ describe("verifyPlan", () => {
       changedFiles: ["build.gradle"], modeChanged: [],
     });
     expect(problems).toContainEqual("g:other changed from 1.0.0, 2.0.0 to 2.0.0, 3.0.0 at :runtimeClasspath, outside the plan");
+  });
+
+  it("rejects an unplanned declaration of a planned package, where it's planned or elsewhere", async () => {
+    const inventory = (runtime: string[], test: string[], resolved: string) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":runtimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], declared: runtime.map((version) => ({ group: "g", name: "lib", version, reason: undefined })), error: undefined },
+      { id: ":testRuntimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], declared: test.map((version) => ({ group: "g", name: "lib", version, reason: undefined })), error: undefined },
+    ] }] });
+    const plan = (mechanism: "gradle-declared" | "gradle-floor"): ChangePlan => ({
+      topic: "g:lib", malware: false, packages: ["Maven|g:lib"], severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0", to: "1.1", mechanism, locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+    });
+    const run = (mechanism: "gradle-declared" | "gradle-floor", runtime: string[], test: string[], resolved: string) => verifyPlan({
+      plan: plan(mechanism), base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
+      gradle: { base: inventory(["1.0"], [], "1.0") as never, head: inventory(runtime, test, resolved) as never }, changedFiles: ["build.gradle"], modeChanged: [],
+    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
+    expect(await run("gradle-declared", ["1.1"], [], "1.1")).toEqual([]);
+    expect(await run("gradle-declared", ["1.1", "9.0"], [], "9.0")).toContain(":runtimeClasspath declares g:lib 1.1, 9.0 (was 1.0), not just one version declared as 1.1");
+    // A floor goes next to the plugin's own declaration, and nothing else may join it.
+    expect(await run("gradle-floor", ["1.0", "1.1"], [], "1.1")).toEqual([]);
+    expect(await run("gradle-floor", ["1.0", "1.1", "9.0"], [], "9.0")).toContain(":runtimeClasspath declares g:lib 1.0, 1.1, 9.0 (was 1.0), not just 1.1 added");
+    // `from` is what resolved, which a declaration needn't say: the declared 1.0 resolving 1.0.2 moves to the target,
+    // and leaving it while something else forces a higher version isn't the planned move.
+    const resolvedFrom = (runtime: string[], resolved: string) => verifyPlan({
+      plan: { ...plan("gradle-declared"), moves: [{ ...plan("gradle-declared").moves[0]!, from: "1.0.2", to: "1.0.3" }] },
+      base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
+      gradle: { base: inventory(["1.0"], [], "1.0.2") as never, head: inventory(runtime, [], resolved) as never }, changedFiles: ["build.gradle"], modeChanged: [],
+    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
+    expect(await resolvedFrom(["1.0.3"], "1.0.3")).toEqual([]);
+    expect(await resolvedFrom(["1.0"], "9.0")).toContainEqual(expect.stringContaining("not just one version declared as 1.0.3"));
+    // Where the package isn't planned, any change is outside the plan.
+    expect(await run("gradle-declared", ["1.1"], ["9.0"], "1.1")).toContainEqual(expect.stringContaining("at :testRuntimeClasspath, outside the plan"));
   });
 
   it("rejects an action use that changed outside the plan", async () => {
