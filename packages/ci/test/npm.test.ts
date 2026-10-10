@@ -255,11 +255,20 @@ describe("lockfile reading", () => {
   it("flags packages that don't come from an allowed registry", () => {
     const git = pkgs({}, { "node_modules/fork": { version: "1.0.0", resolved: "git+ssh://git@github.com/x/fork.git#abc" } });
     expect(sourceProblems(git)).toEqual([
-      "fork@1.0.0 (node_modules/fork) doesn't come from an allowed registry: git+ssh://git@github.com/x/fork.git#abc",
+      "fork@1.0.0 (node_modules/fork) doesn't come from an allowed registry as its own tarball: git+ssh://git@github.com/x/fork.git#abc",
     ]);
     const internal = pkgs({}, { "node_modules/own": { version: "1.0.0", resolved: "https://npm.acme.dev/own/-/own-1.0.0.tgz" } });
     expect(sourceProblems(internal)).toHaveLength(1);
     expect(sourceProblems(internal, ["https://registry.npmjs.org", "https://npm.acme.dev"])).toEqual([]);
+    // Another package's tarball can't pass as this one, on npm's registry or another allowed one.
+    const swapped = pkgs({}, {
+      "node_modules/safe": { version: "1.0.0", resolved: "https://registry.npmjs.org/attacker/-/attacker-1.0.0.tgz" },
+      "node_modules/@acme/own": { version: "1.0.0", resolved: "https://registry.npmjs.org/@acme/own/-/own-1.0.1.tgz" },
+      "node_modules/other": { version: "1.0.0", resolved: "https://npm.acme.dev/attacker/-/attacker-1.0.0.tgz" },
+    });
+    expect(sourceProblems(swapped, ["https://registry.npmjs.org", "https://npm.acme.dev"]).map((problem) => problem.split(" ")[0])).toEqual(["safe@1.0.0", "@acme/own@1.0.0", "other@1.0.0"]);
+    const scoped = pkgs({}, { "node_modules/@acme/own": { version: "1.0.0", resolved: "https://registry.npmjs.org/@acme/own/-/own-1.0.0.tgz" } });
+    expect(sourceProblems(scoped)).toEqual([]);
   });
 });
 
@@ -382,7 +391,7 @@ describe("release age", () => {
   it("fails sources it can't check and fails closed on a missing or malformed publish time", async () => {
     const git = pkgs({}, { "node_modules/fork": { version: "1.0.0", resolved: "git+ssh://git@github.com/x/fork.git#abc" } });
     expect(await changes([], git, fake({}))).toEqual([
-      "fork@1.0.0 (node_modules/fork) doesn't come from an allowed registry: git+ssh://git@github.com/x/fork.git#abc",
+      "fork@1.0.0 (node_modules/fork) doesn't come from an allowed registry as its own tarball: git+ssh://git@github.com/x/fork.git#abc",
     ]);
     await expect(changes([], pkgs({ gone: "1.0.0" }), fake({}))).rejects.toThrow(/HTTP 404/);
     for (const time of ["not a date", "2026", null, 0, false, 1_700_000_000_000]) {

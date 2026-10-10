@@ -81,6 +81,7 @@ describe("young security peer companions", () => {
     const lock = JSON.parse(h.head["package-lock.json"]);
     for (const [name, version] of [[COVERAGE, coverageVersion], [UI, uiVersion]]) {
       lock.packages[`node_modules/${name}`].version = version;
+      lock.packages[`node_modules/${name}`].resolved = `https://registry.npmjs.org/${name}/-/${name!.split("/").pop()}-${version}.tgz`;
       lock.packages[""].devDependencies[name!] = `^${version}`;
     }
     const head = { "package-lock.json": json(lock), "package.json": json(lock.packages[""]) };

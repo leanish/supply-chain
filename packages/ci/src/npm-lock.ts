@@ -123,18 +123,40 @@ function bundledEntry(packages: Record<string, LockEntry>, root: string, from: s
   }
 }
 
-/** Locked packages that don't come from an allowed registry (git, tarball URLs, local files, other registries). */
+/**
+ * Locked packages that don't come from an allowed registry as themselves (git, tarball URLs, local files, other
+ * registries, or another package's tarball).
+ */
 export function sourceProblems(packages: ReadonlyArray<LockedPackage>, registries: ReadonlyArray<string> = [NPM_REGISTRY]): string[] {
   return packages
     .filter((pkg) => !pkg.bundled && !fromRegistry(pkg, registries))
     .map(
       (pkg) =>
-        `${pkg.name}@${pkg.version} (${pkg.path}) doesn't come from an allowed registry: ${pkg.resolved ?? "no resolved URL"}`,
+        `${pkg.name}@${pkg.version} (${pkg.path}) doesn't come from an allowed registry as its own tarball: ${pkg.resolved ?? "no resolved URL"}`,
     );
 }
 
+/**
+ * Whether the locked tarball is the package's own on an allowed registry: npm's registry serves it at exactly
+ * `<registry>/<name>/-/<unscoped name>-<version>.tgz`; on another registry its path must name the package and the
+ * version. A lockfile can't keep a package's name and version while fetching another package's tarball (its
+ * integrity would then only vouch for the wrong archive).
+ */
 export function fromRegistry(pkg: LockedPackage, registries: ReadonlyArray<string>): boolean {
-  return pkg.resolved !== undefined && registries.some((registry) => pkg.resolved!.startsWith(`${registry}/`));
+  const resolved = pkg.resolved;
+  if (resolved === undefined) return false;
+  return registries.some((registry) => {
+    if (!resolved.startsWith(`${registry}/`)) return false;
+    let path: string;
+    try {
+      path = decodeURIComponent(resolved.slice(registry.length + 1).split(/[?#]/)[0]!);
+    } catch {
+      return false;
+    }
+    const unscoped = pkg.name.slice(pkg.name.lastIndexOf("/") + 1);
+    if (registry === NPM_REGISTRY) return path === `${pkg.name}/-/${unscoped}-${pkg.version}.tgz`;
+    return path.split("/").includes(unscoped) && path.includes(pkg.version);
+  });
 }
 
 /** Packages in `head` that are new or at a different version than in `base`. */

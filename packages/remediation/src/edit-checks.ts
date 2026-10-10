@@ -80,7 +80,7 @@ export async function actionsOutsidePlan(pins: ReadonlyArray<PlannedPin>, base: 
   return changed.map((entry) => `the action use ${entry} changed outside the plan`);
 }
 
-/** `ecosystem|name|where` → version, for every direct declaration: npm per lockfile, workspace and key, Gradle per configuration. */
+/** `ecosystem|name|where` → version, for every direct declaration: npm per lockfile, workspace and key; Gradle per configuration, every declared version (sorted, comma-separated). */
 export async function directVersions(tree: Tree, gradle: GradleInventory | undefined): Promise<Map<string, string>> {
   const versions = new Map<string, string>();
   for (const [path, lock] of await lockfilesOf(tree)) {
@@ -88,14 +88,18 @@ export async function directVersions(tree: Tree, gradle: GradleInventory | undef
       versions.set(`npm|${dependency.name}|${path}#${dependency.workspace || "."}:${dependency.declaredAs}`, dependency.version);
     }
   }
+  // Every declaration of a package in a configuration counts (a plugin's next to a floor, say): all its versions, sorted.
+  const declared = new Map<string, string[]>();
   for (const build of gradle?.builds ?? []) {
     for (const configuration of build.configurations) {
-      for (const declared of configuration.declared) {
-        if (declared.version === undefined) continue;
-        versions.set(`Maven|${declared.group}:${declared.name}|${gradleLocation(build.build, configuration.id)}`, declared.version);
+      for (const dependency of configuration.declared) {
+        if (dependency.version === undefined) continue;
+        const key = `Maven|${dependency.group}:${dependency.name}|${gradleLocation(build.build, configuration.id)}`;
+        declared.set(key, [...declared.get(key) ?? [], dependency.version]);
       }
     }
   }
+  for (const [key, list] of declared) versions.set(key, list.sort().join(", "));
   return versions;
 }
 
