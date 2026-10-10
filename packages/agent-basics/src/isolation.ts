@@ -1,5 +1,5 @@
 // Derived from leanish/leanish-development core/runtime/src/runtime/run-local-cli.ts (`localCodexOptions`,
-// `SENSITIVE_HOME_PATHS`) at e4f8a1e; see PROVENANCE.md.
+// `SENSITIVE_HOME_PATHS`) at c6282df; see PROVENANCE.md.
 // Local changes: every input is explicit (the tool's config) instead of `AGENT_RUNTIME_*` variables; the agent's
 // commands get the configured commit identity instead of the developer's global git identity; the release age is
 // the repository's, not a fixed 7, with its own npm scopes excluded from it; the resolved login source and its canonical

@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/runner.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/runner.ts at c6282df; see PROVENANCE.md.
 // Local changes: `Access` from `types/access.ts` instead of the agent descriptor.
 import type { SecretEntry } from "../logger/redactor.ts";
 import type { Access } from "../types/access.ts";

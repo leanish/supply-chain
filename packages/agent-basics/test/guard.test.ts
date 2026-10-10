@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development agents/bump-it/test/local-guard.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development agents/bump-it/test/local-guard.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: the guards' directory, and their messages say "agent guard".
 import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";

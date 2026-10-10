@@ -1,4 +1,4 @@
-// run.sh's contract, adapted from leanish/leanish-development agents/bump-it/test/local-run.test.ts at e4f8a1e: the
+// run.sh's contract, adapted from leanish/leanish-development agents/bump-it/test/local-run.test.ts at c6282df: the
 // lock, the final-line handshake and the phases, with a fake tool command. macOS only (lockf).
 import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";

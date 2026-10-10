@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copied from leanish/leanish-development agents/bump-it/local/guard/git at e4f8a1e; see PROVENANCE.md.
+# Copied from leanish/leanish-development agents/bump-it/local/guard/git at c6282df; see PROVENANCE.md.
 # Local changes: messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool".
 # agent guard for git: no pushes (the tool publishes; the agent's git
 # metadata is read-only anyway), and origin and credential settings can't be

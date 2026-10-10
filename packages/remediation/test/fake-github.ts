@@ -1,4 +1,4 @@
-// Adapted from leanish/leanish-development agents/bump-it/test/fake-github.ts at e4f8a1e: secure-it's rules and PR state
+// Adapted from leanish/leanish-development agents/bump-it/test/fake-github.ts at c6282df: secure-it's rules and PR state
 // instead of bump-it's constants; the Dependabot PR factory is left out; CI fixtures use actions-jobs source.
 import { GitHubApiError } from "../../agent-basics/src/github/github-client.ts";
 import type { GitHubClient, GitHubHeadChecks, GitHubNewPullRequest, GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";

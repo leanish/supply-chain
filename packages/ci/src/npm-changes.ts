@@ -5,7 +5,7 @@
  * times, for the release-age rule (`release-age.ts`, shared with Maven).
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
- * (commit 9e7d098); the advisory evidence now comes from the shared snapshot.
+ * (commit adc2a6f); the advisory evidence now comes from the shared snapshot.
  * Own-package changes are also returned separately as potential security roots,
  * without introducing a publish-date requirement for their age exemption.
  */

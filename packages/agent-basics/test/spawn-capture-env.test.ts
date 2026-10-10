@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/unit/spawn-capture-env.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/unit/spawn-capture-env.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: imports this package's modules from `../src/` instead of `../../src/`.
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";

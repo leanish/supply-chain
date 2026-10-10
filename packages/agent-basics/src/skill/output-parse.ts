@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/output-parse.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/output-parse.ts at c6282df; see PROVENANCE.md.
 import { EntrypointInvocationError } from "../errors.ts";
 
 import { tail } from "./tail.ts";

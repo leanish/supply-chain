@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/unit/schema-subset.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/unit/schema-subset.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: imports this package's modules from `../src/` instead of `../../src/`; regressions for the
 // nullable-object union and restricted conditional required object (other unions/conditionals still fail).
 import { describe, expect, it } from "vitest";

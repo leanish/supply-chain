@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/claude-code-runner.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/claude-code-runner.ts at c6282df; see PROVENANCE.md.
 import { performance } from "node:perf_hooks";
 
 import { deliverSkillUsage, type SkillUsage, ZERO_TOKENS } from "../usage/skill-usage.ts";

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Adapted from leanish/leanish-development agents/bump-it/local/run.sh at e4f8a1e: for any tool of this repository,
+# Adapted from leanish/leanish-development agents/bump-it/local/run.sh at c6282df: for any tool of this repository,
 # with owner/slug checked as the tool checks it;
 # the tool itself reads its config and tokens, so this script reads no secret and sets no runtime variables.
 #

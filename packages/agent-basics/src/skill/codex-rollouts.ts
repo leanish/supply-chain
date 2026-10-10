@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-rollouts.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-rollouts.ts at c6282df; see PROVENANCE.md.
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 

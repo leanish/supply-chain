@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/usage/usage-totals.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/usage/usage-totals.ts at c6282df; see PROVENANCE.md.
 import { roundUsd } from "./api-cost.ts";
 import type { SkillUsageRecord } from "./skill-usage-record.ts";
 import { sumTokens, type TokenUsage } from "./skill-usage.ts";

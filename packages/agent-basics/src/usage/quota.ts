@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/usage/quota.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/usage/quota.ts at c6282df; see PROVENANCE.md.
 /**
  * Subscription quota ("plan usage") seen around one coding-agent run: the
  * account's rate-limit buckets read before the run and the latest ones the

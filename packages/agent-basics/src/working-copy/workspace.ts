@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/working-copy/workspace.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/working-copy/workspace.ts at c6282df; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`.
 import type { RepoSource as Project } from "../types/repo-source.ts";
 

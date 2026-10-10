@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-model.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-model.ts at c6282df; see PROVENANCE.md.
 /**
  * Codex model families a descriptor may name instead of a concrete model id
  * (`model: luna` instead of `model: gpt-6-luna`). A family resolves to the

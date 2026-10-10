@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development agents/bump-it/src/ci-state.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development agents/bump-it/src/ci-state.ts at c6282df; see PROVENANCE.md.
 // Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations; onlyCooldownHolds tells the gate's cooldown hold (its job's hold step, or the daily rescan's `failure` cooldown status) from a failure.
 import type { GitHubCheckRun, GitHubCommitStatus, GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
 

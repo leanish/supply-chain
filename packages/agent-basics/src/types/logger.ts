@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/types/logger.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/types/logger.ts at c6282df; see PROVENANCE.md.
 /**
  * Structured logger surface. Same interface for AWS-mode (CloudWatch via
  * stdout JSON) and local-mode (pretty stdout). Correlation context (agent

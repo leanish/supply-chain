@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/schema-subset.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/schema-subset.ts at c6282df; see PROVENANCE.md.
 // Local changes: allow only the nullable-object union and a constant-property if/then requirement.
 import { EntrypointSchemaError } from "../errors.ts";
 

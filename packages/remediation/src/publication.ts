@@ -1,4 +1,4 @@
-// Adapted from leanish/leanish-development agents/bump-it/src/publication.ts at e4f8a1e: parametrised by the tool's
+// Adapted from leanish/leanish-development agents/bump-it/src/publication.ts at c6282df: parametrised by the tool's
 // own-PR rules; a repository can have several open PRs of a tool (one per topic); the workspace and logger are passed
 // in instead of bump-it's runtime; Dependabot closing is left out; the PR body records the published state;
 // the pre-push journal stores the matching title, body, plan and adaptation count for recovery;

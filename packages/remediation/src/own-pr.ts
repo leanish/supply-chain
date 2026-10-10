@@ -1,4 +1,4 @@
-// Adapted from leanish/leanish-development agents/bump-it/src/own-pr.ts at e4f8a1e: one set of rules per tool
+// Adapted from leanish/leanish-development agents/bump-it/src/own-pr.ts at c6282df: one set of rules per tool
 // (secure-it, bump-it) instead of bump-it's constants, and the PR's state (what the tool last published) in its body;
 // publishes leanish:<tool> labels while recognising legacy leanish:agent=<tool> labels and keeping the body marker.
 import type { GitHubPullRequest } from "../../agent-basics/src/types/clients.ts";

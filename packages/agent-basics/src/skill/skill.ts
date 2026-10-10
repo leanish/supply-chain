@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/skill.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/skill.ts at c6282df; see PROVENANCE.md.
 /**
  * A loaded Entry-point Skill — frontmatter parsed, body separated. Support
  * skills go through the same loader but their `inputSchema`/`outputSchema`

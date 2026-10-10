@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/unit/github-client.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/unit/github-client.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: imports this package's modules from `../src/` instead of `../../src/`, the GitHub client from its module instead of the runtime's package barrel; CI tests use Actions runs/jobs and commit statuses without Checks, including pagination, reruns, separate workflow/event groups, pending/jobless runs (with older jobless failures superseded by newer runs in the same group), skipped jobs and continue-on-error failures, and job steps.
 import { describe, expect, it } from "vitest";
 

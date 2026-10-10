@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/usage/skill-usage-record.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/usage/skill-usage-record.ts at c6282df; see PROVENANCE.md.
 import type { ApiCostEstimate } from "./api-cost.ts";
 import type { QuotaUsage } from "./quota.ts";
 import type { SkillUsage, TokenUsage } from "./skill-usage.ts";

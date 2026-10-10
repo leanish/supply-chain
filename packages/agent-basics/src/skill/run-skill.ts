@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/run-skill.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/run-skill.ts at c6282df; see PROVENANCE.md.
 // Local changes: the agent descriptor, `needs` and the target-credentials resolver are replaced by `SkillContext`
 // (the tool's entrypoints and support skills) and `SkillCall` (coding agent, model, effort, access and the
 // credential env, all from the tool's config).

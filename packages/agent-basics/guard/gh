@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copied from leanish/leanish-development agents/bump-it/local/guard/gh at e4f8a1e; see PROVENANCE.md.
+# Copied from leanish/leanish-development agents/bump-it/local/guard/gh at c6282df; see PROVENANCE.md.
 # Local changes: messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool".
 # agent guard for gh: reads only. The agent's token is read-only, and every
 # GitHub write (PRs, comments, labels, ready, close) is the tool's; this

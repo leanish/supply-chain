@@ -1,4 +1,4 @@
-# Copied from leanish/leanish-development agents/bump-it/local/guard/lib.sh at e4f8a1e; see PROVENANCE.md.
+# Copied from leanish/leanish-development agents/bump-it/local/guard/lib.sh at c6282df; see PROVENANCE.md.
 # Local changes: messages say "agent guard" (secure-it and bump-it share these); "the handler" is "the tool".
 # Shared by the agent guard shims (sourced, not executed). Guard rails for a
 # local scheduled run, not a boundary: the agent could still call the real

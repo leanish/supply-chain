@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/spawn-capture.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/spawn-capture.ts at c6282df; see PROVENANCE.md.
 import { spawn } from "node:child_process";
 
 import { NOOP_REDACTOR, Redactor, type SecretEntry } from "../logger/redactor.ts";

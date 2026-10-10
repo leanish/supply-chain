@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-quota-baseline.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-quota-baseline.ts at c6282df; see PROVENANCE.md.
 import { spawn } from "node:child_process";
 
 import type { Redactor } from "../logger/redactor.ts";

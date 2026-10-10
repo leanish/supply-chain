@@ -13,7 +13,7 @@
  * read must name the exact package, version and locked sha512.
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
- * (commit 9e7d098). Registry package names are now encoded as whole URL
+ * (commit adc2a6f). Registry package names are now encoded as whole URL
  * components; empty and dot components fail before a request is made.
  */
 import type { Exceptions } from "./exceptions.ts";

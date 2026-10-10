@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/fixtures/codex-rollout.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/fixtures/codex-rollout.ts at c6282df; see PROVENANCE.md.
 /**
  * Synthetic Codex session-file ("rollout") lines in the shape codex-cli
  * 0.159.3 and 0.160.0 write under `<CODEX_HOME>/sessions` — a compatibility
