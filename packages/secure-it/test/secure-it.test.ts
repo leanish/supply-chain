@@ -132,7 +132,7 @@ function leftPad(overrides: Partial<SecurityFix> = {}): SecurityFix {
 }
 
 async function batchPr(fixes: SecurityFix[], overrides: Partial<GitHubPullRequest> = {}): Promise<GitHubPullRequest> {
-  const plan = await planFor(fixes, { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
+  const plan = await planFor(fixes, { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
   return ownPr({ headRef: `secure-it/2026-10-05-${plan.topic}`, body: withMarker(RULES, `Fixes security findings.\n\n${planSection(plan)}`, { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 }), ...overrides });
 }
 
@@ -475,7 +475,7 @@ describe("secure-it review", () => {
     const packages = { "": root, "node_modules/parent": { version: "1.0.0", dependencies: { vite: "8.3.1", child: "^1" } }, "node_modules/vite": { version: "8.3.1" }, "node_modules/child": { version: "1.0.0" } };
     const baseFiles: Record<string, string> = { "package.json": json(root), "package-lock.json": json({ lockfileVersion: 3, packages }) };
     const fix = vite();
-    const plan = await planFor([fix], { lockfiles: new Map([["package-lock.json", JSON.parse(baseFiles["package-lock.json"]!)]]), gradle: undefined, tagCommit: async () => undefined });
+    const plan = await planFor([fix], { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(baseFiles["package-lock.json"]!)]]), gradle: undefined, tagCommit: async () => undefined });
     expect(plan.moves[0]?.mechanism).toBe("npm-override");
     const floor = { ecosystem: "npm", package: "vite", version: "8.3.3", declaredIn: "package.json", selector: [["vite"]], purpose: "security", advisories: fix.targets, reason: "Original PR security reason", added: "2026-10-05" };
     const compatibility = { ecosystem: "Maven", package: "a:b", version: "1.0.0", declaredIn: "build.gradle", selector: [":runtimeClasspath"], purpose: "compatibility", advisories: [], reason: "Keep compatible APIs", added: "2026-09-01" };
@@ -810,7 +810,7 @@ describe("the cooldown hold", () => {
   });
 
   it("keeps a waiting held PR a draft on green CI, and retires it once everything has aged", async () => {
-    const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
+    const plan = await planFor([YOUNG_VITE()], { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
       { kind: "routine", topic: "security-cooldown" });
     const heldPr = (eligibleAt: string) => ownPr({
       headRef: "secure-it/2026-10-05-security-cooldown",
@@ -827,7 +827,7 @@ describe("the cooldown hold", () => {
   });
 
   it("keeps a held PR on a moved base when its aged fix still requires a young dependency", async () => {
-    const plan = await planFor([vite()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
+    const plan = await planFor([vite()], { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined },
       { kind: "routine", topic: "security-cooldown" });
     const pr = ownPr({
       headRef: "secure-it/2026-10-05-security-cooldown",
@@ -852,7 +852,7 @@ describe("the cooldown hold", () => {
   });
 
   it("refuses a held PR whose recorded hold doesn't read", async () => {
-    const plan = await planFor([YOUNG_VITE()], { lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
+    const plan = await planFor([YOUNG_VITE()], { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(LOCK)]]), gradle: undefined, tagCommit: async () => undefined });
     const body = withMarker(RULES, withPlanSection("Fixes vite.", { ...plan, cooldown: [{ ...HELD, eligibleAt: "soon", signals: [] }] }), { head: HEAD_SHA, base: BASE_SHA, adaptations: 0 });
     const h = harness({ prs: [ownPr({ headRef: "secure-it/2026-10-05-security", body })] });
     h.github.checks = GREEN;

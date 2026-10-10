@@ -124,6 +124,21 @@ describe("Gradle floors", () => {
     expect(await checkFloors(parseFloors({ floors: [guavaFloor] }), inventory, tree(files))).toEqual({ failures: [], notes: [] });
   });
 
+  it("passes a floor next to a plugin's own declaration of the package, lower or at the floor's version, in either order", async () => {
+    const floor = { ...guava("33.7.2-jre"), reason: "CVE-2026-102554: prevents excessive allocation" };
+    for (const plugin of ["33.5.0-jre", "33.7.2-jre"]) {
+      for (const declared of [[{ ...guava(plugin), reason: undefined }, floor], [floor, { ...guava(plugin), reason: undefined }]]) {
+        const inventory = gradleInventory([{ id: ":checkstyle", declared, resolved: [guava("33.7.2-jre")] }]);
+        expect(await checkFloors(parseFloors({ floors: [guavaFloor] }), inventory, tree(files))).toEqual({ failures: [], notes: [] });
+      }
+    }
+    // The plugin's unreasoned declaration alone at that version isn't the floor.
+    const unreasoned = gradleInventory([{ id: ":checkstyle", declared: [{ ...guava("33.7.2-jre"), reason: undefined }], resolved: [guava("33.7.2-jre")] }]);
+    expect((await checkFloors(parseFloors({ floors: [guavaFloor] }), unreasoned, tree(files))).failures).toEqual([
+      "floor com.google.guava:guava 33.7.2-jre (build.gradle.kts): :checkstyle's because(...) doesn't name CVE-2026-102554",
+    ]);
+  });
+
   it("fails a missing declaration, a reason without the advisory, a version below the floor, and an unknown configuration", async () => {
     const floors = parseFloors({ floors: [{ ...guavaFloor, selector: [":checkstyle", ":errorprone", ":pmd"] }] });
     const inventory = gradleInventory([
