@@ -114,6 +114,7 @@ function harness(options: { prs?: GitHubPullRequest[]; fixes?: SecurityFix[]; an
     verify: async () => options.problems ?? [],
     staleScan: async () => ({ stale: false, lastSuccess: "2026-10-07T05:17:00Z", detail: "fresh" }),
     changedSince: async () => ["package.json", "package-lock.json"],
+    modeChangedSince: async () => [],
     journal: () => journal,
     writeFile: async (_wc, path, content) => {
       written.push(`${path}=${content}`);

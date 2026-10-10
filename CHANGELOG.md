@@ -22,6 +22,13 @@
   what had resolved first; verification then saw them appear "from nothing".
   What resolves is unchanged, so are the gate's findings; the tools see more
   declarations, and those plugins add go to bump-it's notes.
+- A planned plugin update's own fallout may also add or remove declarations
+  (a convention plugin's new version adding Lombok, the Kotlin DSL plugin
+  changing its compiler plugins), not only move versions, under the same proof:
+  nothing but the planned version swaps changed. secure-it's verification uses
+  that proof too, so a security fix that updates a plugin no longer fails on
+  what the plugin brings; a fix that also adds a floor still keeps the strict
+  checks.
 
 ## 0.2.2 - 2026-10-09
 
