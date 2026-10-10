@@ -22,6 +22,7 @@ Licensed under Apache-2.0.
 
 ## Adoption and operation
 
+- [Requirements and scenario behavior](docs/requirements.md)
 - [Why this adds value alongside dependency alerts](docs/why.md)
 - [Adopting the gate](packages/ci/README.md#adopting-the-gate), including
   [repository policy, exceptions and floors](packages/ci/README.md)
