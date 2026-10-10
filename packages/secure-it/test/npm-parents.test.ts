@@ -56,7 +56,7 @@ const brace = (to = "1.2.4"): SecurityFix => ({
   to: { version: to, line: "1", aged: true, major: false, blockers: [] }, problem: undefined,
 });
 
-const parents = (registry: Registry, options: { affected?: Record<string, string[]>; locks?: ReturnType<typeof lockfiles> } = {}) =>
+const parents = (registry: Registry, options: { affected?: Record<string, string[]>; locks?: ReadonlyMap<string, unknown> } = {}) =>
   withParents([brace()], { lockfiles: options.locks ?? lockfiles(), env: environment(registry, options.affected), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
 
 const PARENT = {
