@@ -32,6 +32,10 @@ Registry flags come only from the gate's `npm.registries` configuration (HTTP(S)
 
 Temporary projects, homes and caches are removed on success or failure. This boundary prevents repository-selected executable execution; it is not an operating-system sandbox for npm itself. It trusts the runner's Node/npm installation and the registry archive handling and signature-verification implementation in npm. Private registry credentials and repository-specific proxy settings are deliberately unavailable to this verifier.
 
+### Reading npm archives for bundled fixes
+
+To prove a young carrier version as a bundled fix (and for secure-it to choose one), the gate downloads registry archives itself: only from the npm registry, at the package's own tarball URL, refusing redirects. A download counts against fixed budgets (compressed and unpacked bytes, entries, manifest size, a deadline, and bytes per run), and its sha512 must match the integrity the lockfile records (or, for a candidate version, the one the registry publishes) before anything read from it is used. It is gunzipped and read as a tar stream in memory: files and directories only, one top directory, no path twice, no absolute or `..` paths; only package manifests are kept, and a bundled package whose files have no manifest makes the archive unreadable. Nothing is written to disk or executed. Whatever can't be read this way leaves the young version unjustified; it never reads as an empty bundle.
+
 ## Young versions: the cooldown
 
 The release-age wait exists because malicious releases (a stolen publishing token, a hijacked release workflow) tend

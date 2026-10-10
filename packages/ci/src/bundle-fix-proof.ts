@@ -14,10 +14,15 @@
  * Any part that can't be established (an unreadable archive, a budget, an
  * unknown publish time) leaves V unjustified, with the reason.
  *
+ * The targets include the carrier's own advisory groups R has and V doesn't,
+ * so a version fixing both is proved as the combined choice secure-it makes.
+ * Every head copy of V must be such an occurrence and pass: a copy elsewhere
+ * has no evidence of its own.
+ *
  * A carrier proved this way doesn't seed required-dependency proofs: a young
  * non-bundled dependency it needs stays unjustified, and the comparison fails.
  */
-import { candidateVersions, type VersionCatalog } from "./young-fixes.ts";
+import { candidateVersions, groupsOf, targetsOf, type VersionCatalog } from "./young-fixes.ts";
 import { chooseCarrier, describe, removedTargets, registryIntegrity } from "./carrier-fixes.ts";
 import type { Config } from "./config.ts";
 import { isOwnPackage } from "./config.ts";
@@ -45,18 +50,20 @@ export async function bundleFixProofs(young: ReadonlyArray<ChangedVersion>, inpu
   const proofs = new Map<string, string | undefined>();
   for (const change of young) {
     if (change.pkg.ecosystem !== "npm" || change.replaced.length === 0) continue;
-    const reasons: string[] = [];
-    let proved = false;
-    for (const occurrence of occurrences(change, inputs)) {
-      const why = await proofProblem(change.pkg, occurrence, inputs);
-      if (why === undefined) {
-        proved = true;
-        break;
-      }
-      reasons.push(why);
+    const found = occurrences(change, inputs);
+    if (found.length === 0) continue;
+    // Every head copy of the version needs its own evidence: one proved copy can't vouch for another.
+    if (found.some((occurrence) => occurrence === undefined)) {
+      proofs.set(versionKey(change.pkg), `${change.pkg.name}@${change.pkg.version} is also where it replaces no carrier copy in place`);
+      continue;
     }
-    if (proved) proofs.set(versionKey(change.pkg), undefined);
-    else if (reasons.length > 0) proofs.set(versionKey(change.pkg), reasons.join("; "));
+    const reasons: string[] = [];
+    for (const occurrence of found as Occurrence[]) {
+      const why = await proofProblem(change.pkg, occurrence, inputs).catch((error: unknown) =>
+        `${occurrence.lockfile}: ${occurrence.path}: the bundle-fix justification could not be established: ${error instanceof Error ? error.message : String(error)}`);
+      if (why !== undefined) reasons.push(why);
+    }
+    proofs.set(versionKey(change.pkg), reasons.length === 0 ? undefined : reasons.join("; "));
   }
   return proofs;
 }
@@ -69,21 +76,25 @@ interface Occurrence {
   readonly toIntegrity: string | undefined;
 }
 
-/** Where head has the young version at a path base had a replaced version of the same package, either side bundling something. */
-function occurrences(change: ChangedVersion, inputs: Pick<BundleFixInputs, "base" | "head">): Occurrence[] {
-  const found: Occurrence[] = [];
+/**
+ * Each head copy of the young version: where base had a replaced version of it at the same path, either side bundling
+ * something, the occurrence to prove; `undefined` for any other copy. Empty when no copy is a carrier replaced in
+ * place (no bundle-fix to prove).
+ */
+function occurrences(change: ChangedVersion, inputs: Pick<BundleFixInputs, "base" | "head">): Array<Occurrence | undefined> {
+  const found: Array<Occurrence | undefined> = [];
   for (const lockfile of inputs.head.npm) {
     const before = inputs.base.npm.find((candidate) => candidate.path === lockfile.path)?.packages ?? [];
     for (const copy of lockfile.packages) {
       if (copy.bundled || copy.name !== change.pkg.name || copy.version !== change.pkg.version) continue;
       const old = before.find((candidate) => candidate.path === copy.path && !candidate.bundled && candidate.name === copy.name && change.replaced.includes(candidate.version));
-      if (old === undefined) continue;
       const bundles = (packages: typeof before) => packages.some((pkg) => pkg.bundled && pkg.path.startsWith(`${copy.path}/node_modules/`));
-      if (!bundles(before) && !bundles(lockfile.packages)) continue;
-      found.push({ lockfile: lockfile.path, path: copy.path, from: old.version, fromIntegrity: old.integrity, toIntegrity: copy.integrity });
+      found.push(old === undefined || (!bundles(before) && !bundles(lockfile.packages))
+        ? undefined
+        : { lockfile: lockfile.path, path: copy.path, from: old.version, fromIntegrity: old.integrity, toIntegrity: copy.integrity });
     }
   }
-  return found;
+  return found.some((occurrence) => occurrence !== undefined) ? found : [];
 }
 
 async function proofProblem(pkg: PackageVersion, occurrence: Occurrence, inputs: BundleFixInputs): Promise<string | undefined> {
@@ -106,6 +117,9 @@ async function proofProblem(pkg: PackageVersion, occurrence: Occurrence, inputs:
   ]);
   const carried = removedTargets(fromBundle, toBundle, snapshot);
   if (carried.length === 0) return `${at}: ${pkg.name}@${pkg.version}'s bundle fixes nothing ${occurrence.from}'s had`;
+  // The carrier's own advisories it fixes too: the combined choice secure-it makes, reconstructed from the trees.
+  const after = groupsOf(snapshot, pkg);
+  const own = targetsOf(snapshot, { ...pkg, version: occurrence.from }).filter((group) => !after.has(group));
   const listed = await inputs.catalog.versions(pkg);
   if (listed === undefined) return `${at}: the registry doesn't list ${pkg.name}'s versions, so the rule can't be checked`;
   const choice = await chooseCarrier({
@@ -113,7 +127,7 @@ async function proofProblem(pkg: PackageVersion, occurrence: Occurrence, inputs:
     from: occurrence.from,
     fromBundle,
     carried,
-    own: [],
+    own,
     malicious: false,
     versions: candidateVersions(config, pkg, occurrence.from, pkg.version, [...listed, pkg.version]),
     ownPackage: isOwnPackage(config.ownPackages, pkg),

@@ -72,6 +72,8 @@ export interface BundledManifest {
   readonly optionalDependencies: Readonly<Record<string, string>>;
   readonly peerDependencies: Readonly<Record<string, string>>;
   readonly peerDependenciesMeta: Readonly<Record<string, unknown>>;
+  /** `bundleDependencies` (or `bundledDependencies`): what its own tarball shipped inside it. */
+  readonly bundleDependencies: ReadonlyArray<string> | boolean;
 }
 
 export type BundleContents =
@@ -209,7 +211,10 @@ function bundledManifest(path: string, installedAs: string, manifest: Record<str
   const peerDependencies = ranges("peerDependencies");
   const meta = manifest["peerDependenciesMeta"] ?? {};
   if (dependencies === undefined || optionalDependencies === undefined || peerDependencies === undefined || !isObject(meta)) return undefined;
-  return { path, installedAs, name, version, dependencies, optionalDependencies, peerDependencies, peerDependenciesMeta: meta };
+  const bundled = manifest["bundleDependencies"] ?? manifest["bundledDependencies"] ?? false;
+  const bundleDependencies = typeof bundled === "boolean" ? bundled : Array.isArray(bundled) && bundled.every((entry) => typeof entry === "string") ? (bundled as string[]) : undefined;
+  if (bundleDependencies === undefined) return undefined;
+  return { path, installedAs, name, version, dependencies, optionalDependencies, peerDependencies, peerDependenciesMeta: meta, bundleDependencies };
 }
 
 /**
@@ -255,6 +260,8 @@ class TarReader {
   readonly #limits: BundleLimits;
   readonly #manifests = new Map<string, Buffer>();
   readonly #seen = new Set<string>();
+  /** Bundled package roots some file sits in: each needs its own manifest, or Node could run it unlisted. */
+  readonly #roots = new Set<string>();
   #buffer: Buffer = Buffer.alloc(0);
   #pending: Pending | undefined;
   #pax: Record<string, string> = {};
@@ -289,6 +296,8 @@ class TarReader {
   finish(): ReadonlyMap<string, Buffer> {
     this.failure();
     if (!this.#ended) throw new Error("the archive ends before tar's end-of-archive blocks");
+    const unlisted = [...this.#roots].filter((root) => !this.#manifests.has(`${root}/package.json`)).sort();
+    if (unlisted.length > 0) throw new Error(`bundled ${unlisted.join(", ")} ${unlisted.length === 1 ? "has" : "have"} files but no package.json`);
     return this.#manifests;
   }
 
@@ -373,6 +382,7 @@ class TarReader {
     }
     if (this.#seen.has(path)) throw new Error(`the archive holds ${path} twice`);
     this.#seen.add(path);
+    for (const root of packageRootsOf(path)) this.#roots.add(root);
     const manifest = path === "package.json" || (path.endsWith("/package.json") && PACKAGE_ROOT.test(path.slice(0, -"/package.json".length)));
     if (manifest && size > this.#limits.manifestBytes) throw new Error(`${path} is over ${this.#limits.manifestBytes} bytes`);
     this.#pending = { kind: manifest ? "manifest" : "skip", path, remaining: size, chunks: [], padding };
@@ -391,6 +401,24 @@ class TarReader {
     if (rest.length === 0 && !directory) throw new Error(`a file at the archive's top level: ${raw}`);
     return rest.join("/");
   }
+}
+
+/**
+ * The bundled package roots a file is inside: each `node_modules/<name>` (scoped or not) along a chain from the
+ * archive's root. Dot names (`.bin`) aren't packages Node resolves.
+ */
+function packageRootsOf(path: string): string[] {
+  const parts = path.split("/");
+  const roots: string[] = [];
+  for (let at = 0; parts[at] === "node_modules";) {
+    let end = at + 1;
+    if (parts[end]?.startsWith("@") === true) end++;
+    // The root itself must be a directory with something inside it.
+    if (end >= parts.length - 1 || parts[at + 1]!.startsWith(".")) break;
+    roots.push(parts.slice(0, end + 1).join("/"));
+    at = end + 1;
+  }
+  return roots;
 }
 
 function ustarPath(header: Buffer): string {

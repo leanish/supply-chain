@@ -29,7 +29,7 @@ function bundle(...packages: string[]): CompleteBundle {
       const at = pkg.lastIndexOf("@");
       return {
         path, installedAs: path.slice(path.lastIndexOf("node_modules/") + 13), name: pkg.slice(0, at), version: pkg.slice(at + 1),
-        dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {},
+        dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {}, bundleDependencies: false,
       };
     }),
   };
@@ -164,6 +164,27 @@ describe("choosing a carrier version", () => {
     await chooseCarrier(search(["2.10.0", "2.11.0", "2.12.0", "2.13.0", "2.14.0"]), services);
     expect(scans).toHaveLength(2);
     expect(scans[1]!).toBeGreaterThan(scans[0]!);
+  });
+
+  it("judges a remembered fix again on the last snapshot: a later batch can add an advisory to it", async () => {
+    const releases: Record<string, Release> = {
+      "2.10.0": { days: 1, bundle: fixed }, "2.10.1": { days: 1, bundle: FROM }, "2.10.2": { days: 1, bundle: FROM },
+      "2.10.3": { days: 1, bundle: FROM }, "2.10.4": { days: 30, bundle: fixed },
+    };
+    const { services, scans } = setup(releases);
+    const scan = services.scan;
+    const late: CarrierServices = {
+      ...services,
+      // From the second snapshot on, the fixed brace has an advisory of its own.
+      scan: async (packages) => {
+        const snapshot = await scan(packages);
+        if (scans.length < 2) return snapshot;
+        const map = new Map(packages.map((pkg) => [versionKey(pkg), [...snapshot.advisories(pkg), ...(pkg.name === "brace" && pkg.version === "5.0.12" ? [advisory("GHSA-late")] : [])]]));
+        return new Snapshot(map, [], NOW);
+      },
+    };
+    const choice = await chooseCarrier(search(Object.keys(releases)), late);
+    expect(choice).toMatchObject({ kind: "none" });
   });
 
   describe("leaving malware", () => {

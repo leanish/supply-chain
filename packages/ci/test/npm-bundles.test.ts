@@ -35,12 +35,12 @@ describe("reading what an npm archive bundles", () => {
     expect(contents).toEqual({
       complete: true,
       packages: [
-        { path: "node_modules/@scope/tool", installedAs: "@scope/tool", name: "@scope/tool", version: "1.2.3", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {} },
+        { path: "node_modules/@scope/tool", installedAs: "@scope/tool", name: "@scope/tool", version: "1.2.3", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {}, bundleDependencies: false },
         {
           path: "node_modules/inner", installedAs: "inner", name: "inner", version: "2.0.0",
-          dependencies: { leaf: "^3.0.0" }, optionalDependencies: {}, peerDependencies: { host: "*" }, peerDependenciesMeta: { host: { optional: true } },
+          dependencies: { leaf: "^3.0.0" }, optionalDependencies: {}, peerDependencies: { host: "*" }, peerDependenciesMeta: { host: { optional: true } }, bundleDependencies: false,
         },
-        { path: "node_modules/inner/node_modules/leaf", installedAs: "leaf", name: "leaf", version: "3.1.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {} },
+        { path: "node_modules/inner/node_modules/leaf", installedAs: "leaf", name: "leaf", version: "3.1.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {}, bundleDependencies: false },
       ],
     });
   });
@@ -99,6 +99,23 @@ describe("reading what an npm archive bundles", () => {
     expect(reasonOf(await read(entries))).toContain(reason);
   });
 
+  it.each([
+    ["a bundled package's files without its package.json", "package/node_modules/brace/index.js", "node_modules/brace has files but no package.json"],
+    ["a scoped one's", "package/node_modules/@scope/hidden/lib/index.js", "node_modules/@scope/hidden has files but no package.json"],
+    ["a nested one's", "package/node_modules/inner/node_modules/deep/index.js", "node_modules/inner/node_modules/deep has files but no package.json"],
+  ])("can't tell from %s, which Node could still run", async (_, path, reason) => {
+    expect(reasonOf(await read([...CARRIER, { path, body: "module.exports = 1;" }]))).toContain(reason);
+  });
+
+  it("doesn't take npm's `.bin` for a package", async () => {
+    expect((await read([...CARRIER, { path: "package/node_modules/.bin/tool", body: "#!/bin/sh" }])).complete).toBe(true);
+  });
+
+  it("reads a bundled package's own bundle list", async () => {
+    const contents = await read([...CARRIER, { path: "package/node_modules/nested/package.json", body: manifest("nested", "1.0.0", { bundledDependencies: ["x"] }) }]);
+    expect(contents.complete && contents.packages.find((pkg) => pkg.name === "nested")?.bundleDependencies).toEqual(["x"]);
+  });
+
   it("can't tell from an archive without its end-of-archive blocks", async () => {
     expect(reasonOf(await read(CARRIER, { end: false }))).toContain("end-of-archive");
   });
@@ -150,8 +167,8 @@ describe("reading what an npm archive bundles", () => {
 
 describe("comparing an archive with the lockfile", () => {
   const contents = { complete: true as const, packages: [
-    { path: "node_modules/inner", installedAs: "inner", name: "inner", version: "2.0.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {} },
-    { path: "node_modules/inner/node_modules/leaf", installedAs: "leaf", name: "leaf", version: "3.1.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {} },
+    { path: "node_modules/inner", installedAs: "inner", name: "inner", version: "2.0.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {}, bundleDependencies: false },
+    { path: "node_modules/inner/node_modules/leaf", installedAs: "leaf", name: "leaf", version: "3.1.0", dependencies: {}, optionalDependencies: {}, peerDependencies: {}, peerDependenciesMeta: {}, bundleDependencies: false },
   ] };
   const carrier = "node_modules/carrier";
   const locked = (entries: Record<string, unknown>) => lockedPackages({ lockfileVersion: 3, packages: {

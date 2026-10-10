@@ -34,6 +34,7 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | npm | a direct dependency | change its range and lock |
    | npm | a transitive one that every parent's range allows | lock exactly `to`, through temporary pins (a declaration for peers) |
    | npm | otherwise | a lasting override plus a floor entry |
+   | npm | a copy its parent bundles (`inBundle`) | move the carrier (the nearest non-bundled ancestor) to the version the security rule picks for its bundle, read from the registry archive (`carries` in the plan); a carrier that would need an override is reported instead |
    | Gradle | a dependency the repository's sources declare | change its version |
    | Gradle | a transitive one, or one only a plugin declares | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
    | Actions | any | pin to the tag's commit |

@@ -81,7 +81,12 @@ export type CarrierChoice =
 /** The carrier version the rule picks for `search`. */
 export async function chooseCarrier(search: CarrierSearch, services: CarrierServices): Promise<CarrierChoice> {
   const state = new SearchState(search, services);
-  return search.malicious ? leaveMalware(search, services, state) : fixTargets(search, services, state);
+  // A pass that took a new snapshot judged its earlier versions on an older one: decide again until a pass takes none.
+  for (;;) {
+    const taken = state.snapshots;
+    const choice = search.malicious ? await leaveMalware(search, services, state) : await fixTargets(search, services, state);
+    if (state.snapshots === taken) return choice;
+  }
 }
 
 async function fixTargets(search: CarrierSearch, services: CarrierServices, state: SearchState): Promise<CarrierChoice> {
@@ -140,6 +145,7 @@ class SearchState {
   readonly #services: CarrierServices;
   readonly #bundles = new Map<string, BundleContents>();
   #snapshot: Snapshot | undefined;
+  #snapshots = 0;
 
   constructor(search: CarrierSearch, services: CarrierServices) {
     this.#search = search;
@@ -151,10 +157,16 @@ class SearchState {
     if (!this.#bundles.has(version)) {
       for (const next of ahead) if (!this.#bundles.has(next)) this.#bundles.set(next, await this.#services.bundles(next));
       this.#snapshot = await this.#services.scan(this.#covered());
+      this.#snapshots++;
     }
     const bundle = this.#bundles.get(version)!;
     if (!bundle.complete) return incomplete(`${this.#search.carrier}@${version}'s bundle can't be read: ${bundle.reason}`);
     return { kind: "judged", fixes: carrierFixes(this.#search, version, bundle, this.#snapshot!) };
+  }
+
+  /** How many snapshots the search has taken. */
+  get snapshots(): number {
+    return this.#snapshots;
   }
 
   chosen(version: string, line: string, aged: boolean): CarrierChoice {

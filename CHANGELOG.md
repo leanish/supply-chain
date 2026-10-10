@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- secure-it fixes a vulnerable copy an npm package bundles in its tarball
+  (`inBundle`, e.g. brace-expansion inside aws-cdk-lib) by moving that
+  carrier: to the version the security rule picks for the advisories its
+  bundle drops (and its own, if it has failing ones), reading each carrier
+  version's bundle from its registry archive, authenticated against its
+  sha512. Before, a bundled copy couldn't be fixed at all. The PR's table
+  says which bundled packages change and to what; a carrier that would need an
+  npm override is reported instead.
+- The gate accepts a young carrier version as a `bundle-fix` (still held by the
+  cooldown): every head copy must replace the old version in place, both
+  archives must authenticate and match what each lockfile records, and it must
+  be the version the rule picks. Before, a young carrier failed the release-age
+  rule, since the advisory isn't on the carrier itself. Required dependencies
+  of such a carrier aren't proved (a young one fails the comparison).
+
 ### Fixed
 
 - The gate counts each unpinned (or unverified) action use: a use of another

@@ -14,6 +14,7 @@ What the gate can't see. Two kinds: **reported gaps**, which every report lists 
 ## Limits
 
 - **Operating-system packages** in container images: no scanner here reads them (Trivy or similar, later).
+- **Code copied into a package without its own manifest**: npm bundles are read package by package (each bundled `node_modules/<name>/package.json`); JavaScript vendored into a package's own files, like classes shaded into another Java artifact, isn't a package anywhere, so its advisories can't match.
 - **What a Gradle build hides from its own inventory** (see the [security model](security-model.md)), and dependencies that aren't external modules: the inventory exports module coordinates only, so local files and JARs aren't covered.
 - **Scheduled runs are best effort**: GitHub may delay or skip them, and disables them after 60 days without activity in a public repository.
 
