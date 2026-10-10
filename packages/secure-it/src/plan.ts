@@ -51,6 +51,20 @@ export interface PlannedMove {
   readonly carries?: ReadonlyArray<CarriedPackage>;
 }
 
+/** A dependent that moves so its range admits a copy's security target (`npm-parents.ts`). */
+export interface ParentMove {
+  readonly name: string;
+  readonly from: string;
+  readonly to: string;
+  /** Its own gate location. */
+  readonly location: string;
+  /** The copy's location it lets lock. */
+  readonly unblocks: string;
+}
+
+/** A fix as planned: the rule's choice, and the parents that let npm lock it where an override would be needed. */
+export type FixWork = SecurityFix & { readonly parents?: ReadonlyArray<ParentMove> };
+
 export type PlanKind = "routine" | "major" | "malware" | "floor-removal";
 
 export interface OmittedMoves {
@@ -220,7 +234,7 @@ function rankedGroups(fixes: ReadonlyArray<SecurityFix>): Array<[string, Securit
 }
 
 /** The plan for `work` (from `selectWork`); fails on a fix without a move. */
-export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInputs, unit?: Pick<SecurityUnit, "kind" | "topic" | "coupled">): Promise<ChangePlan> {
+export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, unit?: Pick<SecurityUnit, "kind" | "topic" | "coupled">): Promise<ChangePlan> {
   if (work.length === 0) throw new Error("planFor needs at least one fix");
   const moves: PlannedMove[] = [];
   for (const fix of work) {
@@ -238,8 +252,11 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
     }
     const byMechanism = new Map<string, { mechanism: Mechanism; declaredAs: string | undefined; locations: string[] }>();
     for (const location of fix.locations) {
-      const { mechanism, declaredAs } =
+      const found =
         fix.ecosystem === "npm" ? npmMechanism(inputs.lockfiles, fix.name, location, to.version) : { mechanism: gradleMechanism(inputs, fix.name, location), declaredAs: undefined };
+      // Parents that admit the target turn an override into a lock inside their own ranges.
+      const lifted = found.mechanism === "npm-override" && (fix.parents ?? []).some((parent) => parent.unblocks === location);
+      const { mechanism, declaredAs } = lifted ? { ...found, mechanism: "npm-lock" as const } : found;
       const key = `${mechanism}|${declaredAs ?? ""}`;
       const entry = byMechanism.get(key) ?? { mechanism, declaredAs, locations: [] };
       entry.locations.push(location);
@@ -249,12 +266,24 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
       moves.push({ ...base, mechanism, locations, commitSha: undefined, declaredAs });
     }
   }
-  const packages = [...new Set(work.map(packageKey))].sort();
+  const coupled = [...(unit?.coupled ?? [])];
+  for (const fix of work) {
+    const parents = (fix.parents ?? []).filter((parent) => moves.some((move) => move.name === fix.name && move.mechanism === "npm-lock" && move.locations.includes(parent.unblocks)));
+    for (const parent of parents) {
+      const { mechanism } = npmMechanism(inputs.lockfiles, parent.name, parent.location, parent.to);
+      if (mechanism === "npm-override") throw new Error(`${parent.name}@${parent.to} at ${parent.location} would need an override itself`);
+      const same = moves.find((move) => move.name === parent.name && move.to === parent.to && move.mechanism === mechanism);
+      if (same !== undefined && !same.locations.includes(parent.location)) (same.locations as string[]).push(parent.location);
+      else if (same === undefined) moves.push({ ecosystem: "npm", name: parent.name, from: parent.from, to: parent.to, mechanism, locations: [parent.location], advisories: [], major: false, commitSha: undefined, declaredAs: undefined });
+    }
+    if (parents.length > 0) coupled.push([...new Set([packageKey(fix), ...parents.map((parent) => `npm|${parent.name}`)])].sort());
+  }
+  const packages = [...new Set([...work.map(packageKey), ...moves.map((move) => `${move.ecosystem}|${move.name}`)])].sort();
   const malware = work.some((fix) => fix.malicious);
   const severity = work.map((fix) => fix.severity).reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
   const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");
   const topic = unit?.topic ?? (kind === "malware" ? "malware" : kind === "routine" ? "security" : `${work[0]!.name}-major`);
-  return { kind, topic, malware, packages, moves, severity, ...(unit?.coupled === undefined ? {} : { coupled: unit.coupled }) };
+  return { kind, topic, malware, packages, moves, severity, ...(coupled.length === 0 ? {} : { coupled }) };
 }
 
 /**
@@ -292,13 +321,30 @@ interface LockEntry {
 }
 
 function npmMechanism(lockfiles: ReadonlyMap<string, unknown>, name: string, location: string, to: string): { mechanism: Mechanism; declaredAs: string | undefined } {
-  const { lock, key } = lockfileOf(lockfiles, location);
-  const packages = ((lock ?? {}) as { packages?: Record<string, LockEntry> }).packages ?? {};
-  // The key it's installed under: its name, or an `npm:` alias (`node_modules/compat` holding `lib`).
-  const installedAs = key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+  const { installedAs, declaredByWorkspace, dependents } = dependentsOf(lockfiles, location);
   const declaredAs = installedAs === name ? undefined : installedAs;
-  // Who depends on this copy: each entry whose nearest `node_modules/<installedAs>` walking up from it is `key`.
-  const ranges: string[] = [];
+  if (declaredByWorkspace) return { mechanism: "npm-direct", declaredAs };
+  return { mechanism: dependents.length > 0 && dependents.every((dependent) => satisfies(to, dependent.spec)) ? "npm-lock" : "npm-override", declaredAs };
+}
+
+/** A locked package that depends on a copy, with the range it asks for it. */
+export interface Dependent {
+  readonly path: string;
+  readonly spec: string;
+  readonly name: string;
+  readonly version: string | undefined;
+  readonly bundled: boolean;
+}
+
+/**
+ * Who depends on the copy at an npm gate location: each entry whose nearest `node_modules/<installedAs>` walking up
+ * from it is that copy (`installedAs` is its name, or an `npm:` alias's key), and whether a workspace declares it.
+ */
+export function dependentsOf(lockfiles: ReadonlyMap<string, unknown>, location: string): { readonly installedAs: string; readonly declaredByWorkspace: boolean; readonly dependents: ReadonlyArray<Dependent> } {
+  const { lock, key } = lockfileOf(lockfiles, location);
+  const packages = ((lock ?? {}) as { packages?: Record<string, LockEntry & { name?: string; version?: string; inBundle?: boolean }> }).packages ?? {};
+  const installedAs = key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
+  const dependents: Dependent[] = [];
   let declaredByWorkspace = false;
   for (const [path, entry] of Object.entries(packages)) {
     if (entry.link === true) continue;
@@ -306,10 +352,9 @@ function npmMechanism(lockfiles: ReadonlyMap<string, unknown>, name: string, loc
     const spec = specs[installedAs];
     if (spec === undefined || nearestCopy(packages, path, installedAs) !== key) continue;
     if (!path.includes("node_modules/")) declaredByWorkspace = true;
-    else ranges.push(spec);
+    else dependents.push({ path, spec, name: entry.name ?? path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length), version: entry.version, bundled: entry.inBundle === true });
   }
-  if (declaredByWorkspace) return { mechanism: "npm-direct", declaredAs };
-  return { mechanism: ranges.length > 0 && ranges.every((range) => satisfies(to, range)) ? "npm-lock" : "npm-override", declaredAs };
+  return { installedAs, declaredByWorkspace, dependents };
 }
 
 /** The lockfile key of the copy of `name` an entry at `from` resolves to, walking up its `node_modules`. */
@@ -324,7 +369,7 @@ function nearestCopy(packages: Record<string, unknown>, from: string, name: stri
   }
 }
 
-function satisfies(version: string, range: string): boolean {
+export function satisfies(version: string, range: string): boolean {
   const alias = /^npm:(?:@[^/@]+\/)?[^@]+(?:@(.+))?$/.exec(range.trim());
   const effective = alias === null ? range : (alias[1] ?? "*");
   return semver.validRange(effective) !== null && semver.satisfies(version, effective, { includePrerelease: false });

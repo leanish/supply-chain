@@ -18,6 +18,12 @@
   be the version the rule picks. Before, a young carrier failed the release-age
   rule, since the advisory isn't on the carrier itself. Required dependencies
   of such a carrier aren't proved (a young one fails the comparison).
+- When a parent's range excludes a transitive npm copy's security target,
+  secure-it first looks for that parent's lowest version in its own line, past
+  the release-age wait, whose range admits the target (no new advisory, same
+  publisher, movable without an override itself), and moves both, the copy
+  locked inside the parent's new range. Only when no parent can move does it
+  fall back to the override and floor, with the reason in the PR's notes.
 
 ### Fixed
 

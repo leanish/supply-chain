@@ -11,7 +11,7 @@ import type { Floor } from "../../ci/src/floors.ts";
 import { type SecurityCandidates, type SecurityFix, securityCandidates } from "../../ci/src/candidates.ts";
 import { type CooldownEvaluation, heldUntil } from "../../ci/src/cooldown.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
-import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
+import { type GateEnvironment, type GradleInputs, readSettings } from "../../ci/src/gate.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
 import { namingFailures } from "../../ci/src/http.ts";
 import { NpmRegistry, releaseSignals } from "../../ci/src/npm-registry.ts";
@@ -42,6 +42,7 @@ import { probeOnBase } from "./floor-probe.ts";
 import { type ComputedRemoval, type RemovalProbe, floorsOf, selectRemovals } from "./floor-removal.ts";
 import { reconcileNpmFloors } from "./npm-floor-history.ts";
 import { materializeOnBase } from "./npm-materialize.ts";
+import { withParents } from "./npm-parents.ts";
 import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
@@ -333,7 +334,11 @@ async function holdRequiredYoung(execution: Execution, units: ReadonlyArray<Secu
 async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
   const sources = base.gradle === undefined ? undefined : await gradleSourceIndex(base.tree);
-  const plan = await planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const lockfiles = await lockfilesOf(base.tree);
+  const { config, exceptions } = await readSettings(base.tree);
+  const parented = await withParents(unit.work, { lockfiles, env: execution.env, config, exceptions });
+  const planned = await planFor(parented.fixes, { lockfiles, gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const plan = parented.notes.length === 0 ? planned : { ...planned, notes: [...(planned.notes ?? []), ...parented.notes] };
   return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 
