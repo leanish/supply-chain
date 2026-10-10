@@ -225,6 +225,8 @@ dependencies { runtimeOnly "fixture:missing:9.9" }
   }, 600_000);
 });
 
+// The reference suite is in this file, not its own, on purpose: vitest runs files in parallel, and two real Gradle
+// builds at once made one time out connecting to its daemon in CI. Suites of one file run one after the other.
 const REFERENCE = fileURLToPath(new URL("../gradle/supply-chain-reference.init.gradle", import.meta.url));
 
 /** group:artifact:version → its dependencies, each a POM-only module. */
