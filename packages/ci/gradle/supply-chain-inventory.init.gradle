@@ -9,6 +9,8 @@
 // every module component the resolution selected, every dependency it couldn't resolve, and
 // the external dependencies declared in or inherited by that configuration, with their version
 // and `because(...)` reason (what the floors check reads). The CLI reads the files as data.
+// Declarations are read only once every configuration of the build has resolved: resolving adds
+// some (`defaultDependencies`, such as a code-quality plugin's tool, or `withDependencies`).
 //
 // The requested build exports from the `supplyChainInventory` task. Nested builds Gradle
 // configures in the same run (buildSrc, included builds, plugin builds) export once all their
@@ -43,18 +45,9 @@ def relativeToRequested = { File dir ->
     relative.isEmpty() ? "." : relative
 }
 
-def describe = { configuration, String id, String kind ->
+// What the configuration resolved; its declarations come later, once everything has resolved.
+def resolveEntry = { configuration, String id, String kind ->
     def entry = [id: id, kind: kind, resolved: [], unresolved: [], declared: [], error: null]
-    // allDependencies: what this configuration declares and inherits (compileClasspath gets implementation's).
-    configuration.allDependencies.withType(ExternalModuleDependency).each { dependency ->
-        def constraint = dependency.versionConstraint
-        entry.declared << [
-            group  : dependency.group,
-            name   : dependency.name,
-            version: dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null,
-            reason : dependency.reason,
-        ]
-    }
     try {
         def result = configuration.incoming.resolutionResult
         result.allComponents.each { component ->
@@ -73,17 +66,33 @@ def describe = { configuration, String id, String kind ->
     entry
 }
 
-def projectConfigurations = { String projectPath, buildscriptConfigurations, configurations ->
+// allDependencies: what this configuration declares and inherits (compileClasspath gets implementation's).
+def declare = { configuration, Map entry ->
+    configuration.allDependencies.withType(ExternalModuleDependency).each { dependency ->
+        def constraint = dependency.versionConstraint
+        entry.declared << [
+            group  : dependency.group,
+            name   : dependency.name,
+            version: dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null,
+            reason : dependency.reason,
+        ]
+    }
+    entry
+}
+
+// A project's resolvable configurations, resolved: [configuration, entry] pairs for `declare`.
+def resolveProject = { String projectPath, buildscriptConfigurations, configurations ->
     def prefix = projectPath == ":" ? ":" : projectPath + ":"
-    def described = []
+    def resolved = []
     buildscriptConfigurations.findAll { it.canBeResolved }.sort { it.name }.each {
-        described << describe(it, prefix + "buildscript." + it.name, "buildscript")
+        resolved << [it, resolveEntry(it, prefix + "buildscript." + it.name, "buildscript")]
     }
     configurations.findAll { it.canBeResolved }.sort { it.name }.each {
-        described << describe(it, prefix + it.name, "project")
+        resolved << [it, resolveEntry(it, prefix + it.name, "project")]
     }
-    described
+    resolved
 }
+def declareProject = { resolved -> resolved.collect { configuration, entry -> declare(configuration, entry) } }
 
 // One file per (build, project), named so no two can collide.
 def write = { String build, String project, Map content ->
@@ -95,7 +104,7 @@ settingsEvaluated { settings ->
     def label = relativeToRequested(settings.rootDir)
     gradle.ext.supplyChainBuild = label
     def classpath = settings.buildscript.configurations.findByName("classpath")
-    write(label, "settings", [configurations: classpath == null ? [] : [describe(classpath, "settings.classpath", "settings")]])
+    write(label, "settings", [configurations: classpath == null ? [] : [declare(classpath, resolveEntry(classpath, "settings.classpath", "settings"))]])
 }
 
 gradle.projectsEvaluated { evaluated ->
@@ -105,23 +114,34 @@ gradle.projectsEvaluated { evaluated ->
     if (buildSrc.isDirectory()) nested << relativeToRequested(buildSrc)
     write(label, "manifest", [manifest: [projects: evaluated.rootProject.allprojects.collect { it.path }.sort(), nestedBuilds: nested.unique().sort()]])
     if (evaluated.parent != null) {
+        // allprojects(Action) runs in each project's context, which resolving needs (its lock).
+        def resolved = [:]
         evaluated.rootProject.allprojects { project ->
-            write(label, project.path, [configurations: projectConfigurations(project.path, project.buildscript.configurations, project.configurations)])
+            resolved[project.path] = resolveProject(project.path, project.buildscript.configurations, project.configurations)
         }
+        resolved.each { path, configurations -> write(label, path, [configurations: declareProject(configurations)]) }
     }
 }
 
 if (gradle.parent == null) {
+    // Each project resolves in its own task (a configuration resolves in its project's context), and every one of those
+    // runs before any project reads its declarations.
+    def resolvedByProject = new java.util.concurrent.ConcurrentHashMap()
     allprojects { project ->
-        // Captured at configuration time: the task action doesn't touch Task.project.
+        // Captured at configuration time: the task actions don't touch Task.project.
         def projectPath = project.path
         def configurations = project.configurations
         def buildscriptConfigurations = project.buildscript.configurations
+        def everyResolve = project.rootProject.allprojects.collect { it.path == ":" ? ":supplyChainResolve" : it.path + ":supplyChainResolve" }
+        def resolve = project.tasks.register("supplyChainResolve") {
+            description = "Resolves every resolvable configuration for the supply-chain gate's inventory."
+            doLast { resolvedByProject[projectPath] = resolveProject(projectPath, buildscriptConfigurations, configurations) }
+        }
         project.tasks.register("supplyChainInventory") {
             description = "Exports the resolved dependencies of every resolvable configuration for the supply-chain gate."
-            doLast {
-                write(".", projectPath, [configurations: projectConfigurations(projectPath, buildscriptConfigurations, configurations)])
-            }
+            dependsOn resolve
+            mustRunAfter everyResolve
+            doLast { write(".", projectPath, [configurations: declareProject(resolvedByProject[projectPath])]) }
         }
     }
 }
