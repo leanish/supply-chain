@@ -26,26 +26,29 @@
   what had resolved first; verification then saw them appear "from nothing".
   What resolves is unchanged, so are the gate's findings; the tools see more
   declarations, and those plugins add go to bump-it's notes.
-- A planned plugin update's own fallout may also add or remove declarations
-  (a convention plugin's new version adding Lombok, the Kotlin DSL plugin
-  changing its compiler plugins), not only move versions, under the same proof:
-  nothing but the planned version swaps changed. secure-it's verification uses
-  that proof too, so a security fix that updates a plugin no longer fails on
-  what the plugin brings; a fix that also adds a floor still keeps the strict
-  checks.
 - The gate requires every locked npm package's tarball to be its own: on the
   npm registry exactly `<name>/-/<unscoped name>-<version>.tgz` (elsewhere the
   full scoped name followed by that tarball or the exact version, as GitHub
   Packages serves it). Before, a lockfile could keep
   `safe@1.0.0` while fetching another package's tarball with that archive's
   integrity, and neither the comparison nor the signature audit noticed.
-- Verification compares every declaration of an unplanned Gradle dependency in
-  a configuration, not only the last one read, so an unplanned change to one
-  of two declarations of the same package is caught. secure-it also requires
-  each planned configuration to declare exactly what base did with the fix
-  applied (`from` declared as `to`, or a floor's `to` added), and a planned
-  package to stay unchanged where it isn't planned: an extra declaration
-  overriding the selected target no longer passes.
+- Both tools verify a Gradle edit against a reference: the base with the plan
+  applied by Gradle itself (each planned declaration moved in place, a strict
+  version staying strict and its rejects kept; each floor added through a
+  parent next to the configuration's own dependencies; for a floor removal, the
+  floors removed), in one more sandboxed inventory run. The plan must have
+  landed in the reference, and the edit must resolve and declare exactly what
+  the reference does, configuration by configuration, every declaration
+  counted, versionless ones included. Before, verification compared
+  declarations with the base, so an edit outside the plan that changed what
+  resolves without changing a declaration (a `constraints` block, a forced
+  version, a resolution rule or substitution) passed, as did adding or removing
+  a declaration without a version. A planned plugin update's fallout is in the
+  reference, because the reference runs the new plugin: a plugin a
+  `buildSrc`/`build-logic` build adds as an ordinary dependency, or a plugin
+  fix next to a floor in the same secure-it batch, no longer fails on what the
+  plugin adds, and the version-swap proof (with its file-mode check) is gone. A
+  change that alters neither what resolves nor what's declared isn't seen.
 - secure-it fixes a vulnerable dependency a Gradle plugin declares (java-conventions'
   Guava, Commons Lang or Plexus Utils in a consumer) with a floor, as it does a
   transitive one: an explicit dependency with `because(...)` next to the

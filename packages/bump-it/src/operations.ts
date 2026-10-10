@@ -8,6 +8,7 @@ import type { GateEnvironment, GradleInputs } from "../../ci/src/gate.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import type { ToolRunContext } from "../../remediation/src/command.ts";
+import { referenceTransform } from "../../remediation/src/gradle-reference.ts";
 import { type GradleInventories, lockfilesOf } from "../../remediation/src/inventories.ts";
 import { branchFor, ownPullRequests, topicOf } from "../../remediation/src/own-pr.ts";
 import { clearLeftoverBranch, type PublicationContext, type PullRequestContent } from "../../remediation/src/publication.ts";
@@ -20,6 +21,7 @@ import { formatManifest } from "./manifest-format.ts";
 import { coupledUnit, constrainedPeers } from "./peers.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, planFor, planSection } from "./plan.ts";
 import type { Unit } from "./units.ts";
+import { referenceMoves } from "./verify.ts";
 
 export const RULES = ownPullRequests("bump-it");
 
@@ -118,6 +120,11 @@ export async function verify(execution: Execution, computed: Computed): Promise<
   // Inventory executes repository code: capture all wrapper hashes after that build has finished.
   const gradle = { base: computed.gradle, head: await inventories.ofWorkingTree(head) };
   const changedFiles = await deps.changedSince(context.workingCopy, computed.base.id);
+  // The base with the plan applied by Gradle (and its generated wrapper): the base itself when the plan moves nothing there.
+  const moves = referenceMoves(computed.plan);
+  const wrapper = computed.wrapperFiles ?? [];
+  const reference = moves.length === 0 && wrapper.length === 0 ? computed.gradle
+    : await inventories.ofCommit(computed.base, { transform: referenceTransform(moves, []), overlay: wrapper.map(({ path, bytes, executable }) => ({ path, bytes, executable })) });
   const problems = await deps.verify({
     plan: computed.plan,
     npmFiles: computed.files,
@@ -128,8 +135,8 @@ export async function verify(execution: Execution, computed: Computed): Promise<
     wrapperFiles: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.readWrapperFiles(context.workingCopy) : undefined,
     wrapperJarSha256: computed.plan.moves.some((move) => move.mechanism === "gradle-wrapper") ? await deps.wrapperJarSha256(context.workingCopy) : undefined,
     gradle,
+    reference,
     changedFiles,
-    modeChanged: await deps.modeChangedSince(context.workingCopy, computed.base.id),
   });
   if (problems.length > 0) {
     throw new Error(`verification failed: ${problems.join("; ")}`);

@@ -12,6 +12,7 @@ import type { Tree } from "../../ci/src/tree.ts";
 import { FLOORS_PATH, parseFloors, type Floor } from "../../ci/src/floors.ts";
 import type { WorkingCopy } from "../../agent-basics/src/types/working-copy.ts";
 import type { ToolRunContext } from "../../remediation/src/command.ts";
+import type { GradleTransform } from "../../remediation/src/inventories.ts";
 import { runSandboxed } from "../../remediation/src/sandboxed.ts";
 
 const REMOVE_FLOORS_INIT = fileURLToPath(new URL("../gradle/remove-floors.init.gradle", import.meta.url));
@@ -27,6 +28,12 @@ interface FloorRemoval {
 interface FloorRemovalFile {
   readonly repositoryRoot: string;
   readonly floors: ReadonlyArray<FloorRemoval>;
+}
+
+/** The selected Maven floors removed by Gradle (as `unlockedGradle` does): a floor removal's reference. */
+export function removalTransform(floors: ReadonlyArray<Floor>): GradleTransform {
+  const removed = floors.filter((floor) => floor.ecosystem === "Maven").map(({ package: pkg, version, advisories, locations }) => ({ package: pkg, version, advisories: [...advisories], locations: [...locations] }));
+  return { initScript: REMOVE_FLOORS_INIT, property: FLOOR_FILE_PROPERTY, content: (repositoryRoot): FloorRemovalFile => ({ repositoryRoot, floors: removed }) };
 }
 
 /**

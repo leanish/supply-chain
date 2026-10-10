@@ -7,7 +7,8 @@ import { FLOORS_PATH } from "../../ci/src/floors.ts";
 import { type CooldownEvaluation, heldLines } from "../../ci/src/cooldown.ts";
 import { runCompare } from "../../ci/src/gate.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
-import { actionsOutsidePlan, directChangesOutside, directVersions } from "../../remediation/src/edit-checks.ts";
+import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions } from "../../remediation/src/edit-checks.ts";
+import { referenceDifferences } from "../../remediation/src/gradle-reference.ts";
 
 import { floorFindings, validRemoval, withoutFloorRecords, withoutOverrides } from "./floor-removal.ts";
 import type { VerifyInputs } from "./verify.ts";
@@ -46,10 +47,16 @@ export async function verifyRemovalEdit(inputs: VerifyInputs): Promise<string[]>
   if (!isDeepStrictEqual(otherDeclarations(gradle.base, selected), otherDeclarations(gradle.head, selected))) {
     problems.push("floor-removal changed unrelated Gradle declarations or configurations");
   }
-  const before = await directVersions(base, gradle.base);
-  const after = await directVersions(head, gradle.head);
-  problems.push(...directChangesOutside(before, after, (ecosystem, name, location) => ecosystem === "Maven" &&
-    removal.floors.some((floor) => floor.ecosystem === "Maven" && floor.package === name && floor.locations.includes(location))));
+  problems.push(...directChangesOutside(await directVersions(base), await directVersions(head), () => false));
+  // Gradle: the reference (the base without the selected floors, removed by Gradle) lost each one, and head resolves and
+  // declares exactly what it does.
+  for (const floor of removal.floors.filter((floor) => floor.ecosystem === "Maven")) {
+    for (const location of floor.locations) {
+      const copies = (gradle: GradleInventory | undefined) => declaredAt(gradle, location, floor.package).filter((version) => version === floor.version).length;
+      if (copies(inputs.reference) >= copies(gradle.base)) problems.push(`the plan's reference still declares ${floor.package} ${floor.version} at ${location}`);
+    }
+  }
+  problems.push(...referenceDifferences(inputs.reference, gradle.head));
   if (problems.length > 0) return problems;
   const compared = await runCompare(base, head, inputs.env, gradle);
   return [...compared.failures.map((failure) => `compare: ${failure}`), ...removalCooldownProblems(compared.cooldown), ...removal.floors.flatMap((floor) =>

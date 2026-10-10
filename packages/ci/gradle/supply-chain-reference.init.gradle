@@ -1,0 +1,132 @@
+// Applies a plan to a build programmatically, so its inventory is the reference an edit's must match.
+//
+//   ./gradlew --init-script supply-chain-reference.init.gradle --init-script supply-chain-inventory.init.gradle \
+//     -DsupplyChain.reference.file=<plan.json> -DsupplyChain.out=<dir> ... supplyChainInventory
+//
+// The plan file: { repositoryRoot, moves: [{name, from, to, locations}], floors: [{name, version, reason, locations}] }.
+// A move rewrites, in place and once, each declaration of `name` at `from` (as the inventory reads its version) that
+// a configuration at one of its locations inherits, keeping the version's form (strictly, require or prefer) and its
+// rejects: what editing that declaration's version does. Every resolvable configuration the declaration reaches must
+// be one of the move's locations, or the run fails (the reference would let unplanned locations move). A plugins-DSL
+// plugin is its marker's declaration on the buildscript classpath, so the reference runs the new plugin, with its own
+// fallout. A floor adds `name:version` with `because(reason)` at each of its locations, through a parent that is
+// neither resolvable nor consumable (defaults such as Checkstyle's still apply). Locations are the inventory's
+// (`<build>/` prefix outside the requested build). The caller checks the reference's inventory shows every move and
+// floor at every location: a reference that skipped part of the plan, or that a build reset, proves nothing.
+
+import groovy.json.JsonSlurper
+import org.gradle.api.artifacts.ExternalModuleDependency
+
+def planPath = System.getProperty("supplyChain.reference.file")
+if (planPath == null || planPath.isEmpty()) throw new GradleException("supply-chain reference: pass -DsupplyChain.reference.file=<file>")
+def plan = new JsonSlurper().parse(new File(planPath))
+def text = { value -> value instanceof String && !value.isEmpty() }
+def texts = { value -> value instanceof List && !value.isEmpty() && value.every(text) }
+if (!(plan instanceof Map) || !text(plan.repositoryRoot) || !(plan.moves instanceof List) || !(plan.floors instanceof List)) {
+    throw new GradleException("supply-chain reference: malformed plan file")
+}
+plan.moves.each { move ->
+    if (!(move instanceof Map) || !text(move.name) || !text(move.from) || !text(move.to) || !texts(move.locations)) throw new GradleException("supply-chain reference: malformed move")
+}
+plan.floors.each { floor ->
+    if (!(floor instanceof Map) || !text(floor.name) || !text(floor.version) || !text(floor.reason) || !texts(floor.locations)) throw new GradleException("supply-chain reference: malformed floor")
+}
+def repositoryRoot = new File(plan.repositoryRoot).canonicalFile.toPath()
+def buildLabel = { File rootDir ->
+    def relative = repositoryRoot.relativize(rootDir.canonicalFile.toPath()).toString()
+    relative.isEmpty() ? "." : relative.replace(File.separatorChar, '/' as char)
+}
+def location = { String build, String configuration -> build == "." ? configuration : "${build}/${configuration}" }
+def projectPrefix = { String projectPath -> projectPath == ":" ? ":" : "${projectPath}:" }
+
+// This build's configurations by location (each build runs its own copy of this script), and the declarations moved.
+def registered = new java.util.concurrent.ConcurrentHashMap()
+def moved = Collections.newSetFromMap(new IdentityHashMap())
+
+def declaredVersion = { ExternalModuleDependency dependency ->
+    def constraint = dependency.versionConstraint
+    dependency.version ?: constraint.strictVersion ?: constraint.requiredVersion ?: constraint.preferredVersion ?: null
+}
+// One plain form only (strictly, require or prefer `from`), rejects kept; anything richer can't be moved faithfully.
+def rewrite = { ExternalModuleDependency dependency, String from, String to ->
+    def was = dependency.versionConstraint
+    def rejects = [*was.rejectedVersions]
+    def strict = was.strictVersion ?: null
+    def required = was.requiredVersion ?: null
+    def preferred = was.preferredVersion ?: null
+    def form = strict == from && required == from && preferred == null ? "strictly"
+        : strict == null && required == from && preferred == null ? "require"
+        : strict == null && required == null && preferred == from ? "prefer"
+        : null
+    if (form == null || was.branch != null) throw new GradleException("supply-chain reference: can't move ${dependency.group}:${dependency.name}'s ${was.displayName} faithfully")
+    dependency.version { version ->
+        version."${form}"(to)
+        if (!rejects.isEmpty()) version.reject(*rejects)
+    }
+    def now = dependency.versionConstraint
+    def expected = [form == "strictly" ? to : null, form == "prefer" ? null : to, form == "prefer" ? to : null, rejects]
+    if ([now.strictVersion ?: null, now.requiredVersion ?: null, now.preferredVersion ?: null, [*now.rejectedVersions]] != expected) {
+        throw new GradleException("supply-chain reference: moving ${dependency.group}:${dependency.name} to ${to} gave ${now.displayName}")
+    }
+}
+// In place, before the configuration first resolves (its own declarations; Gradle runs a parent's actions too).
+def applyMoves = { configuration ->
+    configuration.withDependencies { dependencies ->
+        dependencies.withType(ExternalModuleDependency).each { dependency ->
+            if (moved.contains(dependency)) return
+            def matching = plan.moves.findAll { move -> move.name == "${dependency.group}:${dependency.name}" && move.from == declaredVersion(dependency) }
+            def reached = registered.findAll { at, other -> other.canBeResolved && other.hierarchy.contains(configuration) }.keySet()
+            def planned = matching.findAll { move -> move.locations.any { reached.contains(it) } }
+            if (planned.isEmpty()) return
+            if (planned.size() > 1) throw new GradleException("supply-chain reference: several moves for ${planned[0].name} ${planned[0].from}")
+            def move = planned[0]
+            def unplanned = reached.findAll { !move.locations.contains(it) }.sort()
+            if (!unplanned.isEmpty()) throw new GradleException("supply-chain reference: moving ${move.name} ${move.from} would also move it at ${unplanned.join(", ")}")
+            rewrite(dependency, move.from, move.to)
+            moved.add(dependency)
+        }
+    }
+}
+
+// The floors' parents, created with their container (not from its callbacks) for the locations directly under `scope`
+// (`<build>/<project prefix>`, or with `buildscript.` or `settings.` after it).
+def floorParents = [:]
+def createFloorParents = { configurations, String scope, dependencyHandler ->
+    def under = { String configLocation ->
+        def name = configLocation.startsWith(scope) ? configLocation.substring(scope.length()) : ":"
+        !name.contains(":") && (scope.endsWith(".") || !name.startsWith("buildscript."))
+    }
+    plan.floors.collectMany { it.locations }.unique().findAll(under).each { configLocation ->
+        def parent = configurations.create("supplyChainReferenceFloors${floorParents.size()}") {
+            canBeResolved = false
+            canBeConsumed = false
+        }
+        plan.floors.findAll { it.locations.contains(configLocation) }.each { floor ->
+            parent.dependencies.add(dependencyHandler.create("${floor.name}:${floor.version}") { because(floor.reason) })
+        }
+        floorParents[configLocation] = parent
+    }
+}
+def ours = { configuration -> configuration.name.startsWith("supplyChainReference") }
+def register = { configuration, String configLocation ->
+    registered[configLocation] = configuration
+    applyMoves(configuration)
+    if (floorParents.containsKey(configLocation)) configuration.extendsFrom(floorParents[configLocation])
+}
+
+gradle.beforeSettings { settings ->
+    def build = buildLabel(settings.rootDir)
+    def configurations = settings.buildscript.configurations
+    createFloorParents(configurations, location(build, "settings."), settings.buildscript.dependencies)
+    configurations.matching { !ours(it) }.configureEach { register(it, location(build, "settings.${it.name}")) }
+}
+
+gradle.beforeProject { project ->
+    def build = buildLabel(project.rootProject.projectDir)
+    def prefix = projectPrefix(project.path)
+    def buildscript = project.buildscript.configurations
+    createFloorParents(buildscript, location(build, "${prefix}buildscript."), project.buildscript.dependencies)
+    createFloorParents(project.configurations, location(build, prefix), project.dependencies)
+    buildscript.matching { !ours(it) }.configureEach { register(it, location(build, "${prefix}buildscript.${it.name}")) }
+    project.configurations.matching { !ours(it) }.configureEach { register(it, location(build, "${prefix}${it.name}")) }
+}

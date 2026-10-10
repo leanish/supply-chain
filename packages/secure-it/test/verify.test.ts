@@ -7,7 +7,7 @@ import { runProcess, type RunProcess } from "../../ci/src/process.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { fakeFetch } from "../../ci/test/fake-fetch.ts";
 import type { ChangePlan } from "../src/plan.ts";
-import { verifyPlan } from "../src/verify.ts";
+import { referencePlan, verifyPlan } from "../src/verify.ts";
 
 const NOW = new Date("2026-10-07T12:00:00Z");
 const OLD = "2026-01-01T00:00:00Z";
@@ -62,7 +62,7 @@ const BASE = tree("b".repeat(40), { "package-lock.json": lock({ lib: "^1.0.0", o
 const AFFECTED = { "lib@1.0.0": ["GHSA-a"] };
 
 async function verify(headLock: string, options: { affected?: Record<string, string[]>; changed?: string[] } = {}) {
-  return verifyPlan({ modeChanged: [],
+  return verifyPlan({ reference: undefined,
     plan: PLAN,
     base: BASE,
     head: tree("worktree", { "package-lock.json": headLock }),
@@ -111,7 +111,7 @@ async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
     ...npmRoutes("nanoid", { "3.3.12": OLD, "3.3.16": "2026-09-01T00:00:00Z", "3.3.18": "2026-09-01T00:00:00Z", "3.3.19": options.published ?? "2026-09-02T00:00:00Z" }, { "3.3.19": options.publisher ?? "maintainer" }),
   };
   const affected = { "postcss@8.5.22": ["GHSA-postcss"], ...(options.newAdvisory ? { "nanoid@3.3.19": ["GHSA-induced"] } : {}) };
-  return verifyPlan({ modeChanged: [],
+  return verifyPlan({ reference: undefined,
     plan: coupled,
     base: tree("b".repeat(40), { "package-lock.json": postcssLock("8.5.22", "3.3.12", options.direct ?? false) }),
     head: tree("worktree", { "package-lock.json": postcssLock("8.5.23", options.nanoid ?? "3.3.19", options.direct ?? false) }),
@@ -124,7 +124,7 @@ describe("verifyPlan", () => {
     const env = environment({ "lib@1.0.0": ["GHSA-a"], "lib@1.0.1": ["GHSA-a"] });
     const run = env.run;
     let snapshots = 0;
-    const problems = await verifyPlan({ modeChanged: [], plan: PLAN, base: BASE, head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
+    const problems = await verifyPlan({ reference: undefined, plan: PLAN, base: BASE, head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
       env: { ...env, run: async (command, args, options) => { if (args.includes("--lockfile")) snapshots++; return run(command, args, options); } }, gradle: {}, changedFiles: ["package-lock.json"] });
     expect(problems).toContain("lib@1.0.1 still has GHSA-a, which the plan was to fix");
     expect(snapshots).toBe(1);
@@ -174,7 +174,7 @@ describe("verifyPlan", () => {
 
   it("rejects a change to the gate's own policy first, even for a major", async () => {
     const majorPlan: ChangePlan = { ...PLAN, moves: PLAN.moves.map((move) => ({ ...move, major: true })) };
-    const problems = await verifyPlan({ modeChanged: [],
+    const problems = await verifyPlan({ reference: undefined,
       plan: majorPlan,
       base: BASE,
       head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
@@ -185,81 +185,44 @@ describe("verifyPlan", () => {
     expect(problems).toEqual(["the edit changed .github/supply-chain-exceptions.json, .github/workflows/ci.yml: the gate's own policy, which no plan may change"]);
   });
 
-  it("requires a Gradle move to be declared at exactly `to`, a higher resolution allowed only next to that declaration", async () => {
-    const config = (declared: string, resolved: string) => ({
-      tree: "worktree",
-      builds: [
-        {
-          build: ".",
-          configurations: [
-            {
-              id: ":runtimeClasspath",
-              kind: "project",
-              resolved: [{ group: "g", name: "lib", version: resolved }],
-              unresolved: [],
-              declared: [{ group: "g", name: "lib", version: declared, reason: undefined }],
-              error: undefined,
-            },
-          ],
-        },
-      ],
-    });
-    const plan: ChangePlan = {
-      topic: "g:lib",
-      malware: false,
-      packages: ["Maven|g:lib"],
-      severity: "HIGH",
-      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0", to: "1.1", mechanism: "gradle-declared", locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
-    };
-    const settings = tree("b".repeat(40), { "settings.gradle": "" });
-    const verifyWith = (declared: string, resolved: string) =>
-      verifyPlan({ modeChanged: [],
-        plan,
-        base: settings,
-        head: tree("worktree", { "settings.gradle": "" }),
-        env: environment({}),
-        gradle: { base: config("1.0", "1.0") as never, head: config(declared, resolved) as never },
-        changedFiles: ["build.gradle.kts"],
-      });
-    const overshoot = await verifyWith("1.2", "1.2");
-    expect(overshoot).toContain(":runtimeClasspath declares g:lib 1.2 (was 1.0), not just one version declared as 1.1");
-    const resolvedHigher = await verifyWith("1.1", "1.2");
-    // Only the landing checks here (compare can't date g:lib in this fake registry).
-    expect(resolvedHigher.filter((problem) => !problem.startsWith("compare:"))).toEqual([]);
-  });
-
-  it("lets a planned plugin fix's own fallout through only when nothing but the planned swaps changed", async () => {
-    const marker = { group: "fixture.plugin", name: "fixture.plugin.gradle.plugin" };
-    const inventory = (plugin: string, added: boolean) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
-      { id: ":buildscript.classpath", kind: "buildscript", resolved: [{ ...marker, version: plugin }], unresolved: [], declared: [{ ...marker, version: plugin, reason: undefined }], error: undefined },
-      { id: ":compileClasspath", kind: "project", resolved: [], unresolved: [], declared: added ? [{ group: "g", name: "added", version: "1.0", reason: undefined }] : [], error: undefined },
+  it("requires head to resolve and declare what the plan's reference does, a higher resolution included when the reference has it", async () => {
+    const config = (declared: string, resolved: string) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":runtimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], declared: [{ group: "g", name: "lib", version: declared, reason: undefined }], error: undefined },
     ] }] });
     const plan: ChangePlan = {
-      topic: "fixture.plugin",
-      malware: false,
-      packages: [`Maven|${marker.group}:${marker.name}`],
-      severity: "HIGH",
-      moves: [{ ecosystem: "Maven", name: `${marker.group}:${marker.name}`, from: "2.0", to: "2.1", mechanism: "gradle-declared", locations: [":buildscript.classpath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+      topic: "g:lib", malware: false, packages: ["Maven|g:lib"], severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0", to: "1.1", mechanism: "gradle-declared", locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
     };
-    const script = (version: string, extra = "") => `plugins { id("fixture.plugin") version "${version}" }\n${extra}`;
-    const run = (head: Record<string, string>, options: { changed?: string[]; modes?: string[] } = {}) => verifyPlan({
-      plan,
-      base: tree("b".repeat(40), { "build.gradle.kts": script("2.0") }),
-      head: tree("worktree", head),
-      env: environment({}),
-      gradle: { base: inventory("2.0", false) as never, head: inventory("2.1", true) as never },
-      changedFiles: options.changed ?? ["build.gradle.kts"],
-      modeChanged: options.modes ?? [],
-    });
-    // The landing and outside-plan checks only (compare can't date these in the fake registry).
-    const local = async (result: Promise<string[]>) => (await result).filter((problem) => !problem.startsWith("compare:"));
-    expect(await local(run({ "build.gradle.kts": script("2.1") }))).toEqual([]);
-    expect(await local(run({ "build.gradle.kts": script("2.1", 'dependencies { implementation("g:added:1.0") }') }))).toContainEqual(expect.stringContaining("g:added"));
-    expect(await local(run({ "build.gradle.kts": script("2.1"), "gradle.properties": "x=1" }, { changed: ["build.gradle.kts", "gradle.properties"] }))).toContainEqual(expect.stringContaining("g:added"));
-    expect(await local(run({ "build.gradle.kts": script("2.1") }, { modes: ["build.gradle.kts"] }))).toContainEqual(expect.stringContaining("g:added"));
+    const verifyWith = (reference: [string, string], head: [string, string]) => verifyPlan({
+      plan, base: tree("b".repeat(40), { "settings.gradle": "" }), head: tree("worktree", { "settings.gradle": "" }), env: environment({}),
+      gradle: { base: config("1.0", "1.0") as never, head: config(...head) as never }, reference: config(...reference) as never, changedFiles: ["build.gradle.kts"],
+    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
+    expect(await verifyWith(["1.1", "1.1"], ["1.1", "1.1"])).toEqual([]);
+    expect(await verifyWith(["1.1", "1.1"], ["1.2", "1.2"])).toContain(":runtimeClasspath, unlike the plan's reference, also declares g:lib 1.2 and no longer declares g:lib 1.1");
+    // Another path requiring more: the reference resolves it too.
+    expect(await verifyWith(["1.1", "1.2"], ["1.1", "1.2"])).toEqual([]);
+    expect(await verifyWith(["1.0", "1.0"], ["1.0", "1.0"])).toContain("the plan's reference declares g:lib 1.0 at :runtimeClasspath, not 1.1");
   });
 
-  it("compares every declaration of an unplanned package, not only the last of a configuration's", async () => {
+  it("lets a planned plugin fix's own fallout through when the plan's reference shows it", async () => {
+    const marker = { group: "fixture.plugin", name: "fixture.plugin.gradle.plugin" };
+    const inventory = (plugin: string, added: string[]) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":buildscript.classpath", kind: "buildscript", resolved: [{ ...marker, version: plugin }], unresolved: [], declared: [{ ...marker, version: plugin, reason: undefined }], error: undefined },
+      { id: ":compileClasspath", kind: "project", resolved: [], unresolved: [], declared: added.map((name) => ({ group: "g", name, version: "1.0", reason: undefined })), error: undefined },
+    ] }] });
+    const plan: ChangePlan = {
+      topic: "fixture.plugin", malware: false, packages: [`Maven|${marker.group}:${marker.name}`], severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: `${marker.group}:${marker.name}`, from: "2.0", to: "2.1", mechanism: "gradle-declared", locations: [":buildscript.classpath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+    };
+    const run = (head: string[]) => verifyPlan({
+      plan, base: tree("b".repeat(40), { "build.gradle.kts": "" }), head: tree("worktree", { "build.gradle.kts": "" }), env: environment({}),
+      gradle: { base: inventory("2.0", []) as never, head: inventory("2.1", head) as never }, reference: inventory("2.1", ["added"]) as never, changedFiles: ["build.gradle.kts"],
+    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
+    expect(await run(["added"])).toEqual([]);
+    expect(await run(["added", "extra"])).toContainEqual(expect.stringContaining("g:extra"));
+  });
+
+  it("compares every declaration of an unplanned package with the reference, not only the last of a configuration's", async () => {
     const declared = (versions: string[]) => versions.map((version) => ({ group: "g", name: "other", version, reason: undefined }));
     const inventory = (other: string[], lib: string) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
       { id: ":runtimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: lib }], unresolved: [], declared: [{ group: "g", name: "lib", version: lib, reason: undefined }, ...declared(other)], error: undefined },
@@ -270,41 +233,24 @@ describe("verifyPlan", () => {
     };
     const problems = await verifyPlan({
       plan, base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
-      gradle: { base: inventory(["1.0.0", "2.0.0"], "1.0.0") as never, head: inventory(["3.0.0", "2.0.0"], "1.0.1") as never },
-      changedFiles: ["build.gradle"], modeChanged: [],
+      gradle: { base: inventory(["1.0.0", "2.0.0"], "1.0.0") as never, head: inventory(["3.0.0", "2.0.0"], "1.0.1") as never }, reference: inventory(["1.0.0", "2.0.0"], "1.0.1") as never,
+      changedFiles: ["build.gradle"],
     });
-    expect(problems).toContainEqual("g:other changed from 1.0.0, 2.0.0 to 2.0.0, 3.0.0 at :runtimeClasspath, outside the plan");
+    expect(problems).toContain(":runtimeClasspath, unlike the plan's reference, also declares g:other 3.0.0 and no longer declares g:other 1.0.0");
   });
 
-  it("rejects an unplanned declaration of a planned package, where it's planned or elsewhere", async () => {
-    const inventory = (runtime: string[], test: string[], resolved: string) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
-      { id: ":runtimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], declared: runtime.map((version) => ({ group: "g", name: "lib", version, reason: undefined })), error: undefined },
-      { id: ":testRuntimeClasspath", kind: "project", resolved: [{ group: "g", name: "lib", version: resolved }], unresolved: [], declared: test.map((version) => ({ group: "g", name: "lib", version, reason: undefined })), error: undefined },
+  it("moves the one version the base declares (resolved `from` needn't be it), adds floors, and can't pick among several", () => {
+    const inventory = (runtime: Array<string | undefined>) => ({ tree: "worktree", schemaVersion: 1, builds: [{ build: ".", configurations: [
+      { id: ":runtimeClasspath", kind: "project" as const, resolved: [], unresolved: [], declared: runtime.map((version) => ({ group: "g", name: "lib", version, reason: undefined })), error: undefined },
     ] }] });
     const plan = (mechanism: "gradle-declared" | "gradle-floor"): ChangePlan => ({
       topic: "g:lib", malware: false, packages: ["Maven|g:lib"], severity: "HIGH",
-      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0", to: "1.1", mechanism, locations: [":runtimeClasspath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+      moves: [{ ecosystem: "Maven", name: "g:lib", from: "1.0.2", to: "1.0.3", mechanism, locations: [":runtimeClasspath"], advisories: ["GHSA-1"], major: false, commitSha: undefined, declaredAs: undefined }],
     });
-    const run = (mechanism: "gradle-declared" | "gradle-floor", runtime: string[], test: string[], resolved: string) => verifyPlan({
-      plan: plan(mechanism), base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
-      gradle: { base: inventory(["1.0"], [], "1.0") as never, head: inventory(runtime, test, resolved) as never }, changedFiles: ["build.gradle"], modeChanged: [],
-    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
-    expect(await run("gradle-declared", ["1.1"], [], "1.1")).toEqual([]);
-    expect(await run("gradle-declared", ["1.1", "9.0"], [], "9.0")).toContain(":runtimeClasspath declares g:lib 1.1, 9.0 (was 1.0), not just one version declared as 1.1");
-    // A floor goes next to the plugin's own declaration, and nothing else may join it.
-    expect(await run("gradle-floor", ["1.0", "1.1"], [], "1.1")).toEqual([]);
-    expect(await run("gradle-floor", ["1.0", "1.1", "9.0"], [], "9.0")).toContain(":runtimeClasspath declares g:lib 1.0, 1.1, 9.0 (was 1.0), not just 1.1 added");
-    // `from` is what resolved, which a declaration needn't say: the declared 1.0 resolving 1.0.2 moves to the target,
-    // and leaving it while something else forces a higher version isn't the planned move.
-    const resolvedFrom = (runtime: string[], resolved: string) => verifyPlan({
-      plan: { ...plan("gradle-declared"), moves: [{ ...plan("gradle-declared").moves[0]!, from: "1.0.2", to: "1.0.3" }] },
-      base: tree("b".repeat(40), { "build.gradle": "" }), head: tree("worktree", { "build.gradle": "" }), env: environment({}),
-      gradle: { base: inventory(["1.0"], [], "1.0.2") as never, head: inventory(runtime, [], resolved) as never }, changedFiles: ["build.gradle"], modeChanged: [],
-    }).then((problems) => problems.filter((problem) => !problem.startsWith("compare:")));
-    expect(await resolvedFrom(["1.0.3"], "1.0.3")).toEqual([]);
-    expect(await resolvedFrom(["1.0"], "9.0")).toContainEqual(expect.stringContaining("not just one version declared as 1.0.3"));
-    // Where the package isn't planned, any change is outside the plan.
-    expect(await run("gradle-declared", ["1.1"], ["9.0"], "1.1")).toContainEqual(expect.stringContaining("at :testRuntimeClasspath, outside the plan"));
+    expect(referencePlan(plan("gradle-declared"), inventory(["1.0", undefined]))).toEqual({ moves: [{ name: "g:lib", from: "1.0", to: "1.0.3", locations: [":runtimeClasspath"] }], floors: [], problems: [] });
+    expect(referencePlan(plan("gradle-floor"), inventory(["1.0"]))).toEqual({ moves: [], floors: [{ name: "g:lib", version: "1.0.3", reason: "GHSA-1", locations: [":runtimeClasspath"] }], problems: [] });
+    expect(referencePlan(plan("gradle-declared"), inventory(["1.0", "2.0"])).problems).toEqual(["g:lib is declared at 1.0, 2.0 across :runtimeClasspath: not one version to move to 1.0.3"]);
+    expect(referencePlan(plan("gradle-declared"), inventory([undefined])).problems).toHaveLength(1);
   });
 
   it("rejects an action use that changed outside the plan", async () => {
@@ -316,7 +262,7 @@ describe("verifyPlan", () => {
       severity: "HIGH",
       moves: [],
     };
-    const problems = await verifyPlan({ modeChanged: [],
+    const problems = await verifyPlan({ reference: undefined,
       plan: actionPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("a".repeat(40)) }),
       head: tree("worktree", { ".github/workflows/ci.yml": workflow("c".repeat(40)) }),
@@ -343,7 +289,7 @@ describe("verifyPlan", () => {
       moves: [{ ecosystem: "GitHub Actions", name: "actions/checkout", from: "v4.2.2", to: "v4.2.3", mechanism: "action-pin", locations: [".github/workflows/ci.yml"], advisories: [], major: false, commitSha: pin, declaredAs: undefined }],
     };
     const verifyWith = (trigger: string) =>
-      verifyPlan({ modeChanged: [],
+      verifyPlan({ reference: undefined,
         plan: pinPlan,
         base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("[push, pull_request]", old, "v4.2.2") }),
         head: tree("worktree", { ".github/workflows/ci.yml": workflow(trigger, pin, "v4.2.3") }),
@@ -359,7 +305,7 @@ describe("verifyPlan", () => {
     // A line inside a block scalar that only looks like a `uses:` isn't masked: changing it is a policy change.
     const withScript = (line: string, ref: string, tag: string) =>
       `on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@${ref} # ${tag}\n      - run: |\n          ${line}\n`;
-    const script = await verifyPlan({ modeChanged: [],
+    const script = await verifyPlan({ reference: undefined,
       plan: pinPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": withScript("echo hi", old, "v4.2.2") }),
       head: tree("worktree", { ".github/workflows/ci.yml": withScript("uses: actions/checkout@$(touch${IFS}/tmp/pwn)", pin, "v4.2.3") }),
@@ -371,7 +317,7 @@ describe("verifyPlan", () => {
 
     // The pin may change the ref and comment, never which reusable workflow it calls.
     const reusable = (path: string, ref: string, tag: string) => `on: push\njobs:\n  gate:\n    uses: actions/checkout/.github/workflows/${path}@${ref} # ${tag}\n`;
-    const subpath = await verifyPlan({ modeChanged: [],
+    const subpath = await verifyPlan({ reference: undefined,
       plan: pinPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": reusable("gate.yml", old, "v4.2.2") }),
       head: tree("worktree", { ".github/workflows/ci.yml": reusable("deploy.yml", pin, "v4.2.3") }),

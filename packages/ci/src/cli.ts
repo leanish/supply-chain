@@ -4,7 +4,7 @@
  *
  *   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
  *   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
- *   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
+ *   supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>] [--init-script <file> --define <key>=<value>]
  *   supply-chain candidates --rule security|bump [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--out <file>]
  *   supply-chain cooldown --report <file> --head <sha>
  *
@@ -51,7 +51,7 @@ const USAGE = `usage:
   supply-chain compare --base <rev> [--head <rev>] [--base-gradle <file>] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain scan [--head <rev> | --head worktree] [--head-gradle <file>] [--repo <dir>] [--report <file>]
   supply-chain cooldown --report <file> --head <sha>
-  supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>]
+  supply-chain gradle-inventory --out <file> [--head worktree] [--repo <dir>] [--init-script <file> --define <key>=<value>]
   supply-chain npm-signatures [--repo <dir>]
   supply-chain rescan-plan --github-repo <owner/repo> --out <file> [--pr <number>]
   supply-chain rescan --github-repo <owner/repo> --plan <file> --inventories <dir> --context <name> --cooldown-context <name> --started-at <iso> [--repo <dir>] [--reports <dir>] [--target-url <url>]`;
@@ -74,6 +74,8 @@ interface Options {
   "cooldown-context"?: string;
   "started-at"?: string;
   "target-url"?: string;
+  "init-script"?: string;
+  define?: string;
 }
 
 export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process.env): Promise<number> {
@@ -100,6 +102,8 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
         "cooldown-context": { type: "string" },
         "started-at": { type: "string" },
         "target-url": { type: "string" },
+        "init-script": { type: "string" },
+        define: { type: "string" },
       },
       strict: true,
     }));
@@ -108,7 +112,7 @@ export async function main(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv =
     return 2;
   }
   const repo = resolve(values.repo ?? process.cwd());
-  if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out, values.head);
+  if (command === "gradle-inventory" && values.out !== undefined) return gradleInventoryCommand(repo, values.out, values.head, values["init-script"], values.define);
   if (command === "npm-signatures") return npmSignaturesCommand(repo);
   if (command === "cooldown") return cooldownCommand(values, env);
   if (command === "candidates") return candidatesCommand(values, env, repo);
@@ -264,10 +268,18 @@ async function gradleInput(
   throw new Error(`${tree.id} has Gradle builds: make its inventory with \`gradle-inventory\` on a checkout and pass it with --${side}-gradle`);
 }
 
-/** Runs the Gradle inventory on the checkout at `repo` (clean, at its HEAD commit, or its working tree) and writes it to `out`. */
-async function gradleInventoryCommand(repo: string, out: string, which: string | undefined): Promise<number> {
+/**
+ * Runs the Gradle inventory on the checkout at `repo` (clean, at its HEAD commit, or its working tree) and writes it to
+ * `out`; with `initScript`, that script runs first, given the Gradle system property `define` (`key=value`).
+ */
+async function gradleInventoryCommand(repo: string, out: string, which: string | undefined, initScript: string | undefined, define: string | undefined): Promise<number> {
   try {
     if (which !== undefined && which !== "worktree") throw new Error(`gradle-inventory inventories HEAD or, with --head worktree, the working tree; got --head ${which}`);
+    if ((initScript === undefined) !== (define === undefined) || (define !== undefined && !/^[\w.]+=./.test(define))) {
+      throw new Error("gradle-inventory takes --init-script and --define <key>=<value> together");
+    }
+    const [key, ...value] = define?.split("=") ?? [];
+    const options = initScript === undefined ? {} : { additionalInitScripts: [resolve(initScript)], systemProperties: { [key!]: value.join("=") } };
     // The working tree as it is (an edit not committed yet, for secure-it and bump-it), or the checkout's clean HEAD.
     const head = which === "worktree" ? workingTree(repo) : await gitTree(repo, "HEAD", runProcess);
     if (which === undefined) {
@@ -282,7 +294,7 @@ async function gradleInventoryCommand(repo: string, out: string, which: string |
       console.log(`gradle-inventory: ${head.id} has no Gradle builds; nothing written`);
       return 0;
     }
-    const inventory = await runGradleInventory(repo, builds, head.id, runProcess);
+    const inventory = await runGradleInventory(repo, builds, head.id, runProcess, options);
     await writeFile(out, `${JSON.stringify(inventory)}\n`);
     console.log(`gradle-inventory: ${inventory.builds.length} build(s) of ${head.id} written to ${out}`);
     return 0;

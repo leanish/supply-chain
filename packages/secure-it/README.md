@@ -47,9 +47,9 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
 6. **The tool resolves npm; the agent applies non-npm moves** (skill [`secure-it`](skills/secure-it/SKILL.md)). It changes code only for a major move, with `majorEffort`.
    npm may resolve transitive changes a planned move requires, under the supplied release-age window and exclusions.
    The tool resolves those versions; the agent never changes npm dependency fields or lockfiles. Direct
-   dependencies outside the plan stay unchanged, except what a planned Gradle plugin fix itself adds, moves or removes
-   in its build when the edit is nothing but the planned version swaps (a floor added alongside is another edit, so it
-   doesn't qualify; [`packages/ci/README.md`](../ci/README.md)). Direct peers selected by code are explicit moves, even when they
+   dependencies outside the plan stay unchanged; in Gradle, the edit must resolve and declare exactly what the plan's
+   reference does (the base with the plan applied by Gradle, so a planned plugin fix's own fallout is in it;
+   [`packages/ci/README.md`](../ci/README.md)). Direct peers selected by code are explicit moves, even when they
    have no advisory themselves. New or purely transitive peers remain npm's resolution under `compare` unless they need the proved exception below.
    When a security target needs a version with no aged satisfier, code proves the registry requirement and pins its
    lowest stable, non-deprecated target exactly. This includes young direct-peer companions and recursive
