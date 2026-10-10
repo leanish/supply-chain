@@ -54,6 +54,9 @@ describe("Gradle inventory files", () => {
     expect(() => parseGradleInventory(broken({ id: ":x", kind: "weird" }), "abc123", ["."])).toThrow("malformed configuration");
     expect(() => parseGradleInventory(broken(configuration(":x", ["com.acme:lib:"])), "abc123", ["."])).toThrow("malformed version");
     expect(() => parseGradleInventory(broken({ ...configuration(":x", []), resolved: "all" }), "abc123", ["."])).toThrow(":x.resolved must be a list");
+    // A project configuration named `buildscript.classpath` would hide the real buildscript classpath.
+    const twice = { ...valid, builds: [{ build: ".", configurations: [{ ...configuration(":buildscript.classpath", []), kind: "buildscript" }, configuration(":buildscript.classpath", ["com.acme:lib:1.0"])] }] };
+    expect(() => parseGradleInventory(twice, "abc123", ["."])).toThrow("Gradle inventory of build . has more than one configuration at :buildscript.classpath");
   });
 
   it("names configurations of other builds by their directory, and reports resolution failures unless ignored", () => {
@@ -151,6 +154,13 @@ describe("running the Gradle inventory", () => {
       return result;
     };
     await expect(runGradleInventory(repo, ["."], "worktree", noSettings)).rejects.toThrow("Gradle inventory of build . wrote no settings output");
+    const twice: RunProcess = async (command, args, options) => {
+      const result = await gradlew(["."], [], [])(command, args, options);
+      const out = args.find((arg) => arg.startsWith("-DsupplyChain.out="))!.slice("-DsupplyChain.out=".length);
+      await writeFile(join(out, `${encodeURIComponent(".|:other")}.json`), JSON.stringify({ schemaVersion: 1, build: ".", project: ":other", configurations: [configuration(":runtimeClasspath", [])] }));
+      return result;
+    };
+    await expect(runGradleInventory(repo, ["."], "worktree", twice)).rejects.toThrow("Gradle inventory of build . has more than one configuration at :runtimeClasspath");
   });
 
   it("fails on a failed Gradle run, a build without output, a missing wrapper or build directory", async () => {

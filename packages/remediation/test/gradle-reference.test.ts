@@ -29,6 +29,19 @@ describe("the plan's Gradle reference", () => {
     expect(referenceProblems(inventory(["2.0.0"]), inventory(["2.0.0"]), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's base has no declaration of g:lib 1.0.0 to move at :runtimeClasspath"]);
   });
 
+  it("requires every other configuration and package of the reference to be the base's: a move reaching beyond the plan shows", () => {
+    const two = (runtime: string, test: string, other = "1.0.0"): GradleInventory => ({ tree: "tree", schemaVersion: 1, builds: [{ build: ".", configurations: [":runtimeClasspath", ":testRuntimeClasspath"].map((id) => ({
+      id, kind: "project" as const, resolved: [], unresolved: [], error: undefined,
+      declared: [{ group: "g", name: "lib", version: id === ":runtimeClasspath" ? runtime : test, reason: undefined }, { group: "g", name: "other", version: other, reason: undefined }],
+    })) }] });
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0"), [move("1.0.0", "1.1.0")], [])).toEqual([]);
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.1.0"), [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference declares g:lib 1.1.0 at :testRuntimeClasspath, not 1.0.0"]);
+    expect(referenceProblems(two("1.0.0", "1.0.0"), two("1.1.0", "1.0.0", "2.0.0"), [move("1.0.0", "1.1.0")], [])).toHaveLength(2);
+    // A configuration only the reference has, declaring something.
+    const extra: GradleInventory = { ...two("1.1.0", "1.0.0"), builds: [...two("1.1.0", "1.0.0").builds, { build: "late", configurations: [inventory(["1.0.0"]).builds[0]!.configurations[0]!] }] };
+    expect(referenceProblems(two("1.0.0", "1.0.0"), extra, [move("1.0.0", "1.1.0")], [])).toEqual(["the plan's reference declares g:lib 1.0.0 at late/:runtimeClasspath, not nothing"]);
+  });
+
   it("requires each floor added in the reference, next to what was declared", () => {
     const floor = { name: "g:lib", version: "1.2.0", reason: "GHSA-test", locations: [":runtimeClasspath"] };
     expect(referenceProblems(inventory(["1.0.0"]), inventory(["1.0.0", "1.2.0"]), [], [floor])).toEqual([]);

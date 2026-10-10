@@ -41,18 +41,25 @@ export function referenceTransform(moves: ReadonlyArray<ReferenceMove>, floors: 
 }
 
 /**
- * Whether the plan landed in the reference everywhere, as the base declared it: at each move's location, exactly its
- * `from`s became `to`; at each floor's, `version` was added. A build that reset a moved version, or a location the
- * reference couldn't move, shows here rather than passing as a reference that changed nothing.
+ * Whether the reference is the base with the plan applied and nothing else, as the base declared it: at every
+ * configuration of either inventory (and every planned one), each package's declarations are the base's with the moves
+ * planned there turning exactly their `from`s into `to` and the floors planned there added. A build that reset a moved
+ * version, a move that reached a configuration it doesn't list (a later consumer, a shared declaration), or a
+ * location the reference couldn't move shows here rather than passing as the plan's reference.
  */
 export function referenceProblems(base: GradleInventory | undefined, reference: GradleInventory | undefined, moves: ReadonlyArray<ReferenceMove>, floors: ReadonlyArray<ReferenceFloor>): string[] {
   const problems: string[] = [];
-  // Every package and location the plan touches, with all its moves and floors there at once.
   const touched = new Map<string, { name: string; location: string }>();
-  for (const { name, locations } of [...moves, ...floors]) {
-    for (const location of locations) touched.set(JSON.stringify([name, location]), { name, location });
+  const touch = (name: string, location: string) => touched.set(JSON.stringify([name, location]), { name, location });
+  for (const inventory of [base, reference]) {
+    for (const build of inventory?.builds ?? []) {
+      for (const configuration of build.configurations) {
+        for (const declared of configuration.declared) touch(`${declared.group}:${declared.name}`, gradleLocation(build.build, configuration.id));
+      }
+    }
   }
-  for (const { name, location } of touched.values()) {
+  for (const { name, locations } of [...moves, ...floors]) for (const location of locations) touch(name, location);
+  for (const { name, location } of [...touched.values()].sort((a, b) => a.location.localeCompare(b.location) || a.name.localeCompare(b.name))) {
     const was = declaredAt(base, location, name);
     const here = moves.filter((move) => move.name === name && move.locations.includes(location));
     for (const move of here.filter((move) => !was.includes(move.from))) problems.push(`the plan's base has no declaration of ${name} ${move.from} to move at ${location}`);

@@ -1,8 +1,8 @@
 /**
  * The reference init script under real Gradle (the pinned wrapper, a local file repository of POM-only modules): a
  * plan applied by Gradle moves declarations in place, keeping a strict version strict, reaches the buildscript
- * classpath, adds floors next to a configuration's defaults, and refuses a move that would reach an unplanned
- * location. Needs a JDK; runs when SUPPLY_CHAIN_GRADLE_TESTS=1.
+ * classpath, adds floors next to a configuration's defaults, and moves a declaration wherever it's inherited (what
+ * the tools then check the plan lists). Needs a JDK; runs when SUPPLY_CHAIN_GRADLE_TESTS=1.
  */
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -122,8 +122,8 @@ dependencies {
     expect(at(inventory, ":defaulted")).toMatchObject({ resolved: ["defaulted-extra:1.0", "defaulted:1.0"], declared: ["defaulted-extra:1.0", "defaulted:1.0"] });
   }, 600_000);
 
-  it("refuses a move that would also reach a location the plan doesn't list", async () => {
+  it("moves a declaration wherever it's inherited, which shows at a configuration the plan doesn't list", async () => {
     const inventory = await reference({ moves: [{ name: "fixture:plain", from: "1.0", to: "2.0", locations: [":runtimeClasspath"] }] });
-    expect(at(inventory, ":runtimeClasspath").error).toMatch(/would also move it at :compileClasspath, :testCompileClasspath, :testRuntimeClasspath/);
+    expect(at(inventory, ":compileClasspath").declared).toContain("plain:2.0");
   }, 600_000);
 });

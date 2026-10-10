@@ -192,9 +192,17 @@ async function readRun(out: string, requested: string): Promise<Map<string, Buil
     if (!settings.has(label)) throw new Error(`Gradle inventory of build ${label} wrote no settings output`);
     const missing = manifest.projects.filter((project) => !projects.get(label)?.has(project));
     if (missing.length > 0) throw new Error(`Gradle inventory of build ${label} has no output for project(s) ${missing.join(", ")}`);
+    rejectDuplicateConfigurations(label, configs);
     builds.set(label, { configurations: configs, nestedBuilds: manifest.nestedBuilds });
   }
   return builds;
+}
+
+/** Two configurations of a build with one id (a project configuration named `buildscript.classpath`, say) would hide one another. */
+function rejectDuplicateConfigurations(build: string, configurations: ReadonlyArray<GradleConfiguration>): void {
+  const ids = configurations.map((configuration) => configuration.id);
+  const twice = ids.filter((id, index) => ids.indexOf(id) !== index);
+  if (twice.length > 0) throw new Error(`Gradle inventory of build ${build} has more than one configuration at ${[...new Set(twice)].sort().join(", ")}`);
 }
 
 function isStrings(value: unknown): value is string[] {
@@ -230,7 +238,9 @@ export function parseGradleInventory(raw: unknown, tree: string, builds: Readonl
       throw new Error("Gradle inventory has a malformed build");
     }
     const build = entry["build"];
-    return { build, configurations: entry["configurations"].map((config) => parseConfiguration(config, build)) };
+    const configurations = entry["configurations"].map((config) => parseConfiguration(config, build));
+    rejectDuplicateConfigurations(build, configurations);
+    return { build, configurations };
   });
   const names = parsed.map((build) => build.build);
   const missing = builds.filter((build) => !names.includes(build));
