@@ -13,9 +13,10 @@
  *      changed, transitives a parent update pulled in included);
  *   2. every planned move landed exactly: npm, the lockfile entry at each
  *      planned location is `to`; Gradle, each planned configuration declares
- *      exactly `to` and resolves it (or above: then the exact declaration shows
- *      Gradle's conflict resolution picked a version another path requires,
- *      which `compare` has judged); Actions, every use in each planned file is
+ *      what base did with `from` declared as `to` (a floor: `to` added), and
+ *      nothing else, and resolves it (or above: then the exact declarations
+ *      show Gradle's conflict resolution picked a version another path
+ *      requires, which `compare` has judged); Actions, every use in each planned file is
  *      pinned to the tag's commit with `# <to>`;
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
@@ -84,7 +85,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   problems.push(...compared.failures.map((failure) => `compare: ${failure}`));
   inputs.cooldown?.(compared.cooldown);
 
-  problems.push(...(await landed(plan, head, gradle.head)));
+  problems.push(...(await landed(plan, head, gradle.base, gradle.head)));
   problems.push(...(await pinsLanded(pins, head)));
 
   const planned = new Set(plan.packages);
@@ -101,7 +102,10 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits);
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  problems.push(...directChangesOutside(before, after, (ecosystem, name, where) => planned.has(`${ecosystem}|${name}`) || ecosystem === "Maven" && driven(name, where)));
+  // A planned Gradle package is exempt only where it's planned (`landed` checks those exactly); npm's are checked by lockfile.
+  const plannedAt = (name: string, where: string) => plan.moves.some((move) => move.ecosystem === "Maven" && move.name === name && move.locations.includes(where));
+  problems.push(...directChangesOutside(before, after, (ecosystem, name, where) =>
+    ecosystem === "Maven" ? plannedAt(name, where) || driven(name, where) : planned.has(`${ecosystem}|${name}`)));
   problems.push(...(await actionsOutsidePlan(pins, base, head)));
 
   if (!plan.moves.some((move) => move.major)) {
@@ -112,7 +116,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   return problems;
 }
 
-async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | undefined): Promise<string[]> {
+async function landed(plan: ChangePlan, head: Tree, baseGradle: GradleInventory | undefined, gradle: GradleInventory | undefined): Promise<string[]> {
   const problems: string[] = [];
   const locks = await lockfilesOf(head);
   for (const move of plan.moves) {
@@ -122,9 +126,14 @@ async function landed(plan: ChangePlan, head: Tree, gradle: GradleInventory | un
         const entry = ((lock ?? {}) as { packages?: Record<string, { version?: string; name?: string }> }).packages?.[key];
         if (entry?.version !== move.to) problems.push(`${move.name} at ${location} is ${entry?.version ?? "gone"}, not ${move.to}`);
       } else if (move.ecosystem === "Maven") {
-        const declared = declaredAt(gradle, location, move.name);
+        // Exactly the planned edit: `from` declared as `to`, or a floor's `to` added next to what was there; nothing else.
+        const was = declaredAt(baseGradle, location, move.name);
+        const expected = (move.mechanism === "gradle-floor" ? [...was, move.to] : was.map((version) => version === move.from ? move.to : version)).sort();
+        const declared = declaredAt(gradle, location, move.name).sort();
         const resolved = resolvedAt(gradle, location, move.name);
-        if (!declared.includes(move.to)) problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : declared.join(", ")}, not ${move.to}`);
+        if (JSON.stringify(declared) !== JSON.stringify(expected)) {
+          problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : declared.join(", ")}, not exactly ${expected.join(", ")}`);
+        }
         if (resolved === undefined) problems.push(`${location} no longer resolves ${move.name}`);
         else if (versionScheme("Maven").compare(resolved, move.to) < 0) problems.push(`${location} resolves ${move.name} ${resolved}, below ${move.to}`);
       }
