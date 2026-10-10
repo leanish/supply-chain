@@ -62,7 +62,7 @@ const BASE = tree("b".repeat(40), { "package-lock.json": lock({ lib: "^1.0.0", o
 const AFFECTED = { "lib@1.0.0": ["GHSA-a"] };
 
 async function verify(headLock: string, options: { affected?: Record<string, string[]>; changed?: string[] } = {}) {
-  return verifyPlan({
+  return verifyPlan({ modeChanged: [],
     plan: PLAN,
     base: BASE,
     head: tree("worktree", { "package-lock.json": headLock }),
@@ -111,7 +111,7 @@ async function verifyInduced(options: InducedOptions = {}): Promise<string[]> {
     ...npmRoutes("nanoid", { "3.3.12": OLD, "3.3.16": "2026-09-01T00:00:00Z", "3.3.18": "2026-09-01T00:00:00Z", "3.3.19": options.published ?? "2026-09-02T00:00:00Z" }, { "3.3.19": options.publisher ?? "maintainer" }),
   };
   const affected = { "postcss@8.5.22": ["GHSA-postcss"], ...(options.newAdvisory ? { "nanoid@3.3.19": ["GHSA-induced"] } : {}) };
-  return verifyPlan({
+  return verifyPlan({ modeChanged: [],
     plan: coupled,
     base: tree("b".repeat(40), { "package-lock.json": postcssLock("8.5.22", "3.3.12", options.direct ?? false) }),
     head: tree("worktree", { "package-lock.json": postcssLock("8.5.23", options.nanoid ?? "3.3.19", options.direct ?? false) }),
@@ -124,7 +124,7 @@ describe("verifyPlan", () => {
     const env = environment({ "lib@1.0.0": ["GHSA-a"], "lib@1.0.1": ["GHSA-a"] });
     const run = env.run;
     let snapshots = 0;
-    const problems = await verifyPlan({ plan: PLAN, base: BASE, head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
+    const problems = await verifyPlan({ modeChanged: [], plan: PLAN, base: BASE, head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
       env: { ...env, run: async (command, args, options) => { if (args.includes("--lockfile")) snapshots++; return run(command, args, options); } }, gradle: {}, changedFiles: ["package-lock.json"] });
     expect(problems).toContain("lib@1.0.1 still has GHSA-a, which the plan was to fix");
     expect(snapshots).toBe(1);
@@ -174,7 +174,7 @@ describe("verifyPlan", () => {
 
   it("rejects a change to the gate's own policy first, even for a major", async () => {
     const majorPlan: ChangePlan = { ...PLAN, moves: PLAN.moves.map((move) => ({ ...move, major: true })) };
-    const problems = await verifyPlan({
+    const problems = await verifyPlan({ modeChanged: [],
       plan: majorPlan,
       base: BASE,
       head: tree("worktree", { "package-lock.json": lock({ lib: "^1.0.1", other: "^1.0.0" }, { lib: "1.0.1", other: "1.0.0" }) }),
@@ -213,7 +213,7 @@ describe("verifyPlan", () => {
     };
     const settings = tree("b".repeat(40), { "settings.gradle": "" });
     const verifyWith = (declared: string, resolved: string) =>
-      verifyPlan({
+      verifyPlan({ modeChanged: [],
         plan,
         base: settings,
         head: tree("worktree", { "settings.gradle": "" }),
@@ -228,6 +228,37 @@ describe("verifyPlan", () => {
     expect(resolvedHigher.filter((problem) => !problem.startsWith("compare:"))).toEqual([]);
   });
 
+  it("lets a planned plugin fix's own fallout through only when nothing but the planned swaps changed", async () => {
+    const marker = { group: "fixture.plugin", name: "fixture.plugin.gradle.plugin" };
+    const inventory = (plugin: string, added: boolean) => ({ tree: "worktree", builds: [{ build: ".", configurations: [
+      { id: ":buildscript.classpath", kind: "buildscript", resolved: [{ ...marker, version: plugin }], unresolved: [], declared: [{ ...marker, version: plugin, reason: undefined }], error: undefined },
+      { id: ":compileClasspath", kind: "project", resolved: [], unresolved: [], declared: added ? [{ group: "g", name: "added", version: "1.0", reason: undefined }] : [], error: undefined },
+    ] }] });
+    const plan: ChangePlan = {
+      topic: "fixture.plugin",
+      malware: false,
+      packages: [`Maven|${marker.group}:${marker.name}`],
+      severity: "HIGH",
+      moves: [{ ecosystem: "Maven", name: `${marker.group}:${marker.name}`, from: "2.0", to: "2.1", mechanism: "gradle-declared", locations: [":buildscript.classpath"], advisories: [], major: false, commitSha: undefined, declaredAs: undefined }],
+    };
+    const script = (version: string, extra = "") => `plugins { id("fixture.plugin") version "${version}" }\n${extra}`;
+    const run = (head: Record<string, string>, options: { changed?: string[]; modes?: string[] } = {}) => verifyPlan({
+      plan,
+      base: tree("b".repeat(40), { "build.gradle.kts": script("2.0") }),
+      head: tree("worktree", head),
+      env: environment({}),
+      gradle: { base: inventory("2.0", false) as never, head: inventory("2.1", true) as never },
+      changedFiles: options.changed ?? ["build.gradle.kts"],
+      modeChanged: options.modes ?? [],
+    });
+    // The landing and outside-plan checks only (compare can't date these in the fake registry).
+    const local = async (result: Promise<string[]>) => (await result).filter((problem) => !problem.startsWith("compare:"));
+    expect(await local(run({ "build.gradle.kts": script("2.1") }))).toEqual([]);
+    expect(await local(run({ "build.gradle.kts": script("2.1", 'dependencies { implementation("g:added:1.0") }') }))).toContainEqual(expect.stringContaining("g:added"));
+    expect(await local(run({ "build.gradle.kts": script("2.1"), "gradle.properties": "x=1" }, { changed: ["build.gradle.kts", "gradle.properties"] }))).toContainEqual(expect.stringContaining("g:added"));
+    expect(await local(run({ "build.gradle.kts": script("2.1") }, { modes: ["build.gradle.kts"] }))).toContainEqual(expect.stringContaining("g:added"));
+  });
+
   it("rejects an action use that changed outside the plan", async () => {
     const workflow = (ref: string) => `on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/cache@${ref} # v4.2.4\n`;
     const actionPlan: ChangePlan = {
@@ -237,7 +268,7 @@ describe("verifyPlan", () => {
       severity: "HIGH",
       moves: [],
     };
-    const problems = await verifyPlan({
+    const problems = await verifyPlan({ modeChanged: [],
       plan: actionPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("a".repeat(40)) }),
       head: tree("worktree", { ".github/workflows/ci.yml": workflow("c".repeat(40)) }),
@@ -264,7 +295,7 @@ describe("verifyPlan", () => {
       moves: [{ ecosystem: "GitHub Actions", name: "actions/checkout", from: "v4.2.2", to: "v4.2.3", mechanism: "action-pin", locations: [".github/workflows/ci.yml"], advisories: [], major: false, commitSha: pin, declaredAs: undefined }],
     };
     const verifyWith = (trigger: string) =>
-      verifyPlan({
+      verifyPlan({ modeChanged: [],
         plan: pinPlan,
         base: tree("b".repeat(40), { ".github/workflows/ci.yml": workflow("[push, pull_request]", old, "v4.2.2") }),
         head: tree("worktree", { ".github/workflows/ci.yml": workflow(trigger, pin, "v4.2.3") }),
@@ -280,7 +311,7 @@ describe("verifyPlan", () => {
     // A line inside a block scalar that only looks like a `uses:` isn't masked: changing it is a policy change.
     const withScript = (line: string, ref: string, tag: string) =>
       `on: push\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@${ref} # ${tag}\n      - run: |\n          ${line}\n`;
-    const script = await verifyPlan({
+    const script = await verifyPlan({ modeChanged: [],
       plan: pinPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": withScript("echo hi", old, "v4.2.2") }),
       head: tree("worktree", { ".github/workflows/ci.yml": withScript("uses: actions/checkout@$(touch${IFS}/tmp/pwn)", pin, "v4.2.3") }),
@@ -292,7 +323,7 @@ describe("verifyPlan", () => {
 
     // The pin may change the ref and comment, never which reusable workflow it calls.
     const reusable = (path: string, ref: string, tag: string) => `on: push\njobs:\n  gate:\n    uses: actions/checkout/.github/workflows/${path}@${ref} # ${tag}\n`;
-    const subpath = await verifyPlan({
+    const subpath = await verifyPlan({ modeChanged: [],
       plan: pinPlan,
       base: tree("b".repeat(40), { ".github/workflows/ci.yml": reusable("gate.yml", old, "v4.2.2") }),
       head: tree("worktree", { ".github/workflows/ci.yml": reusable("deploy.yml", pin, "v4.2.3") }),

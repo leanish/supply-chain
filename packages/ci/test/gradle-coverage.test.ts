@@ -36,6 +36,8 @@ const MODULES: Record<string, string[]> = {
   "fixture:plugin-build-dep:1.0": [],
   "fixture:ab-colon:1.0": [],
   "fixture:ab-underscore:1.0": [],
+  "fixture:defaulted:1.0": [],
+  "fixture:sub-defaulted:1.0": [],
 };
 
 function pom(coordinates: string, dependencies: string[]): string {
@@ -102,7 +104,11 @@ public class SettingsPlugin implements org.gradle.api.Plugin<org.gradle.api.init
 }
 plugins { id "java" }
 ${repository}
-configurations { tool }
+// Defaults are added only when the configuration resolves, as a code-quality plugin adds its tool.
+configurations {
+  tool
+  defaulted { defaultDependencies { it.add(project.dependencies.create("fixture:defaulted:1.0")) } }
+}
 dependencies {
   implementation "fixture:runtime-lib:1.0"
   implementation("fixture:floored:2.0") { because "GHSA-test-floor: lowest fixed version" }
@@ -116,6 +122,7 @@ dependencies {
   id "fixture.plugin" version "1.0" apply false
 }
 ${repository}
+configurations { defaulted { defaultDependencies { it.add(project.dependencies.create("fixture:sub-defaulted:1.0")) } } }
 dependencies { runtimeOnly "fixture:sub-runtime:1.0" }
 `);
     await write(build, "buildSrc/build.gradle", `plugins { id "java" }
@@ -177,6 +184,12 @@ dependencies { implementation "fixture:included-dep:1.0" }
     ]);
     expect(declared[0]).toMatchObject({ group: "fixture", version: "2.0", reason: "GHSA-test-floor: lowest fixed version" });
     expect(gradleResolutionProblems(inventory, [])).toEqual([]);
+  });
+
+  it("exports dependencies a configuration only gets when it resolves (defaults), in every project, as declared", () => {
+    const declaredAt = (id: string) => inventory.builds.find((build) => build.build === ".")!.configurations.find((configuration) => configuration.id === id)?.declared;
+    expect(declaredAt(":defaulted")).toEqual([{ group: "fixture", name: "defaulted", version: "1.0", reason: undefined }]);
+    expect(declaredAt(":sub:defaulted")).toEqual([{ group: "fixture", name: "sub-defaulted", version: "1.0", reason: undefined }]);
   });
 
   it("keeps projects apart whose paths look alike", () => {

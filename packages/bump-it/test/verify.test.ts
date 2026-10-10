@@ -6,7 +6,7 @@ import { type BumpPlan, planFor } from "../src/plan.ts";
 import { gradleWrapperPlanner, WRAPPER_FILES, WRAPPER_PROPERTIES } from "../src/gradle-wrapper.ts";
 import { routineUnit, majorUnits } from "../src/units.ts";
 import { plannedFiles, verifyPlan, type VerifyInputs } from "../src/verify.ts";
-import { pluginDriven } from "../src/gradle-declarations.ts";
+import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
 import { candidate } from "./fixtures.ts";
 
 vi.mock("../../ci/src/gate.ts", async (original) => ({ ...await original<object>(), runCompare: vi.fn(async () => ({ failures: [], warnings: [], notes: [], gaps: [], osvScannerVersion: "2.6.0", configText: undefined, cooldown: { evaluated: true, releaseAgeDays: 7, held: [] } })) }));
@@ -150,11 +150,14 @@ describe("bump verification", () => {
     // The plugin move itself must still land exactly.
     expect(await verifyPlan({ ...input, gradle: { base: inventory("2.0.0"), head: { ...inventory("2.1.0"), builds: [{ ...inventory("2.1.0").builds[0]!, configurations: [
       { ...inventory("2.2.0").builds[0]!.configurations[0]! }, inventory("2.1.0").builds[0]!.configurations[1]!] }] } } })).toContainEqual(expect.stringContaining("exactly 2.1.0"));
-    // Not a version change: an unreadable explicit declaration (kotlin("reflect", ...)) removed, or a new one added.
+    // The plugin's own fallout may add or remove declarations too, when nothing but the planned swap changed;
+    // the same addition written into the build is an edit the plan didn't make.
     const withReflect = (inv: GradleInventory, reflect: boolean): GradleInventory => ({ ...inv, builds: [{ ...inv.builds[0]!, configurations: [inv.builds[0]!.configurations[0]!,
       { ...inv.builds[0]!.configurations[1]!, declared: [...inv.builds[0]!.configurations[1]!.declared, ...reflect ? [{ group: "org.jetbrains.kotlin", name: "kotlin-reflect", version: "2.0.0", reason: undefined }] : []] }] }] });
-    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), true), head: withReflect(inventory("2.1.0"), false) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
-    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
+    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), true), head: withReflect(inventory("2.1.0"), false) } })).toEqual([]);
+    expect(await verifyPlan({ ...input, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toEqual([]);
+    const written = tree("head", { "build.gradle.kts": `${script("2.1.0")["build.gradle.kts"]}\ndependencies { implementation(kotlin("reflect", "2.0.0")) }` });
+    expect(await verifyPlan({ ...input, head: written, gradle: { base: withReflect(inventory("2.0.0"), false), head: withReflect(inventory("2.1.0"), true) } })).toContainEqual(expect.stringContaining("kotlin-reflect"));
   });
   it("lets a plugin-driven change through only when the unit's files differ from base by the planned version swaps alone", async () => {
     const marker = "org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin";
@@ -191,7 +194,7 @@ describe("bump verification", () => {
     // Even in a file another check compares as text (a planned pin's workflow), but not in one checked by its bytes.
     const lossyPin = { ...files("2.1.0"), ".github/workflows/ci.yml": "# \uFFFD" };
     const edits = (checked: "textChecked" | "bytesChecked") => ({ changedFiles: ["build.gradle.kts", ".github/workflows/ci.yml"], modeChanged: [], textChecked: new Set<string>(), bytesChecked: new Set<string>(), [checked]: new Set([".github/workflows/ci.yml"]) });
-    const driven = (checked: "textChecked" | "bytesChecked") => pluginDriven(input.base, tree("head", lossyPin), { base: inventory("2.0.0"), head: inventory("2.1.0") }, plan.moves, edits(checked));
+    const driven = (checked: "textChecked" | "bytesChecked") => pluginDriven(input.base, tree("head", lossyPin), { base: inventory("2.0.0"), head: inventory("2.1.0") }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits(checked));
     expect((await driven("textChecked"))("org.jetbrains.kotlin:kotlin-stdlib", ":compileClasspath")).toBe(false);
     expect((await driven("bytesChecked"))("org.jetbrains.kotlin:kotlin-stdlib", ":compileClasspath")).toBe(true);
     // A file mode changed, even with the content the same.

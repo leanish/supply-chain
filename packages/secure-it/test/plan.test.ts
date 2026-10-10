@@ -99,7 +99,7 @@ describe("planFor", () => {
         fix({ name: "source-map-js", from: "1.2.1", to: { version: "1.2.2", line: "1", aged: true, major: false, blockers: [] } }),
         fix({ name: "brace-expansion", from: "1.1.0", to: { version: "2.0.2", line: "2", aged: true, major: true, blockers: [] } }),
       ],
-      { lockfiles, gradle: undefined, tagCommit: NO_TAGS },
+      { named: () => true, lockfiles, gradle: undefined, tagCommit: NO_TAGS },
     );
     expect(plan.moves.map((move) => [move.name, move.mechanism, move.to, move.major])).toEqual([
       ["vite", "npm-direct", "8.3.3", false],
@@ -123,7 +123,7 @@ describe("planFor", () => {
       ["package-lock.json", root],
       ["tools/clis/package-lock.json", nested],
     ]);
-    const plan = await planFor([fix({ name: "lib", from: "2.0.0", locations: ["tools/clis/node_modules/tool/node_modules/lib"], to: { version: "2.1.0", line: "2", aged: true, major: false, blockers: [] } })], {
+    const plan = await planFor([fix({ name: "lib", from: "2.0.0", locations: ["tools/clis/node_modules/tool/node_modules/lib"], to: { version: "2.1.0", line: "2", aged: true, major: false, blockers: [] } })], { named: undefined,
       lockfiles,
       gradle: undefined,
       tagCommit: NO_TAGS,
@@ -149,19 +149,23 @@ describe("planFor", () => {
         fix({ ecosystem: "Maven", name: "org.xerial.snappy:snappy-java", from: "1.1.10.8", locations: [":runtimeClasspath", ":checkstyle"] }),
         fix({ ecosystem: "GitHub Actions", name: "actions/checkout", from: "v4.2.2", locations: [".github/workflows/ci.yml"], to: { version: "v4.2.3", line: "4", aged: true, major: false, blockers: [] } }),
       ],
-      { lockfiles: new Map(), gradle, tagCommit: async (action, tag) => (action === "actions/checkout" && tag === "v4.2.3" ? "a".repeat(40) : undefined) },
+      { named: () => true, lockfiles: new Map(), gradle, tagCommit: async (action, tag) => (action === "actions/checkout" && tag === "v4.2.3" ? "a".repeat(40) : undefined) },
     );
     expect(plan.moves.map((move) => [move.mechanism, move.locations, move.commitSha])).toEqual([
       ["gradle-declared", [":runtimeClasspath"], undefined],
       ["gradle-floor", [":checkstyle"], undefined],
       ["action-pin", [".github/workflows/ci.yml"], "a".repeat(40)],
     ]);
-    await expect(planFor([fix({ ecosystem: "GitHub Actions", name: "x/y", from: "v1", locations: ["w.yml"] })], { lockfiles: new Map(), gradle, tagCommit: NO_TAGS })).rejects.toThrow("has no tag 9.9.9");
+    await expect(planFor([fix({ ecosystem: "GitHub Actions", name: "x/y", from: "v1", locations: ["w.yml"] })], { named: () => true, lockfiles: new Map(), gradle, tagCommit: NO_TAGS })).rejects.toThrow("has no tag 9.9.9");
+    // Declared, but no source names it (a plugin adds it): a floor, since there's no declaration to edit.
+    const pluginAdded = await planFor([fix({ ecosystem: "Maven", name: "org.xerial.snappy:snappy-java", from: "1.1.10.8", locations: [":runtimeClasspath"] })], { named: () => false, lockfiles: new Map(), gradle, tagCommit: NO_TAGS });
+    expect(pluginAdded.moves.map((move) => [move.mechanism, move.locations])).toEqual([["gradle-floor", [":runtimeClasspath"]]]);
+    await expect(planFor([fix({ ecosystem: "Maven", name: "org.xerial.snappy:snappy-java", from: "1.1.10.8", locations: [":runtimeClasspath"] })], { named: undefined, lockfiles: new Map(), gradle, tagCommit: NO_TAGS })).rejects.toThrow("source index");
   });
 
   it("targets only the fixable advisories, and keeps an npm alias's key for the edit", async () => {
     const lockfiles = new Map([["package-lock.json", { packages: { "": { name: "app", dependencies: { compat: "npm:lib@^1.0.0" } }, "node_modules/compat": { name: "lib", version: "1.0.0" } } }]]);
-    const plan = await planFor([fix({ name: "lib", from: "1.0.0", locations: ["node_modules/compat"], targets: ["GHSA-a", "GHSA-b"], unfixable: ["GHSA-b"], to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } })], {
+    const plan = await planFor([fix({ name: "lib", from: "1.0.0", locations: ["node_modules/compat"], targets: ["GHSA-a", "GHSA-b"], unfixable: ["GHSA-b"], to: { version: "1.0.1", line: "1", aged: true, major: false, blockers: [] } })], { named: undefined,
       lockfiles,
       gradle: undefined,
       tagCommit: NO_TAGS,
@@ -171,7 +175,7 @@ describe("planFor", () => {
 
   it("names a malware plan `malware` and lists every package", async () => {
     const lockfiles = new Map([["package-lock.json", { packages: { "": { name: "app", dependencies: { a: "^1", b: "^1" } }, "node_modules/a": { version: "1.0.1" }, "node_modules/b": { version: "1.0.1" } } }]]);
-    const plan = await planFor([fix({ name: "a", from: "1.0.1", malicious: true }), fix({ name: "b", from: "1.0.1", malicious: true })], { lockfiles, gradle: undefined, tagCommit: NO_TAGS });
+    const plan = await planFor([fix({ name: "a", from: "1.0.1", malicious: true }), fix({ name: "b", from: "1.0.1", malicious: true })], { named: undefined, lockfiles, gradle: undefined, tagCommit: NO_TAGS });
     expect(plan).toMatchObject({ topic: "malware", malware: true, packages: ["npm|a", "npm|b"] });
   });
 });

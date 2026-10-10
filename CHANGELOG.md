@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The gate counts each unpinned (or unverified) action use: a use of another
+  action in the same repository (`acme/actions/unsafe@main` next to
+  `acme/actions/safe@main`), a second copy of an existing use, or a step
+  repeated through a YAML alias is new and must be pinned, while the unchanged
+  ones stay reported gaps. Before, the subdirectory was ignored, copies were
+  merged, and an aliased step was read once.
+- The daily rescan re-judges the cooldown under the base's current policy and
+  posts it as a status named like the required cooldown check (new
+  `required-cooldown-check` input, default `supply-chain / cooldown`; bridge
+  callers such as this repository's own CI pass `gate / cooldown`). Before, a
+  PR that went green under a 7-day wait stayed green when the base raised it.
+- The Gradle inventory reads each configuration's declarations only once every
+  configuration of the build has resolved. Resolving adds some (a plugin's
+  `defaultDependencies`: Checkstyle's, JaCoCo's and PITest's tools, Kotlin's
+  build tools), so they were missing, or present on one side only, depending on
+  what had resolved first; verification then saw them appear "from nothing".
+  What resolves is unchanged, so are the gate's findings; the tools see more
+  declarations, and those plugins add go to bump-it's notes.
+- A planned plugin update's own fallout may also add or remove declarations
+  (a convention plugin's new version adding Lombok, the Kotlin DSL plugin
+  changing its compiler plugins), not only move versions, under the same proof:
+  nothing but the planned version swaps changed. secure-it's verification uses
+  that proof too, so a security fix that updates a plugin no longer fails on
+  what the plugin brings; a fix that also adds a floor still keeps the strict
+  checks.
+- secure-it fixes a vulnerable dependency a Gradle plugin declares (java-conventions'
+  Guava, Commons Lang or Plexus Utils in a consumer) with a floor, as it does a
+  transitive one: an explicit dependency with `because(...)` next to the
+  plugin's, plus its record. Before, it planned to edit a declaration no file of
+  the repository holds. The gate accepts a floor next to the plugin's own
+  declaration of the same version too.
+
 ## 0.2.2 - 2026-10-09
 
 ### Fixed

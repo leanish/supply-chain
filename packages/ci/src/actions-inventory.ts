@@ -43,19 +43,27 @@ const USES = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(\/[^@\s]+)?@([^@\s]+)$/;
 /** A local reusable workflow: GitHub only calls them from `.github/workflows` itself. */
 const LOCAL_WORKFLOW = /^\.github\/workflows\/[^/]+\.ya?ml$/;
 
-/** The `uses:` of one workflow or action file; YAML aliases are followed, keeping the anchor's comment. */
+/** YAML aliases can nest into exponentially many expansions; no real workflow comes near this. */
+const MAX_NODES = 100_000;
+
+/**
+ * The `uses:` of one workflow or action file, one per occurrence: YAML aliases are followed wherever they appear
+ * (a step and its alias are two uses), keeping the anchor's comment.
+ */
 export function parseUses(text: string, file: string): { uses: ActionUse[]; local: string[]; docker: string[] } {
   const doc = parseDocument(text);
   if (doc.errors.length > 0) throw new Error(`${file} isn't valid YAML: ${doc.errors[0]!.message}`);
   const uses: ActionUse[] = [];
   const local: string[] = [];
   const docker: string[] = [];
-  const visited = new Set<unknown>();
+  let nodes = 0;
   const resolve = (node: unknown): unknown => (isAlias(node) ? node.resolve(doc) : node);
-  const walk = (start: unknown): void => {
+  // `ancestors` only stops cycles: an alias reached again elsewhere is another occurrence.
+  const walk = (start: unknown, ancestors: ReadonlySet<unknown> = new Set()): void => {
     const node = resolve(start);
-    if (visited.has(node)) return;
-    visited.add(node);
+    if (ancestors.has(node)) return;
+    if (++nodes > MAX_NODES) throw new Error(`${file}: too many YAML nodes once aliases are followed`);
+    const inside = new Set(ancestors).add(node);
     if (isMap(node)) {
       for (const pair of node.items) {
         if (isScalar(pair.key) && pair.key.value === "uses") {
@@ -64,10 +72,10 @@ export function parseUses(text: string, file: string): { uses: ActionUse[]; loca
           const comment = (isScalar(pair.value) ? pair.value.comment : undefined) ?? (isAlias(pair.value) ? pair.value.comment : undefined) ?? value.comment;
           record(value.value.trim(), comment?.trim() || undefined);
         }
-        walk(pair.value);
+        walk(pair.value, inside);
       }
     } else if (isSeq(node)) {
-      for (const item of node.items) walk(item);
+      for (const item of node.items) walk(item, inside);
     }
   };
   const record = (value: string, comment: string | undefined) => {
@@ -145,9 +153,9 @@ export function resolutionKey(use: ActionUse): string {
   return `${use.name}@${use.ref}#${commentTag(use) ?? ""}`;
 }
 
-/** One occurrence: where, what and how it's annotated; a changed comment or a new file is a change. */
+/** One occurrence: where, what (subdirectory included) and how it's annotated; a changed comment or a new file is a change. */
 export function occurrenceKey(use: ActionUse): string {
-  return `${use.file}|${use.name}@${use.ref}|${use.comment ?? ""}`;
+  return `${use.file}|${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}|${use.comment ?? ""}`;
 }
 
 /** Whether a use is pinned to a commit whose comment names a tag that GitHub says points at it. */

@@ -13,14 +13,21 @@
  * test merge commit (GitHub would evaluate that one instead). The verdict
  * never leaves that job, so nothing another job uploads can stand in for it.
  *
+ * A completed comparison also re-judges the cooldown under the base's
+ * current policy, posted as a status named like the required cooldown check:
+ * held versions (or a cooldown that can't be evaluated) fail it, so a PR that
+ * was green under a shorter wait is held again when the base raises it.
+ *
  * A PR that closed, got a new head, or whose base moved is skipped (its
  * verdict would be stale); a newer status from another run is never
- * overwritten; a PR whose inventories or comparison didn't complete gets a
- * failure: a scan that didn't complete is never read as clean.
+ * overwritten, for each name on its own; a PR whose inventories or comparison
+ * didn't complete gets a failure (and no cooldown status): a scan that didn't
+ * complete is never read as clean.
  */
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
+import { type CooldownEvaluation, heldUntil } from "./cooldown.ts";
 import type { Fetch } from "./http.ts";
 import { isObject } from "./json.ts";
 
@@ -64,6 +71,8 @@ export interface PublishOptions {
   readonly repository: string;
   /** The required check's name, which the status reuses. */
   readonly context: string;
+  /** The required cooldown check's name, which the cooldown status reuses. */
+  readonly cooldownContext: string;
   /** When the rescan started: a status created after it is newer than this verdict. */
   readonly startedAt: Date;
   /** Link to the rescan run, for the status. */
@@ -76,7 +85,7 @@ export async function planRescan(
   options: Pick<PublishOptions, "fetch" | "token" | "repository">,
   only: number | undefined,
 ): Promise<PlannedPr[]> {
-  const api = github({ ...options, context: "", startedAt: new Date(0), targetUrl: undefined, log: () => undefined });
+  const api = github({ ...options, context: "", cooldownContext: "", startedAt: new Date(0), targetUrl: undefined, log: () => undefined });
   const pulls: unknown[] = [];
   if (only !== undefined) {
     const pr = await api.get(`/repos/${options.repository}/pulls/${only}`);
@@ -142,6 +151,8 @@ export interface RescanOutcome {
   readonly warnings: ReadonlyArray<string>;
   readonly gaps: ReadonlyArray<string>;
   readonly notes: ReadonlyArray<string>;
+  /** Under the base's current policy. */
+  readonly cooldown: CooldownEvaluation;
 }
 
 /**
@@ -193,20 +204,24 @@ export async function runRescan(
       await steps.reset();
     }
     await steps.record(pr, { state, description, compared, outcome, error });
-    // Again right before posting: the PR or its base may have moved while it was being scanned.
-    if (!(await stillAsPlanned(pr, api, options))) continue;
-    if (await newerStatusExists(pr, api, options)) {
-      options.log(`#${pr.number}: a newer ${options.context} status exists; skipped`);
-      continue;
+    const statuses: Array<{ context: string; state: "success" | "failure" | "error"; description: string }> = [{ context: options.context, state, description }];
+    if (outcome?.completed === true) statuses.push({ context: options.cooldownContext, ...cooldownStatus(outcome.cooldown) });
+    for (const status of statuses) {
+      // Again right before posting: the PR or its base may have moved while it was being scanned.
+      if (!(await stillAsPlanned(pr, api, options))) break;
+      if (await newerStatusExists(pr, status.context, api, options)) {
+        options.log(`#${pr.number}: a newer ${status.context} status exists; skipped`);
+        continue;
+      }
+      await api.post(`/repos/${options.repository}/statuses/${pr.head}`, {
+        state: status.state,
+        context: status.context,
+        description: status.description.length > 140 ? `${status.description.slice(0, 137)}...` : status.description,
+        ...(options.targetUrl === undefined ? {} : { target_url: options.targetUrl }),
+      });
+      options.log(`#${pr.number}: ${status.context} ${status.state} on ${pr.head.slice(0, 12)} (${status.description})`);
+      posted++;
     }
-    await api.post(`/repos/${options.repository}/statuses/${pr.head}`, {
-      state,
-      context: options.context,
-      description: description.length > 140 ? `${description.slice(0, 137)}...` : description,
-      ...(options.targetUrl === undefined ? {} : { target_url: options.targetUrl }),
-    });
-    options.log(`#${pr.number}: ${state} on ${pr.head.slice(0, 12)} (${description})`);
-    posted++;
   }
   return posted;
 }
@@ -226,14 +241,26 @@ async function stillAsPlanned(pr: PlannedPr, api: ReturnType<typeof github>, opt
 }
 
 /** Statuses come newest first: read pages until one predates the rescan, or they run out. */
-async function newerStatusExists(pr: PlannedPr, api: ReturnType<typeof github>, options: PublishOptions): Promise<boolean> {
+/**
+ * The cooldown under the base's current policy: held versions fail it (`failure`, which the tools read as waiting),
+ * and so does one that can't be evaluated (`error`: broken, not waiting).
+ */
+function cooldownStatus(cooldown: CooldownEvaluation): { state: "success" | "failure" | "error"; description: string } {
+  if (!cooldown.evaluated) return { state: "error", description: `Daily rescan: the cooldown can't be evaluated: ${cooldown.reason}` };
+  const until = heldUntil(cooldown.held);
+  return until === undefined
+    ? { state: "success", description: `Daily rescan: nothing under the ${cooldown.releaseAgeDays}-day wait` }
+    : { state: "failure", description: `Daily rescan: ${cooldown.held.length} version(s) under the ${cooldown.releaseAgeDays}-day wait, held until ${until}` };
+}
+
+async function newerStatusExists(pr: PlannedPr, context: string, api: ReturnType<typeof github>, options: PublishOptions): Promise<boolean> {
   for (let page = 1; ; page++) {
     const statuses = await api.get(`/repos/${options.repository}/commits/${pr.head}/statuses?per_page=100&page=${page}`);
     if (!Array.isArray(statuses) || statuses.length === 0) return false;
     for (const status of statuses) {
       if (!isObject(status) || typeof status["created_at"] !== "string") continue;
       if (new Date(status["created_at"]) <= options.startedAt) return false;
-      if (status["context"] === options.context) return true;
+      if (status["context"] === context) return true;
     }
     if (statuses.length < 100) return false;
   }

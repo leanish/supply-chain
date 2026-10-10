@@ -10,7 +10,8 @@ import { actionsOutsidePlan, declaredAt, directChangesOutside, directVersions, F
 import type { WrapperFile } from "./wrapper-generation.ts";
 import { WRAPPER_FILES, type WrapperPlanner } from "./gradle-wrapper.ts";
 import { plannedPinsLanded } from "./action-pins.ts";
-import { gradleDeclarationProblems, pluginDriven } from "./gradle-declarations.ts";
+import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
+import { gradleDeclarationProblems } from "./gradle-declarations.ts";
 import { type BumpPlan, DEPENDENCY_FIELDS, dependencyDigest, sha256 } from "./plan.ts";
 
 export interface VerifyInputs {
@@ -64,7 +65,7 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     textChecked: new Set([...exactNpm, ...pins.flatMap((pin) => pin.locations)]),
     bytesChecked: new Set(wrapperMoves.length > 0 ? WRAPPER_FILES : []),
   };
-  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves, edits);
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits);
   const planned = (ecosystem: string, name: string, where: string) => includesDeclaration(plan, ecosystem, name, where) || ecosystem === "Maven" && driven(name, where);
   problems.push(...directChangesOutside(before, after, planned));
   problems.push(...gradleDeclarationProblems(plan.moves, gradle.base, gradle.head, driven));

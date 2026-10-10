@@ -154,17 +154,16 @@ function gradleFloorProblems(floor: Floor, inventory: Inventory, label: string):
       continue;
     }
     const declared = configuration.declared.filter((dependency) => dependency.group === group && dependency.name === name);
-    const atFloor = declared.find((dependency) => dependency.version === floor.version);
-    if (atFloor === undefined) {
+    // Any declaration at the floor's version with the reason it needs: a plugin may declare the same version unreasoned.
+    const atFloor = declared.filter((dependency) => dependency.version === floor.version);
+    const missingFrom = (reason: string | undefined) => floor.advisories.filter((id) => !(reason ?? "").toUpperCase().includes(id.toUpperCase()));
+    const reasoned = (reason: string | undefined) => floor.purpose === "security" ? missingFrom(reason).length === 0 : (reason ?? "").trim() !== "";
+    if (atFloor.length === 0) {
       const versions = declared.map((dependency) => dependency.version ?? "no version").join(", ");
       problems.push(`${label}: ${location} doesn't declare ${floor.package}:${floor.version}${versions === "" ? "" : ` (declares ${versions})`}`);
-    } else {
-      const reason = atFloor.reason ?? "";
-      const missing = floor.advisories.filter((id) => !reason.toUpperCase().includes(id.toUpperCase()));
-      if (floor.purpose === "security" && missing.length > 0) {
-        problems.push(`${label}: ${location}'s because(...) doesn't name ${missing.join(", ")}`);
-      }
-      if (floor.purpose === "compatibility" && reason.trim() === "") problems.push(`${label}: ${location} declares it without a because(...)`);
+    } else if (!atFloor.some((dependency) => reasoned(dependency.reason))) {
+      if (floor.purpose === "security") problems.push(`${label}: ${location}'s because(...) doesn't name ${missingFrom(atFloor.find((dependency) => dependency.reason !== undefined)?.reason).join(", ")}`);
+      else problems.push(`${label}: ${location} declares it without a because(...)`);
     }
     const resolved = configuration.resolved.filter((component) => component.group === group && component.name === name);
     if (resolved.length === 0) problems.push(`${label}: ${location} doesn't resolve ${floor.package}`);

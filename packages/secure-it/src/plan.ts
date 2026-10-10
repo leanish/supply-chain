@@ -90,6 +90,8 @@ export interface ChangePlan {
 export interface PlanInputs {
   readonly lockfiles: ReadonlyMap<string, unknown>;
   readonly gradle: GradleInventory | undefined;
+  /** Whether the base's Gradle sources name a coordinate (`gradleSourceIndex`); required with `gradle`. */
+  readonly named: ((group: string, name: string) => boolean) | undefined;
   /** The commit a tag of an action points at. */
   readonly tagCommit: (action: string, tag: string) => Promise<string | undefined>;
 }
@@ -233,7 +235,7 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
     const byMechanism = new Map<string, { mechanism: Mechanism; declaredAs: string | undefined; locations: string[] }>();
     for (const location of fix.locations) {
       const { mechanism, declaredAs } =
-        fix.ecosystem === "npm" ? npmMechanism(inputs.lockfiles, fix.name, location, to.version) : { mechanism: gradleMechanism(inputs.gradle, fix.name, location), declaredAs: undefined };
+        fix.ecosystem === "npm" ? npmMechanism(inputs.lockfiles, fix.name, location, to.version) : { mechanism: gradleMechanism(inputs, fix.name, location), declaredAs: undefined };
       const key = `${mechanism}|${declaredAs ?? ""}`;
       const entry = byMechanism.get(key) ?? { mechanism, declaredAs, locations: [] };
       entry.locations.push(location);
@@ -309,12 +311,18 @@ function satisfies(version: string, range: string): boolean {
   return semver.validRange(effective) !== null && semver.satisfies(version, effective, { includePrerelease: false });
 }
 
-function gradleMechanism(gradle: GradleInventory | undefined, name: string, location: string): Mechanism {
-  if (gradle === undefined) throw new Error(`a Maven move for ${name} at ${location} without a Gradle inventory`);
+/**
+ * A declaration the repository's own sources name is moved; anything else gets a floor (an explicit dependency with
+ * `because(...)`), the transitive and the plugin-added alike: no file holds a plugin's declaration to edit.
+ */
+function gradleMechanism(inputs: Pick<PlanInputs, "gradle" | "named">, name: string, location: string): Mechanism {
+  const { gradle, named } = inputs;
+  if (gradle === undefined || named === undefined) throw new Error(`a Maven move for ${name} at ${location} without a Gradle inventory and its source index`);
+  const [group, artifact] = name.split(":") as [string, string];
   for (const build of gradle.builds) {
     for (const configuration of build.configurations) {
       if (gradleLocation(build.build, configuration.id) !== location) continue;
-      return configuration.declared.some((declared) => `${declared.group}:${declared.name}` === name) ? "gradle-declared" : "gradle-floor";
+      return configuration.declared.some((declared) => `${declared.group}:${declared.name}` === name) && named(group, artifact) ? "gradle-declared" : "gradle-floor";
     }
   }
   throw new Error(`the Gradle inventory has no configuration ${location}`);

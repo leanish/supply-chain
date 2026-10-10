@@ -25,6 +25,7 @@ jobs:
     uses: ./.github/workflows/supply-chain.yml
     with:
       required-check: supply-chain
+      required-cooldown-check: gate / cooldown
     permissions:
       contents: read
       pull-requests: read

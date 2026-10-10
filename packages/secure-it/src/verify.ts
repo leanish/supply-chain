@@ -21,7 +21,9 @@
  *      package left in the tree (a swap for another vulnerable version would
  *      pass `compare` as inherited, not here), using compare's head snapshot;
  *   4. no direct dependency outside the planned packages changed version, and
- *      no action use outside the plan changed;
+ *      no action use outside the plan changed; a planned Gradle plugin
+ *      update's own fallout aside, when nothing but the planned edits changed
+ *      (`pluginDriven`; a floor added or kept is an edit, so it never qualifies);
  *   5. only dependency files changed, unless a move is a major.
  */
 import { computedNpmProblems } from "../../remediation/src/npm-file-checks.ts";
@@ -42,6 +44,7 @@ import {
   resolvedAt,
 } from "../../remediation/src/edit-checks.ts";
 import { lockfilesOf } from "../../remediation/src/inventories.ts";
+import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
 
 import { preservedFloors } from "./floor-checks.ts";
 import { verifyRemovalEdit } from "./floor-verification.ts";
@@ -56,6 +59,8 @@ export interface VerifyInputs {
   readonly gradle: GradleInputs;
   /** Paths the edit changed, added or removed in the working copy. */
   readonly changedFiles: ReadonlyArray<string>;
+  /** Tracked paths whose file mode changed. */
+  readonly modeChanged: ReadonlyArray<string>;
   /** Told what the verifying comparison's cooldown holds, whenever the comparison runs. */
   readonly cooldown?: (evaluation: CooldownEvaluation) => void;
 }
@@ -89,9 +94,14 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
     if (targeted.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which the plan was to fix`);
   }
 
+  // Verified exactly by their own checks: npm files holding the planned text, and planned pins' files (masked but for the pins).
+  const exactNpm: string[] = [];
+  for (const [path, text] of inputs.npmFiles ?? []) if (await head.read(path) === text) exactNpm.push(path);
+  const edits = { changedFiles: inputs.changedFiles, modeChanged: inputs.modeChanged, textChecked: new Set([...exactNpm, ...pins.flatMap((pin) => pin.locations)]), bytesChecked: new Set<string>() };
+  const driven = await pluginDriven(base, head, { base: gradle.base, head: gradle.head }, plan.moves.filter((move) => move.mechanism === "gradle-declared"), edits);
   const before = await directVersions(base, gradle.base);
   const after = await directVersions(head, gradle.head);
-  problems.push(...directChangesOutside(before, after, (ecosystem, name) => planned.has(`${ecosystem}|${name}`)));
+  problems.push(...directChangesOutside(before, after, (ecosystem, name, where) => planned.has(`${ecosystem}|${name}`) || ecosystem === "Maven" && driven(name, where)));
   problems.push(...(await actionsOutsidePlan(pins, base, head)));
 
   if (!plan.moves.some((move) => move.major)) {

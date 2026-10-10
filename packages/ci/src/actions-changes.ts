@@ -13,7 +13,7 @@
  * named tag is resolved with GitHub once for both sides.
  */
 import type { ActionsGitHub } from "./actions-github.ts";
-import { type ActionsInventory, occurrenceKey, type Resolution, resolutionKey, resolveUse } from "./actions-inventory.ts";
+import { type ActionsInventory, type ActionUse, occurrenceKey, type Resolution, resolutionKey, resolveUse } from "./actions-inventory.ts";
 import { type Config, isOwnPackage } from "./config.ts";
 import type { Located } from "./findings.ts";
 import { mapLimited } from "./http.ts";
@@ -64,7 +64,10 @@ export async function actionChanges(
   github: ActionsGitHub,
   config: Config,
 ): Promise<ActionChanges> {
-  const before = new Set(base.uses.map(occurrenceKey));
+  // Counted, not just listed: a second identical occurrence is a new one.
+  const count = (uses: ReadonlyArray<ActionUse>) => uses.reduce((map, use) => map.set(occurrenceKey(use), (map.get(occurrenceKey(use)) ?? 0) + 1), new Map<string, number>());
+  const before = count(base.uses);
+  const after = count(head.uses);
   const problems: string[] = [];
   const gaps: string[] = [...head.gaps, ...head.docker.map((use) => `GitHub Actions ${use}: no advisory source covers container images`)];
   const changes = new Map<string, ChangedVersion>();
@@ -80,8 +83,8 @@ export async function actionChanges(
     if (seen.has(occurrence)) continue;
     seen.add(occurrence);
     const resolution = resolutions.get(resolutionKey(use))!;
-    const label = `${use.name}@${use.ref} (${use.file})`;
-    const changed = !before.has(occurrence);
+    const label = `${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref} (${use.file})`;
+    const changed = after.get(occurrence)! > (before.get(occurrence) ?? 0);
     if (resolution.kind === "unpinned") {
       if (changed) problems.push(`${label} is new or changed, so it must be pinned to a full commit SHA with a \`# vX.Y.Z\` comment`);
       else gaps.push(`GitHub Actions ${label}: not pinned to a commit, so its version (and advisories) can't be told`);
