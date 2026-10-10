@@ -71,13 +71,19 @@ export async function actionsOutsidePlan(pins: ReadonlyArray<PlannedPin>, base: 
   const planned = new Map<string, Set<string>>();
   for (const pin of pins) planned.set(pin.name.toLowerCase(), new Set([...(planned.get(pin.name.toLowerCase()) ?? []), ...pin.locations]));
   const outside = (use: { name: string; file: string }) => !planned.get(use.name)?.has(use.file);
+  // Counted by a structured key (a crafted path can't blur two uses together), reported by a readable label.
+  const labels = new Map<string, string>();
   const occurrences = async (tree: Tree) =>
-    (await readActionsInventory(tree)).uses.filter(outside).map((use) => `${use.file}: ${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}${use.comment === undefined ? "" : ` # ${use.comment}`}`);
+    (await readActionsInventory(tree)).uses.filter(outside).map((use) => {
+      const key = JSON.stringify([use.file, use.name, use.path ?? null, use.ref, use.comment ?? null]);
+      labels.set(key, `${use.file}: ${use.name}${use.path === undefined ? "" : `/${use.path}`}@${use.ref}${use.comment === undefined ? "" : ` # ${use.comment}`}`);
+      return key;
+    });
   const count = (list: string[]) => list.reduce((map, entry) => map.set(entry, (map.get(entry) ?? 0) + 1), new Map<string, number>());
   const was = count(await occurrences(base));
   const now = count(await occurrences(head));
-  const changed = [...new Set([...was.keys(), ...now.keys()])].filter((entry) => was.get(entry) !== now.get(entry)).sort();
-  return changed.map((entry) => `the action use ${entry} changed outside the plan`);
+  const changed = [...new Set([...was.keys(), ...now.keys()])].filter((entry) => was.get(entry) !== now.get(entry)).map((entry) => labels.get(entry)!).sort();
+  return changed.map((label) => `the action use ${label} changed outside the plan`);
 }
 
 /** `ecosystem|name|where` → version, for every direct declaration: npm per lockfile, workspace and key; Gradle per configuration, every declared version (sorted, comma-separated). */
