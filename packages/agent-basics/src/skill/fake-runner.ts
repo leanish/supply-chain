@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/fake-runner.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/fake-runner.ts at c6282df; see PROVENANCE.md.
 import { performance } from "node:perf_hooks";
 
 import { deliverSkillUsage, ZERO_TOKENS } from "../usage/skill-usage.ts";

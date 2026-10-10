@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-login.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-login.ts at c6282df; see PROVENANCE.md.
 import { randomUUID } from "node:crypto";
 import { lstat, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";

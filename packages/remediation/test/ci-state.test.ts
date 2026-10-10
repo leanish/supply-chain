@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development agents/bump-it/test/ci-state.test.ts at e4f8a1e.
+// Copied from leanish/leanish-development agents/bump-it/test/ci-state.test.ts at c6282df.
 // Local changes: imports; uses actions-jobs source; failingCheckNames regression for Actions job and commit status failures; onlyCooldownHolds.
 import { describe, expect, it } from "vitest";
 

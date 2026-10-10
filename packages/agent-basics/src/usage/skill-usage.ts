@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/usage/skill-usage.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/usage/skill-usage.ts at c6282df; see PROVENANCE.md.
 import type { QuotaUsage } from "./quota.ts";
 
 /**

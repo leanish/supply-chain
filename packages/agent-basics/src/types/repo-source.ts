@@ -1,5 +1,5 @@
 // New in this repository (replaces catalog-it's `Project` in the copied workspace). The id rules are catalog-it's
-// (`core/catalog-it/src/repo-id.ts` at e4f8a1e), case-insensitive here since GitHub names keep their case.
+// (`core/catalog-it/src/repo-id.ts` at c6282df), case-insensitive here since GitHub names keep their case.
 
 /** What the workspace needs to know about a repository: an id for its directories, and where to clone it from. */
 export interface RepoSource {

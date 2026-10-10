@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/unit/in-memory-workspace.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/unit/in-memory-workspace.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`; imports this package's modules from `../src/` instead of `../../src/`.
 import { describe, expect, it } from "vitest";
 

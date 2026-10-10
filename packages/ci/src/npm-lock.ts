@@ -3,7 +3,7 @@
  * source, and which bundles the lockfile doesn't fully record.
  *
  * Ported from leanish-development `tools/supply-chain/src/supply-chain.ts`
- * (commit 9e7d098); `sourceProblems` now takes the allowed registries.
+ * (commit adc2a6f); `sourceProblems` now takes the allowed registries.
  */
 
 export const NPM_REGISTRY = "https://registry.npmjs.org";

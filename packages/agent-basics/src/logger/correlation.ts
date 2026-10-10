@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/logger/correlation.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/logger/correlation.ts at c6282df; see PROVENANCE.md.
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { LogFields } from "../types/logger.ts";

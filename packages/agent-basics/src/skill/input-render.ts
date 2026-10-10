@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/input-render.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/input-render.ts at c6282df; see PROVENANCE.md.
 import { stringify as stringifyYaml } from "yaml";
 
 /**

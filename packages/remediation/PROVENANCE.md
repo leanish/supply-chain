@@ -1,6 +1,6 @@
 # Provenance
 
-Parts of this package are adapted from [leanish/leanish-development](https://github.com/leanish/leanish-development) (private) at `e4f8a1e`, from its bump-it agent. As with [`agent-basics`](../agent-basics/PROVENANCE.md), the copy is temporary: a fix in one copy is replicated by hand in the other until a shared `leanish/agent-kit` replaces both.
+Parts of this package are adapted from [leanish/leanish-development](https://github.com/leanish/leanish-development) (private) at `c6282df` (tag `agent-basics-source`), from its bump-it agent. As with [`agent-basics`](../agent-basics/PROVENANCE.md), the copy is temporary: a fix in one copy is replicated by hand in the other until a shared `leanish/agent-kit` replaces both.
 
 | File | Source | How | Local changes |
 |---|---|---|---|

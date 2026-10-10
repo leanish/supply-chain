@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/stage-skills.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/stage-skills.ts at c6282df; see PROVENANCE.md.
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

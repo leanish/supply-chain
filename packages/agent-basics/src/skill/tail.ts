@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/tail.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/tail.ts at c6282df; see PROVENANCE.md.
 /** Diagnostic capture cap: each captured tail is bounded to 4 KiB (ADR-0004). */
 export const TAIL_BYTES = 4096;
 

@@ -1,5 +1,5 @@
 // New in this repository; the signal cases are adapted from leanish/leanish-development
-// core/runtime/test/unit/run-local-cli.test.ts at e4f8a1e (see PROVENANCE.md).
+// core/runtime/test/unit/run-local-cli.test.ts at c6282df (see PROVENANCE.md).
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 

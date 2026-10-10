@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/validator.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/validator.ts at c6282df; see PROVENANCE.md.
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 
 import type { SchemaErrorItem } from "../errors.ts";

@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/test/unit/codex-runner-access.test.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/test/unit/codex-runner-access.test.ts at c6282df; see PROVENANCE.md.
 // Local changes: imports this package's modules from `../src/` instead of `../../src/`.
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

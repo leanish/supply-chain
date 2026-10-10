@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/logger/redactor.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/logger/redactor.ts at c6282df; see PROVENANCE.md.
 /**
  * Substring-replace each known secret value with `<redacted:NAME>`. Used by
  * the runtime to scrub log lines and captured `EntrypointInvocationError`

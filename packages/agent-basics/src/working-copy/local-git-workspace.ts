@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/working-copy/local-git-workspace.ts at c6282df; see PROVENANCE.md.
 // Local changes: `RepoSource` instead of catalog-it's `Project`, its id checked before the workspace touches any directory;
 // the `remote-merging` start (a conflicting merge left in progress) and publishing that merge once resolved;
 // `beforePush`, called with the commit before it's pushed; stale remote-tracking refs that would block storing a

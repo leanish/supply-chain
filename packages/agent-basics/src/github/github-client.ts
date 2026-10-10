@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/needs/github-client.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/needs/github-client.ts at c6282df; see PROVENANCE.md.
 // Local changes: `GitHubApiError`'s parameter properties written as fields; headChecks reads Actions runs/jobs and commit statuses directly (no Checks API), paginates and retains latest jobs per workflow/event/name, pending runs, and jobless runs only when no newer run in their workflow/event group supersedes them; keeps each job's steps.
 import { RuntimeError } from "../errors.ts";
 import type {

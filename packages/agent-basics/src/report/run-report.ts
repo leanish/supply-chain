@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/runtime/run-report.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/runtime/run-report.ts at c6282df; see PROVENANCE.md.
 // Local changes: one tool command instead of a run-local dispatch loop: no dispatch, delayed-message or
 // self-publish counts; `tool` and `repo` instead of `agent`; the command's `result` comes with its end.
 import { constants } from "node:os";

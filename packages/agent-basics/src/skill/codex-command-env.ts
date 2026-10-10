@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-command-env.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-command-env.ts at c6282df; see PROVENANCE.md.
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 

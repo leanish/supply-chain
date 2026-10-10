@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/logger/console-logger.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/logger/console-logger.ts at c6282df; see PROVENANCE.md.
 import { getCorrelation } from "./correlation.ts";
 import { NOOP_REDACTOR, Redactor } from "./redactor.ts";
 import type { Logger, LogFields, LogLevel } from "../types/logger.ts";

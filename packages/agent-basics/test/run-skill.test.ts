@@ -1,5 +1,5 @@
 // Adapted from leanish/leanish-development core/runtime/test/unit/run-skill-usage.test.ts and
-// run-skill-invocation.test.ts at e4f8a1e (see PROVENANCE.md): the same cases, against `SkillContext`/`SkillCall`
+// run-skill-invocation.test.ts at c6282df (see PROVENANCE.md): the same cases, against `SkillContext`/`SkillCall`
 // instead of a runtime built from an agent descriptor.
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

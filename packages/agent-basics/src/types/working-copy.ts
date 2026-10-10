@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/types/working-copy.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/types/working-copy.ts at c6282df; see PROVENANCE.md.
 // Local changes: the `remote-merging` start and its `conflicted` result; `PublishBranchArgs.beforePush`.
 /**
  * Runtime-owned references to checked-out project working copies. Returned

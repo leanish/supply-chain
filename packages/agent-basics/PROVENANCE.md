@@ -1,8 +1,9 @@
 # Provenance
 
 Everything in this package except the files marked **new** is copied from
-[leanish/leanish-development](https://github.com/leanish/leanish-development) (private) at commit `e4f8a1e`
+[leanish/leanish-development](https://github.com/leanish/leanish-development) (private) at commit `c6282df`
 ("installing the coding-agent CLIs from their own lockfile", the tip of its runtime stack), mostly from `core/runtime`.
+That commit is tagged `agent-basics-source` there.
 
 **Why a copy:** secure-it and bump-it need these pieces to run a coding agent, and leanish-development's runtime isn't
 public. The copy is temporary: a shared `leanish/agent-kit` that both repositories pin is the next step. Until then,

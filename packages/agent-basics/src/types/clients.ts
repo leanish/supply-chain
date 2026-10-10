@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/types/clients.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/types/clients.ts at c6282df; see PROVENANCE.md.
 // Local changes: only the GitHub client's types; headChecks uses Actions jobs and commit statuses, with an actions-jobs source; a job's steps.
 /**
  * Narrow GitHub REST/GraphQL client for handler-side, model-free work (see

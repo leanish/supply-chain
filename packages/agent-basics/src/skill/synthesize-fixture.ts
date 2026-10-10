@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/synthesize-fixture.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/synthesize-fixture.ts at c6282df; see PROVENANCE.md.
 // Local changes: synthesize nullable-object schemas and their restricted conditional object requirements.
 /**
  * Walk an entry-point skill's `outputSchema` (in the ADR-0004 minimal

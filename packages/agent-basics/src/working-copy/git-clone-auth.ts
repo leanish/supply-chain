@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/working-copy/git-clone-auth.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/working-copy/git-clone-auth.ts at c6282df; see PROVENANCE.md.
 // Local changes: `gitCloneAuth(token, host)` replaces `resolveGitCloneAuth(needs, env)`; the tool passes its token.
 /**
  * Clone-time GitHub credential plumbing.

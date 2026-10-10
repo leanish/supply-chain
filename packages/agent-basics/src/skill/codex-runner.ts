@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-runner.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-runner.ts at c6282df; see PROVENANCE.md.
 // Local changes: the access comment says write agents can't write git metadata (they never could here).
 import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";

@@ -1,4 +1,4 @@
-// Copied from leanish/leanish-development core/runtime/src/skill/codex-permissions.ts at e4f8a1e; see PROVENANCE.md.
+// Copied from leanish/leanish-development core/runtime/src/skill/codex-permissions.ts at c6282df; see PROVENANCE.md.
 // Local changes: `Access` from `types/access.ts` instead of the agent descriptor.
 import { isAbsolute, join, relative, sep } from "node:path";
 
