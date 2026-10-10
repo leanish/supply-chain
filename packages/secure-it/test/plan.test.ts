@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SecurityFix } from "../../ci/src/candidates.ts";
 import type { GradleInventory } from "../../ci/src/gradle.ts";
-import { coupledWork, planFor, selectWork, splitByAge } from "../src/plan.ts";
+import { coupledWork, planFor, selectWork, splitByAge, withUnsupportedCarriers } from "../src/plan.ts";
 
 function fix(overrides: Partial<SecurityFix> & Pick<SecurityFix, "name" | "from">): SecurityFix {
   return {
@@ -171,6 +171,29 @@ describe("planFor", () => {
       tagCommit: NO_TAGS,
     });
     expect(plan.moves).toEqual([expect.objectContaining({ mechanism: "npm-direct", declaredAs: "compat", advisories: ["GHSA-a"] })]);
+  });
+
+  describe("a carrier move", () => {
+    const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+    const carrierFix = (to = "1.1.0") => fix({ name: "carrier", from: "1.0.0", targets: ["GHSA-own"], carries: [carried], to: { version: to, line: "1", aged: true, major: false, blockers: [] } });
+    const lockfiles = (range: string, declared: boolean) => new Map([["package-lock.json", { packages: {
+      "": { name: "app", dependencies: declared ? { carrier: range } : { parent: "^1.0.0" } },
+      ...(declared ? {} : { "node_modules/parent": { version: "1.0.0", dependencies: { carrier: range } } }),
+      "node_modules/carrier": { version: "1.0.0" },
+      "node_modules/carrier/node_modules/brace": { version: "5.0.9", inBundle: true },
+    } }]]);
+
+    it("moves the carrier the way its position allows, targeting its own and its carried advisories", async () => {
+      const plan = await planFor([carrierFix()], { named: undefined, lockfiles: lockfiles("^1.0.0", true), gradle: undefined, tagCommit: NO_TAGS });
+      expect(plan.moves).toEqual([expect.objectContaining({ name: "carrier", mechanism: "npm-direct", to: "1.1.0", advisories: ["GHSA-own", "GHSA-brace"], carries: [carried] })]);
+    });
+
+    it("is blocked rather than overridden when a dependent's range excludes it", () => {
+      expect(withUnsupportedCarriers([carrierFix("2.0.0")], lockfiles("^1.0.0", false))[0]!.to!.blockers).toEqual([
+        "carrier@2.0.0 would need an npm override at node_modules/carrier, which secure-it doesn't do for a carrier",
+      ]);
+      expect(withUnsupportedCarriers([carrierFix("1.1.0")], lockfiles("^1.0.0", false))[0]!.to!.blockers).toEqual([]);
+    });
   });
 
   it("names a malware plan `malware` and lists every package", async () => {

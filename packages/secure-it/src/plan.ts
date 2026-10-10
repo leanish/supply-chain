@@ -21,6 +21,7 @@ import { dirname } from "node:path";
 import semver from "semver";
 
 import { type SecurityFix, severityRank } from "../../ci/src/candidates.ts";
+import type { CarriedPackage } from "../../ci/src/carrier-candidates.ts";
 import type { NpmPeerPlanner } from "../../ci/src/npm-peers.ts";
 import type { HeldVersion } from "../../ci/src/release-age.ts";
 import { gradleLocation, type GradleInventory } from "../../ci/src/gradle.ts";
@@ -46,6 +47,8 @@ export interface PlannedMove {
   readonly commitSha: string | undefined;
   /** npm: the key it's installed and declared under when that isn't its name (an `npm:` alias). */
   readonly declaredAs: string | undefined;
+  /** A carrier move: the bundled packages its tarball replaces, whose advisories are in `advisories` too. */
+  readonly carries?: ReadonlyArray<CarriedPackage>;
 }
 
 export type PlanKind = "routine" | "major" | "malware" | "floor-removal";
@@ -224,8 +227,9 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
     const to = fix.to;
     if (to === undefined) throw new Error(`${fix.name}@${fix.from} has no move: ${fix.problem ?? "unknown"}`);
     // Only what can be fixed is a target: an advisory no version fixes stays, inherited (fixing A and leaving B).
-    const advisories = fix.targets.filter((target) => !fix.unfixable.includes(target));
-    const base = { ecosystem: fix.ecosystem, name: fix.name, from: fix.from, to: to.version, advisories, major: to.major };
+    const carried = (fix.carries ?? []).flatMap((entry) => entry.advisories);
+    const advisories = [...new Set([...fix.targets.filter((target) => !fix.unfixable.includes(target)), ...carried])];
+    const base = { ecosystem: fix.ecosystem, name: fix.name, from: fix.from, to: to.version, advisories, major: to.major, ...(fix.carries === undefined ? {} : { carries: fix.carries }) };
     if (fix.ecosystem === "GitHub Actions") {
       const commitSha = await inputs.tagCommit(fix.name, to.version);
       if (commitSha === undefined) throw new Error(`${fix.name} has no tag ${to.version} to pin to`);
@@ -251,6 +255,21 @@ export async function planFor(work: ReadonlyArray<SecurityFix>, inputs: PlanInpu
   const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");
   const topic = unit?.topic ?? (kind === "malware" ? "malware" : kind === "routine" ? "security" : `${work[0]!.name}-major`);
   return { kind, topic, malware, packages, moves, severity, ...(unit?.coupled === undefined ? {} : { coupled: unit.coupled }) };
+}
+
+/**
+ * Carrier moves that would need an npm override (the carrier is transitive and a dependent's range excludes the
+ * chosen version) aren't made: overriding a carrier would need floor records of what it carries. Such a fix gets a
+ * blocker, so it's reported instead of planned.
+ */
+export function withUnsupportedCarriers(fixes: ReadonlyArray<SecurityFix>, lockfiles: ReadonlyMap<string, unknown>): SecurityFix[] {
+  return fixes.map((fix) => {
+    if (fix.carries === undefined || fix.to === undefined) return fix;
+    const to = fix.to;
+    const overridden = fix.locations.filter((location) => npmMechanism(lockfiles, fix.name, location, to.version).mechanism === "npm-override");
+    if (overridden.length === 0) return fix;
+    return { ...fix, to: { ...to, blockers: [...to.blockers, `${fix.name}@${to.version} would need an npm override at ${overridden.join(", ")}, which secure-it doesn't do for a carrier`] } };
+  });
 }
 
 /** The lockfile a gate npm location (`<lockfile dir>/node_modules/…`) belongs to, and the lockfile key inside it. */

@@ -6,6 +6,7 @@ import type { GateEnvironment } from "../../ci/src/gate.ts";
 import { runProcess, type RunProcess } from "../../ci/src/process.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { fakeFetch } from "../../ci/test/fake-fetch.ts";
+import { archive, manifest, serving } from "../../ci/test/tarballs.ts";
 import type { ChangePlan } from "../src/plan.ts";
 import { referencePlan, verifyPlan } from "../src/verify.ts";
 
@@ -125,6 +126,51 @@ function markMoved(inventory: Inventoried, name: string, version: string, locati
   return { ...inventory, builds: inventory.builds.map((build) => ({ ...build, configurations: build.configurations.map((configuration) => ({ ...configuration,
     declared: configuration.declared.map((entry) => (locations.includes(configuration.id) && `${entry.group}:${entry.name}` === name && entry.version === version ? { ...entry, moved: true as const } : entry)) })) })) } as never;
 }
+
+describe("verifying a carrier move", () => {
+  const archives = {
+    "1.0.0": archive([{ path: "package/package.json", body: manifest("carrier", "1.0.0") }, { path: "package/node_modules/brace/package.json", body: manifest("brace", "5.0.9") }]),
+    "1.1.0": archive([{ path: "package/package.json", body: manifest("carrier", "1.1.0") }, { path: "package/node_modules/brace/package.json", body: manifest("brace", "5.0.12") }]),
+  };
+  const url = (version: string) => `https://registry.npmjs.org/carrier/-/carrier-${version}.tgz`;
+  const carrierLock = (version: "1.0.0" | "1.1.0", bundled: string, integrity = archives[version].integrity) => JSON.stringify({ lockfileVersion: 3, packages: {
+    "": { name: "app", dependencies: { carrier: `^${version}` } },
+    "node_modules/carrier": { version, resolved: url(version), integrity },
+    "node_modules/carrier/node_modules/brace": { version: bundled, inBundle: true },
+  } });
+  const carried = { name: "brace", from: ["5.0.9"], locations: ["node_modules/carrier/node_modules/brace"], advisories: ["GHSA-brace"], to: ["5.0.12"] };
+  const plan: ChangePlan = { topic: "security", malware: false, packages: ["npm|carrier"], severity: "HIGH", moves: [
+    { ecosystem: "npm", name: "carrier", from: "1.0.0", to: "1.1.0", mechanism: "npm-direct", locations: ["node_modules/carrier"], advisories: ["GHSA-brace"], major: false, commitSha: undefined, declaredAs: undefined, carries: [carried] },
+  ] };
+  const routes = {
+    "https://registry.npmjs.org/carrier": { body: { time: { "1.0.0": OLD, "1.1.0": OLD }, versions: Object.fromEntries(Object.entries(archives).map(([version, { integrity }]) => [version, { _npmUser: { name: "maintainer" }, dist: { integrity } }])) } },
+    "https://registry.npmjs.org/carrier/1.0.0": { body: {} },
+    "https://registry.npmjs.org/carrier/1.1.0": { body: {} },
+    "https://registry.npmjs.org/brace/5.0.9": { body: {} },
+    "https://registry.npmjs.org/brace/5.0.12": { body: {} },
+  };
+  const check = (headLock: string) => verifyPlan({
+    reference: undefined, plan, gradle: {}, changedFiles: ["package.json", "package-lock.json"],
+    base: tree("b".repeat(40), { "package-lock.json": carrierLock("1.0.0", "5.0.9") }),
+    head: tree("worktree", { "package-lock.json": headLock }),
+    env: { ...environment({ "brace@5.0.9": ["GHSA-brace"] }, routes), fetchArchive: serving({ [url("1.0.0")]: archives["1.0.0"].bytes, [url("1.1.0")]: archives["1.1.0"].bytes }) },
+  });
+
+  it("passes a carrier that landed with exactly the bundle its archive ships", async () => {
+    expect(await check(carrierLock("1.1.0", "5.0.12"))).toEqual([]);
+  });
+
+  it("fails a lockfile recording another bundle than the archive's, and the carried advisory left behind", async () => {
+    expect(await check(carrierLock("1.1.0", "5.0.9"))).toEqual(expect.arrayContaining([
+      "brace@5.0.9 still has GHSA-brace, which moving carrier was to fix",
+      "node_modules/carrier: node_modules/carrier ships brace@5.0.12 at node_modules/brace, but the lockfile records brace@5.0.9",
+    ]));
+  });
+
+  it("fails a carrier locking another archive than the registry's", async () => {
+    expect(await check(carrierLock("1.1.0", "5.0.12", archives["1.0.0"].integrity))).toEqual(expect.arrayContaining(["carrier at node_modules/carrier doesn't lock the registry's 1.1.0 archive"]));
+  });
+});
 
 describe("verifyPlan", () => {
   it("checks remaining targets against compare's one head snapshot", async () => {

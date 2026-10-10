@@ -45,7 +45,7 @@ import { materializeOnBase } from "./npm-materialize.ts";
 import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
-import { type ChangePlan, coupledWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit } from "./plan.ts";
+import { type ChangePlan, coupledWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit, withUnsupportedCarriers } from "./plan.ts";
 import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { referencePlan, verifyPlan, type VerifyInputs } from "./verify.ts";
@@ -143,6 +143,7 @@ function skillInput(context: ToolRunContext, plan: ChangePlan, npmAgeExclusions:
       major: move.major,
       ...(move.commitSha === undefined ? {} : { commitSha: move.commitSha }),
       ...(move.declaredAs === undefined ? {} : { declaredAs: move.declaredAs }),
+      ...(move.carries === undefined ? {} : { carries: move.carries.map((carried) => ({ ...carried, from: [...carried.from], to: [...carried.to], locations: [...carried.locations], advisories: [...carried.advisories] })) }),
     })),
     ...(plan.floorRemoval === undefined ? {} : {
       floorRemovals: plan.floorRemoval.floors.filter((floor) => floor.ecosystem === "Maven").map((floor) => ({
@@ -229,7 +230,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(tree, env, { head: base.gradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const selection = await coupledWork(found.fixes, found.npmPeers);
+  const selection = await coupledWork(withUnsupportedCarriers(found.fixes, await lockfilesOf(tree)), found.npmPeers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
 
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps), npmFiles: new Map<string, string>() };

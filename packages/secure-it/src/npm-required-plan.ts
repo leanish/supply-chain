@@ -27,7 +27,7 @@ export interface PlannedRequirement extends RequiredTarget {
 
 export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnvironment): Promise<ChangePlan> {
   if (plan.malware) return plan;
-  if (!plan.moves.some((move) => move.ecosystem === "npm" && move.advisories.length > 0)) return plan;
+  if (!plan.moves.some(isRequirementRoot)) return plan;
   const locks = await lockfilesOf(base);
   const { config, exceptions } = await readSettings(base);
   const registry = new NpmRegistry(env.fetch);
@@ -46,12 +46,20 @@ export async function requiredNpmPlan(base: Tree, plan: ChangePlan, env: GateEnv
   return { ...plan, moves, packages, coupled, requiredNpm: targets, notes };
 }
 
+/**
+ * An npm security move whose young requirements may be proved. A carrier move isn't one: the gate doesn't let a
+ * bundled fix seed required-dependency proofs (`bundle-fix-proof.ts`), so a young dependency it needs fails there.
+ */
+function isRequirementRoot(move: ChangePlan["moves"][number]): boolean {
+  return move.ecosystem === "npm" && move.advisories.length > 0 && move.carries === undefined;
+}
+
 export function requirementLocation(target: PlannedRequirement): string {
   return npmLocation(target.lockfile, target.path);
 }
 
 async function collectRequirements(base: Tree, plan: ChangePlan, locks: ReadonlyMap<string, unknown>, registry: NpmRegistry, config: Config, now: Date) {
-  const roots = plan.moves.filter((move) => move.ecosystem === "npm" && move.advisories.length > 0);
+  const roots = plan.moves.filter(isRequirementRoot);
   const proofs: RequiredProof[] = [];
   const targets: PlannedRequirement[] = [];
   for (const [lockfile, lock] of locks) {

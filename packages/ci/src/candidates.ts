@@ -22,6 +22,7 @@
  * Bumps (`bumpCandidates`): see there.
  */
 import { actionGaps } from "./actions-changes.ts";
+import { type CarriedPackage, type CarrierContext, decideCarrier, splitBundled } from "./carrier-candidates.ts";
 import { type Config, isOwnPackage } from "./config.ts";
 import { type Exceptions, unexcusedProblem } from "./exceptions.ts";
 import { findingsOf, type Located } from "./findings.ts";
@@ -38,6 +39,7 @@ import {
 import { gradleLocation } from "./gradle.ts";
 import { gradleSourceIndex } from "./gradle-sources.ts";
 import type { NpmLockfile } from "./inventory.ts";
+import { BundleReader } from "./npm-bundles.ts";
 import { directDependencies, type LockedPackage, NPM_REGISTRY } from "./npm-lock.ts";
 import { NpmRegistry } from "./npm-registry.ts";
 import { nodeRuntime, nodeTypeProblem, nodeTypeVersions } from "./node-runtime.ts";
@@ -83,6 +85,8 @@ export interface SecurityFix {
   readonly to: SecurityMove | undefined;
   /** Why there's no `to`. */
   readonly problem: string | undefined;
+  /** A carrier move: the bundled packages it replaces, and their advisories (`carrier-candidates.ts`). */
+  readonly carries?: ReadonlyArray<CarriedPackage>;
 }
 
 export interface SecurityCandidates {
@@ -101,12 +105,25 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
   const { config, exceptions } = state.settings;
   const now = env.now();
   const today = now.toISOString().slice(0, 10);
-  const failing = new Map<string, { pkg: Located; malicious: boolean }>();
-  for (const finding of unexcused(state.packages, state.snapshot, exceptions, today)) {
+  const failing = new Map<string, { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> }>();
+  // Bundled copies can only move with their carrier: their findings become the carrier's targets.
+  const { rest, carriers } = splitBundled(unexcused(state.packages, state.snapshot, exceptions, today), state.inventory.npm);
+  for (const finding of rest) {
     const pkg: Located = { ecosystem: finding.ecosystem, name: finding.name, version: finding.version, locations: finding.locations };
-    const entry = failing.get(versionKey(pkg)) ?? { pkg, malicious: false };
+    const entry = failing.get(versionKey(pkg)) ?? { pkg, malicious: false, advisories: [], severities: [] };
     entry.malicious ||= finding.malicious;
+    entry.advisories.push(finding.advisory);
+    entry.severities.push(finding.severity);
     failing.set(versionKey(pkg), entry);
+  }
+  // A carrier failing on its own too is one move with both kinds of targets.
+  const carrierOwn = new Map<string, { pkg: Located; malicious: boolean; advisories: string[]; severities: Array<string | undefined> }>();
+  for (const group of carriers) {
+    const key = versionKey({ ecosystem: "npm", name: group.name, version: group.version });
+    const own = failing.get(key);
+    if (own === undefined) continue;
+    carrierOwn.set(key, own);
+    failing.delete(key);
   }
 
   const registry = new NpmRegistry(env.fetch);
@@ -142,6 +159,29 @@ export async function securityCandidates(head: Tree, env: GateEnvironment, gradl
     } else {
       found.push(await chooseMove(pkg, targets, malicious, moves, { snapshot, catalog: catalogs[pkg.ecosystem], config, now, identity }, base));
     }
+  }
+  const carrierContext: CarrierContext = {
+    reader: new BundleReader(env.fetchArchive), registry, catalog: catalogs.npm, config, now,
+    scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, state.github)),
+    identity: (pkg, to) => identity.problems(pkg, to),
+  };
+  for (const group of carriers) {
+    const own = carrierOwn.get(versionKey({ ecosystem: "npm", name: group.name, version: group.version }));
+    const malicious = group.malicious || own?.malicious === true;
+    const decision = await decideCarrier(group, own?.advisories ?? [], malicious, carrierContext);
+    found.push({
+      ecosystem: "npm",
+      name: group.name,
+      from: group.version,
+      locations: [...new Set([...decision.locations, ...(own?.pkg.locations ?? [])])].sort(),
+      targets: [...new Set(own?.advisories ?? [])],
+      unfixable: [],
+      malicious,
+      severity: highestSeverity([...group.severities, ...(own?.severities ?? [])]),
+      to: decision.to,
+      problem: decision.problem,
+      carries: decision.carries,
+    });
   }
   return {
     fixes: found,

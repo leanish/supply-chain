@@ -67,6 +67,12 @@ function removalSection(plan: ChangePlan): string {
 
 /** A companion aligns the direct-peer set rather than claiming to fix an advisory itself. */
 function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
+  if (move.carries !== undefined) {
+    const carried = new Set(move.carries.flatMap((entry) => entry.advisories));
+    const own = move.advisories.filter((advisory) => !carried.has(advisory));
+    const inside = move.carries.map((entry) => `${entry.advisories.join(", ")} in bundled \`${entry.name}\` ${entry.from.join(", ")} → ${entry.to.length === 0 ? "removed" : entry.to.join(", ")}`);
+    return [...(own.length === 0 ? [] : [own.join(", ")]), ...inside].join("; ");
+  }
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
   if (plan.requiredNpm?.some((target) => target.name === move.name && target.version === move.to)) return "required dependency compatibility";
   const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
@@ -152,7 +158,15 @@ function validMetadata(plan: ChangePlan): boolean {
 function isMove(move: unknown): move is PlannedMove {
   if (typeof move !== "object" || move === null) return false;
   const m = move as Record<string, unknown>;
-  return typeof m["name"] === "string" && typeof m["from"] === "string" && typeof m["to"] === "string" && typeof m["mechanism"] === "string" && Array.isArray(m["locations"]);
+  return typeof m["name"] === "string" && typeof m["from"] === "string" && typeof m["to"] === "string" && typeof m["mechanism"] === "string" && Array.isArray(m["locations"]) &&
+    (m["carries"] === undefined || (Array.isArray(m["carries"]) && m["carries"].every(isCarried)));
+}
+
+function isCarried(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const c = entry as Record<string, unknown>;
+  const strings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === "string");
+  return typeof c["name"] === "string" && strings(c["from"]) && strings(c["to"]) && strings(c["locations"]) && strings(c["advisories"]);
 }
 
 function validHolds(held: unknown): boolean {

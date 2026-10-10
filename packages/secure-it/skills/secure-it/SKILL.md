@@ -48,6 +48,18 @@ inputSchema:
             type: string
           declaredAs:
             type: string
+          carries:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, from, to, locations, advisories]
+              properties:
+                name: { type: string }
+                from: { type: array, items: { type: string } }
+                to: { type: array, items: { type: string } }
+                locations: { type: array, items: { type: string } }
+                advisories: { type: array, items: { type: string } }
     floorRemovals:
       type: array
       items:
@@ -180,6 +192,10 @@ that rewrites a lockfile. Never lower/unset the window or add exclusions of your
 
 - `npm-direct`, `npm-lock`, `npm-override`: already applied by the tool. Preserve its exact lockfiles, dependency
   fields and any floor records. Never re-resolve, install a different target, or hand-edit a transitive.
+- A move with `carries` moves a carrier: the vulnerable packages ship inside its tarball (`inBundle`), so only another
+  carrier version replaces them. Its `advisories` are the carried packages' (each `carries` entry names its package,
+  its versions before and after, `to` empty when the new bundle no longer ships it). Nothing extra to edit: the tool
+  applied it like any npm move.
 - `gradle-declared`: a dependency the build declares. Change its version where it's declared (the version catalog if
   it comes from there, else the build file).
 - `gradle-floor`: a transitive dependency, or one a plugin declares (no file of the repository declares it, so leave the
@@ -214,7 +230,8 @@ within what you may change. If the failure isn't caused by the move, or fixing i
 End with one fenced `json` block, nothing after it:
 
 - `applied`, with `publication`: a title like `moving snappy-java to 1.1.10.10 for 7 advisories` (lower case, what
-  changes); a body that says why (the advisories, in a sentence or two) and, for a major, what you adapted (secure-it
+  changes); a body that says why (the advisories, in a sentence or two; for a carrier move, which bundled packages
+  it replaces and with what, e.g. "aws-cdk-lib 2.273.0 ships brace-expansion 5.0.12") and, for a major, what you adapted (secure-it
   adds the table of moves itself). Also mention required transitive changes npm made and why. The tool may have
   pinned them through an independently gated required-dependency age proof; otherwise they are npm's induced
   resolution. Leave all tool-written bytes unchanged. The tool verifies them before publishing. Use a commit message
