@@ -204,7 +204,7 @@ export async function runRescan(
       await steps.reset();
     }
     await steps.record(pr, { state, description, compared, outcome, error });
-    const statuses: Array<{ context: string; state: "success" | "failure"; description: string }> = [{ context: options.context, state, description }];
+    const statuses: Array<{ context: string; state: "success" | "failure" | "error"; description: string }> = [{ context: options.context, state, description }];
     if (outcome?.completed === true) statuses.push({ context: options.cooldownContext, ...cooldownStatus(outcome.cooldown) });
     for (const status of statuses) {
       // Again right before posting: the PR or its base may have moved while it was being scanned.
@@ -241,9 +241,12 @@ async function stillAsPlanned(pr: PlannedPr, api: ReturnType<typeof github>, opt
 }
 
 /** Statuses come newest first: read pages until one predates the rescan, or they run out. */
-/** The cooldown under the base's current policy: held versions, or one that can't be evaluated, fail it. */
-function cooldownStatus(cooldown: CooldownEvaluation): { state: "success" | "failure"; description: string } {
-  if (!cooldown.evaluated) return { state: "failure", description: `Daily rescan: the cooldown can't be evaluated: ${cooldown.reason}` };
+/**
+ * The cooldown under the base's current policy: held versions fail it (`failure`, which the tools read as waiting),
+ * and so does one that can't be evaluated (`error`: broken, not waiting).
+ */
+function cooldownStatus(cooldown: CooldownEvaluation): { state: "success" | "failure" | "error"; description: string } {
+  if (!cooldown.evaluated) return { state: "error", description: `Daily rescan: the cooldown can't be evaluated: ${cooldown.reason}` };
   const until = heldUntil(cooldown.held);
   return until === undefined
     ? { state: "success", description: `Daily rescan: nothing under the ${cooldown.releaseAgeDays}-day wait` }

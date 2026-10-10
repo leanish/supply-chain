@@ -242,7 +242,7 @@ describe("rescan", () => {
     expect(await cooldownPost({ ...pass, cooldown: { evaluated: true, releaseAgeDays: 14, held: [held] } }))
       .toMatchObject({ state: "failure", description: "Daily rescan: 1 version(s) under the 14-day wait, held until 2026-10-15T00:00:00Z" });
     expect(await cooldownPost({ ...pass, cooldown: { evaluated: false, reason: "base's settings don't parse" } }))
-      .toMatchObject({ state: "failure", description: "Daily rescan: the cooldown can't be evaluated: base's settings don't parse" });
+      .toMatchObject({ state: "error", description: "Daily rescan: the cooldown can't be evaluated: base's settings don't parse" });
     // A comparison that didn't complete posts no cooldown verdict: its own status already fails.
     expect(await cooldownPost(new Error("merge failed") as never)).toBeUndefined();
     expect(await cooldownPost({ ...pass, completed: false })).toBeUndefined();

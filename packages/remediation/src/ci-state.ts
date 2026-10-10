@@ -1,6 +1,6 @@
 // Copied from leanish/leanish-development agents/bump-it/src/ci-state.ts at e4f8a1e; see PROVENANCE.md.
-// Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations; onlyCooldownHolds tells the gate's cooldown hold from a failure.
-import type { GitHubCheckRun, GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
+// Local changes: `CiConclusion` defined here instead of bump-it's handler type; failingCheckNames supplies both failed Actions jobs and commit status contexts to adaptations; onlyCooldownHolds tells the gate's cooldown hold (its job's hold step, or the daily rescan's `failure` cooldown status) from a failure.
+import type { GitHubCheckRun, GitHubCommitStatus, GitHubHeadChecks } from "../../agent-basics/src/types/clients.ts";
 
 /** What a PR head's CI says. */
 export type CiConclusion = "success" | "failure" | "pending" | "none";
@@ -72,15 +72,22 @@ const isGateJob = (run: GitHubCheckRun, job: string) => run.name === job || run.
 
 /**
  * Whether the head's only failures are the gate's cooldown holding young
- * versions after a passing comparison: waiting, not broken. A cooldown job
- * that failed any other way (no evaluation, a missing report, cancelled) is
- * an ordinary failure, and so is a hold next to any other failure.
+ * versions after a passing comparison: waiting, not broken. That's the
+ * cooldown job failing its hold step, or the daily rescan's `failure` status
+ * under the cooldown check's name (it posts a cooldown it can't evaluate as
+ * `error`). A cooldown that failed any other way (no evaluation, a missing
+ * report, cancelled) is an ordinary failure, and so is a hold next to any
+ * other failure.
  */
 export function onlyCooldownHolds(checks: GitHubHeadChecks): boolean {
-  if (checks.statuses.some((status) => FAILED_STATUSES.has(status.state))) return false;
+  const failedStatuses = checks.statuses.filter((status) => FAILED_STATUSES.has(status.state));
   const failed = checks.checkRuns.filter((run) => run.status === "completed" && run.conclusion !== null && FAILED_CONCLUSIONS.has(run.conclusion));
-  if (failed.length === 0 || !failed.every(heldByCooldown)) return false;
+  if (failed.length + failedStatuses.length === 0 || !failed.every(heldByCooldown) || !failedStatuses.every(heldByRescan)) return false;
   return checks.checkRuns.some((run) => isGateJob(run, "supply-chain") && run.status === "completed" && run.conclusion === "success");
+}
+
+function heldByRescan(status: GitHubCommitStatus): boolean {
+  return status.state === "failure" && (status.context === "cooldown" || status.context.endsWith(" / cooldown"));
 }
 
 function heldByCooldown(run: GitHubCheckRun): boolean {
