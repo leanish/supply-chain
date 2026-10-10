@@ -77,7 +77,7 @@ function lock(copies: ReadonlyArray<Copy>): string {
   return JSON.stringify({ lockfileVersion: 3, packages });
 }
 
-function environment(releases: Record<string, Release>, affected: Record<string, string[]>, integrityOverride: Record<string, string> = {}): { env: GateEnvironment; integrity: (version: string) => string } {
+function environment(releases: Record<string, Release>, affected: Record<string, string[]>, integrityOverride: Record<string, string> = {}, dependencies: Record<string, string> = {}, routes: Parameters<typeof fakeFetch>[0] = {}): { env: GateEnvironment; integrity: (version: string) => string } {
   const archives = Object.fromEntries(Object.entries(releases).map(([version, release]) => [version, carrierArchive(version, release.bundles)]));
   const integrity = (version: string) => integrityOverride[version] ?? archives[version]!.integrity;
   const run: RunProcess = async (command, args, options) => {
@@ -92,7 +92,7 @@ function environment(releases: Record<string, Release>, affected: Record<string,
     }));
     return { code: 1, stdout: JSON.stringify({ results: [{ packages }] }), stderr: "" };
   };
-  const versions = Object.fromEntries(Object.keys(releases).map((version) => [version, { _npmUser: { name: "maintainer" }, dist: { integrity: archives[version]!.integrity, tarball: tarball(version) } }]));
+  const versions = Object.fromEntries(Object.keys(releases).map((version) => [version, { _npmUser: { name: "maintainer" }, dependencies, dist: { integrity: archives[version]!.integrity, tarball: tarball(version) } }]));
   // Source repository lookups: none declared.
   const perVersion = Object.fromEntries([
     ...Object.keys(releases).map((version) => `carrier/${version}`),
@@ -101,6 +101,7 @@ function environment(releases: Record<string, Release>, affected: Record<string,
     "other/1.0.0",
   ].map((path) => [`https://registry.npmjs.org/${path}`, { body: {} }]));
   const fetch = fakeFetch({
+    ...routes,
     ...perVersion,
     ...Object.fromEntries(["holder", "other"].map((holder) => [`https://registry.npmjs.org/${holder}`, { body: { time: { "1.0.0": OLD }, versions: { "1.0.0": { _npmUser: { name: "maintainer" }, dist: {} } } } }])),
     "https://registry.npmjs.org/carrier": { body: { time: Object.fromEntries(Object.entries(releases).map(([version, release]) => [version, release.published])), versions } },
@@ -118,11 +119,15 @@ interface CompareOptions {
   /** A copy of the young version head adds where base had none. */
   readonly unrelated?: boolean;
   readonly scan?: (env: GateEnvironment) => GateEnvironment;
+  /** Extra head lockfile entries (key → entry), and the carrier versions' registry dependencies. */
+  readonly headExtra?: Record<string, object>;
+  readonly dependencies?: Record<string, string>;
+  readonly routes?: Parameters<typeof fakeFetch>[0];
 }
 
 async function compare(releases: Record<string, Release>, from: string, to: string, options: CompareOptions = {}) {
   const affected = options.affected ?? { "brace@5.0.9": ["GHSA-brace"] };
-  const { env, integrity } = environment(releases, affected, options.headIntegrity === undefined ? {} : { [to]: options.headIntegrity });
+  const { env, integrity } = environment(releases, affected, options.headIntegrity === undefined ? {} : { [to]: options.headIntegrity }, options.dependencies, options.routes);
   const nested = "node_modules/holder/node_modules/carrier";
   const baseCopies: Copy[] = [{ at: "node_modules/carrier", version: from, integrity: integrity(from), bundles: releases[from]!.bundles }];
   const headCopies: Copy[] = [{ at: "node_modules/carrier", version: to, integrity: integrity(to), bundles: options.headBundles ?? releases[to]!.bundles }];
@@ -132,7 +137,9 @@ async function compare(releases: Record<string, Release>, from: string, to: stri
   }
   if (options.unrelated === true) headCopies.push({ at: "node_modules/other/node_modules/carrier", version: to, integrity: integrity(to), bundles: releases[to]!.bundles });
   const base = await commit({ "package-lock.json": lock(baseCopies) });
-  const head = await commit({ "package-lock.json": lock(headCopies) });
+  const headLock = JSON.parse(lock(headCopies)) as { packages: Record<string, object> };
+  Object.assign(headLock.packages, options.headExtra ?? {});
+  const head = await commit({ "package-lock.json": JSON.stringify(headLock) });
   return runCompare(await gitTree(repo, base, runProcess), await gitTree(repo, head, runProcess), (options.scan ?? ((given) => given))(env));
 }
 
@@ -199,6 +206,19 @@ describe("a young carrier proved as a bundled fix", () => {
     }, "1.0.0", "1.2.0", { affected: { "brace@5.0.9": ["GHSA-brace"], "carrier@1.0.0": ["GHSA-own"], "carrier@1.1.0": ["GHSA-own"] } });
     expect(ageFailures(outcome.failures)).toEqual([]);
     expect(outcome.cooldown).toMatchObject({ held: [expect.objectContaining({ version: "1.2.0", justification: "bundle-fix" })] });
+  });
+
+  it("doesn't prove a young dependency the carrier needs: that one fails the comparison (known limitation)", async () => {
+    const outcome = await compare(TWO, "1.0.0", "1.1.0", {
+      dependencies: { ext: "^2.0.0" },
+      headExtra: { "node_modules/ext": { version: "2.0.0", resolved: "https://registry.npmjs.org/ext/-/ext-2.0.0.tgz", integrity: "sha512-AAAA" } },
+      routes: {
+        "https://registry.npmjs.org/ext": { body: { time: { "2.0.0": daysAgo(1) }, versions: { "2.0.0": { _npmUser: { name: "maintainer" }, dist: {} } } } },
+        "https://registry.npmjs.org/ext/2.0.0": { body: {} },
+      },
+    });
+    expect(outcome.failures.filter((failure) => failure.startsWith("ext@"))).toEqual([expect.stringContaining("ext@2.0.0 was published")]);
+    expect(ageFailures(outcome.failures)).toEqual([]);
   });
 
   it("isn't when head locks another archive than the registry's", async () => {
