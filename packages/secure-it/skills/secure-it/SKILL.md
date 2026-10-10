@@ -182,7 +182,8 @@ that rewrites a lockfile. Never lower/unset the window or add exclusions of your
   fields and any floor records. Never re-resolve, install a different target, or hand-edit a transitive.
 - `gradle-declared`: a dependency the build declares. Change its version where it's declared (the version catalog if
   it comes from there, else the build file).
-- `gradle-floor`: a transitive dependency. In each configuration of `locations` (`:runtimeClasspath`,
+- `gradle-floor`: a transitive dependency, or one a plugin declares (no file of the repository declares it, so leave the
+  plugin's own declaration alone: yours goes next to it). In each configuration of `locations` (`:runtimeClasspath`,
   `buildSrc/:compileClasspath`, …), declare it explicitly at exactly `<to>`, with `because("<advisories, comma-separated>:
   <one line on why>")`, in the configuration the resolving one extends (e.g. `implementation` for `runtimeClasspath`,
   `testImplementation` for `testRuntimeClasspath`); use the catalog when the build uses one. Then add its floor entry to

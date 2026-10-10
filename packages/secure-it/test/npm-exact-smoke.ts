@@ -38,7 +38,7 @@ for (const source of sources) {
       ecosystem: "npm", name: "vite", from: "8.3.2", locations: copies.map((copy) => copy.path),
       targets: ["GHSA-rq7h-c2jc-7f22"], unfixable: [], malicious: false, severity: "MODERATE", problem: undefined,
       to: { version: "8.3.3", line: "8", aged: false, major: false, blockers: [] },
-    }], { lockfiles: new Map([["package-lock.json", JSON.parse(lockText)]]), gradle: undefined, tagCommit: async () => undefined });
+    }], { named: undefined, lockfiles: new Map([["package-lock.json", JSON.parse(lockText)]]), gradle: undefined, tagCommit: async () => undefined });
     const now = new Date();
     const window = await npmWindowFor(plan, 7, [], now, (url, init) => fetch(url, init), new Map([["package-lock.json", JSON.parse(lockText)]]));
     const computed = await materializeInCopy({ releaseAgeDays: 7, now }, dir, base, plan, window.exclude,

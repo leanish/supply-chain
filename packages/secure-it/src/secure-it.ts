@@ -21,6 +21,7 @@ import { failingCheckNames } from "../../remediation/src/ci-state.ts";
 import type { ToolHandlers, ToolRunContext } from "../../remediation/src/command.ts";
 import { FLOORS_FILE, isMechanical } from "../../remediation/src/edit-checks.ts";
 import { writeLocalFile } from "../../remediation/src/local-files.ts";
+import { gradleSourceIndex } from "../../ci/src/gradle-sources.ts";
 import { changedSince, modeChangedSince } from "../../remediation/src/git-copies.ts";
 import { type GradleInventories, lockfilesOf, sandboxedGradleInventories } from "../../remediation/src/inventories.ts";
 import { FileJournal, type PublicationJournal } from "../../remediation/src/journal.ts";
@@ -329,7 +330,8 @@ async function holdRequiredYoung(execution: Execution, units: ReadonlyArray<Secu
 
 async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase): Promise<ChangePlan> {
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
-  const plan = await planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
+  const sources = base.gradle === undefined ? undefined : await gradleSourceIndex(base.tree);
+  const plan = await planFor(unit.work, { lockfiles: await lockfilesOf(base.tree), gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
   return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 

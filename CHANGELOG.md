@@ -29,6 +29,12 @@
   that proof too, so a security fix that updates a plugin no longer fails on
   what the plugin brings; a fix that also adds a floor still keeps the strict
   checks.
+- secure-it fixes a vulnerable dependency a Gradle plugin declares (java-conventions'
+  Guava, Commons Lang or Plexus Utils in a consumer) with a floor, as it does a
+  transitive one: an explicit dependency with `because(...)` next to the
+  plugin's, plus its record. Before, it planned to edit a declaration no file of
+  the repository holds. The gate accepts a floor next to the plugin's own
+  declaration of the same version too.
 
 ## 0.2.2 - 2026-10-09
 

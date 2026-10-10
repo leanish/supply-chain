@@ -34,8 +34,8 @@ packages/remediation/run.sh secure-it review leanish/sqs-codec   # every few hou
    | npm | a direct dependency | change its range and lock |
    | npm | a transitive one that every parent's range allows | lock exactly `to`, through temporary pins (a declaration for peers) |
    | npm | otherwise | a lasting override plus a floor entry |
-   | Gradle | a declared dependency | change its version |
-   | Gradle | a transitive one | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
+   | Gradle | a dependency the repository's sources declare | change its version |
+   | Gradle | a transitive one, or one only a plugin declares | a floor: an explicit dependency with `because(...)`, plus its entry in `.github/dependency-floors.json` |
    | Actions | any | pin to the tag's commit |
    - **Young fixes go apart.** Fixes whose target is younger than the release-age wait, everything coupled to them,
      and any fix whose required npm dependency is young form their own routine unit (topic `security-cooldown`), so
