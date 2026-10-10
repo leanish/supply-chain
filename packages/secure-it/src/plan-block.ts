@@ -109,7 +109,7 @@ export function cooldownWarning(held: ReadonlyArray<PlannedHold>): string | unde
   if (until === undefined) return undefined;
   const cell = (text: string) => text.replaceAll("|", "\\|").replace(/\s+/g, " ");
   const minute = (instant: string) => `${instant.slice(0, 10)} ${instant.slice(11, 16)}`;
-  const why = { "security-fix": "the security fix the version rule picks", required: "required by a security fix", exception: "a release-age exception", unjustified: "not justified: the gate fails it" } as const;
+  const why = { "security-fix": "the security fix the version rule picks", "bundle-fix": "the carrier version the rule picks for advisories in its bundle", required: "required by a security fix", exception: "a release-age exception", unjustified: "not justified: the gate fails it" } as const;
   const rows = held.map((entry) =>
     `> | ${entry.ecosystem} \`${cell(entry.name)}\` | ${entry.replaced.length === 0 ? "new" : cell(entry.replaced.join(", "))} → ${cell(entry.version)} | ${minute(entry.published)} | ${minute(entry.eligibleAt)} | ${why[entry.justification]} | ${cell(entry.signals.join("; ")) || "—"} |`);
   return [

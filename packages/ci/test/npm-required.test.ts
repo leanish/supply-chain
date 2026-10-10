@@ -33,6 +33,11 @@ describe("npm security-required release age", () => {
     expect(proof.targets[0]?.reason).toContain("lowest satisfying version");
   });
 
+  it("leaves a dependency its parent bundles out of the proof: the archive fixes its version", async () => {
+    const proof = await requiredClosure(root, { ...inputs(), placement: () => "node_modules/vite/node_modules/postcss", bundled: (path) => path === "node_modules/vite/node_modules/postcss" });
+    expect(proof).toEqual({ root, targets: [], problems: [] });
+  });
+
   describe("another verified security fix at the requirement's path", () => {
     const at = (version: string, extra: Partial<RequiredInputs> = {}) =>
       ({ ...inputs(), verifiedRoot: (path: string) => path === "node_modules/postcss" ? { name: "postcss", version } : undefined, installed: () => "8.5.28", ...extra });

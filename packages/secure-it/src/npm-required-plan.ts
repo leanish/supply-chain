@@ -89,6 +89,7 @@ async function collectRequirements(base: Tree, plan: ChangePlan, locks: Readonly
             // New required packages can be anchored only in the repository root. Nested placement is checked after npm.
             return `node_modules/${key}`;
           },
+          bundled: (path) => isObject(packages[path]) && packages[path]["inBundle"] === true,
           incoming: (node) => requiredPeerTargets(node, original, packages, registry, config, now, fixed),
           selected: (target) => { packages[target.path] = { ...(isObject(packages[target.path]) ? packages[target.path] as Record<string, unknown> : {}), name: target.name, version: target.version }; },
           constraints: async (path, name) => [

@@ -45,6 +45,11 @@ export interface RequiredInputs {
    */
   readonly verifiedRoot?: (path: string) => { readonly name: string; readonly version: string } | undefined;
   readonly incoming?: (node: RequiredNode) => Promise<ReadonlyArray<RequiredTarget>>;
+  /**
+   * Whether the copy at a path ships inside its parent's tarball (`inBundle`): the archive fixes its version, so it's
+   * never a choice; it and what it needs are left out of the proof (a young dependency it brings stays unjustified).
+   */
+  readonly bundled?: (path: string) => boolean;
   readonly selected?: (target: RequiredTarget) => void;
   readonly limits?: { readonly depth: number; readonly nodes: number; readonly versions: number };
 }
@@ -75,6 +80,7 @@ export async function requiredClosure(root: RequiredNode, inputs: RequiredInputs
       const path = inputs.placement(node, edge.key, edge.peer, edge.optional);
       if (path === undefined && edge.optional) continue;
       if (path === undefined) throw new Error(`${node.name}@${node.version}: unsupported placement for ${edge.key}`);
+      if (inputs.bundled?.(path) === true) continue;
       const spec = requirementSpec(edge.key, edge.spec);
       const ranges = [spec.range, ...await inputs.constraints?.(path, spec.name) ?? []];
       if (ranges.some((range) => semver.validRange(range) === null)) throw new Error(`${spec.name}: unreadable applicable requirement`);

@@ -32,6 +32,8 @@ import { comparisonVerdict, scanVerdict } from "./policy.ts";
 import type { RunProcess } from "./process.ts";
 import { gatherRequiredProofs, verifiedRequiredProofs, verifiedSecurityRoots } from "./npm-required-gate.ts";
 import { type ChangedVersion, isYoung, reviewReleaseAge } from "./release-age.ts";
+import { bundleFixProofs } from "./bundle-fix-proof.ts";
+import { BundleReader, type FetchArchive } from "./npm-bundles.ts";
 import type { Snapshot } from "./snapshot.ts";
 import { type SnapshotOptions, takeSnapshot } from "./take-snapshot.ts";
 import type { Tree } from "./tree.ts";
@@ -48,6 +50,8 @@ export interface GateEnvironment {
   /** The `osv-scanner` binary. */
   readonly osvScanner: string;
   readonly githubToken: string | undefined;
+  /** Registry archive downloads (`npm-bundles.ts`); plain `fetch` refusing redirects when absent. */
+  readonly fetchArchive?: FetchArchive;
 }
 
 export interface GateOutcome {
@@ -205,6 +209,13 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const needsRequiredProof = young.some((change) => change.pkg.ecosystem === "npm");
   const candidates = await gatherCandidates([...young, ...needsRequiredProof ? rootChanges.filter((change) => !young.includes(change)) : []], catalogs, config);
   const snapshot = await takeSnapshot([...baseLocated, ...headLocated], snapshotOptions(config, env, github), candidates.versions);
+  // A young carrier is proved on snapshots of its own, over the bundles it reads.
+  const bundleFixes = young.some((change) => change.pkg.ecosystem === "npm")
+    ? await bundleFixProofs(young, {
+      base: baseInventory, head: headInventory, reader: new BundleReader(env.fetchArchive), registry, catalog: catalogs.npm, config, now,
+      scan: (packages) => takeSnapshot(packages, snapshotOptions(config, env, github)),
+    })
+    : new Map<string, string | undefined>();
   const securityRoots = needsRequiredProof
     ? await verifiedSecurityRoots(rootChanges, candidates, snapshot, catalogs.npm, config, now) : [];
   const required = await gatherRequiredProofs(securityRoots, base, head, headInventory, registry, config, now);
@@ -213,7 +224,7 @@ export async function runCompare(base: Tree, head: Tree, env: GateEnvironment, g
   const verdict = comparisonVerdict(comparison, exceptions, snapshot, today);
   const proved = await verifiedRequiredProofs(required, rootChanges, candidates, snapshot, catalogs.npm, config, now);
   problems.push(...proved.problems);
-  const age = await reviewReleaseAge(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange, required: proved.versions });
+  const age = await reviewReleaseAge(young, { snapshot, exceptions, config, now, catalogs, candidates: candidates.byChange, required: proved.versions, bundleFixes });
   problems.push(...age.problems);
   const floorCheck = await checkFloors(floors, headInventory, head);
   return {
