@@ -19,8 +19,9 @@
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
  *      pass `compare` as inherited, not here), using compare's head snapshot,
- *      nor any version of a package a carrier move carries (a bundled npm copy,
- *      or the Gradle module a moved parent brings); and each npm carrier's
+ *      nor, on any package (a replacement coordinate too), an advisory a carrier
+ *      move carries (from a bundled npm copy, or the Gradle module a moved
+ *      parent brings); and each npm carrier's
  *      head copies lock the registry's archive of its target and record exactly
  *      the bundle that archive ships;
  *   4. no direct npm dependency outside the planned packages changed version,
@@ -105,8 +106,8 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   for (const finding of compared.headFindings) {
     // By alias group, as the comparison groups them: the same advisory can come back under another id.
     const isTarget = (advisory: string) => compared.group(advisory) === finding.advisory;
-    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem &&
-      (move.carries ?? []).some((carried) => carried.name === finding.name && carried.advisories.some(isTarget)));
+    // On any package: a replacement coordinate (okio → okio-jvm) can keep the advisory a move carried away.
+    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && (move.carries ?? []).some((carried) => carried.advisories.some(isTarget)));
     if (carriers.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which moving ${carriers.map((move) => move.name).join(", ")} was to fix`);
     if (!planned.has(packageKey(finding))) continue;
     const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some(isTarget));

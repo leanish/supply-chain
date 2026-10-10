@@ -62,8 +62,11 @@ export interface ParentMove {
   readonly unblocks: string;
 }
 
-/** A fix as planned: the rule's choice, and the parents that let npm lock it where an override would be needed. */
-export type FixWork = SecurityFix & { readonly parents?: ReadonlyArray<ParentMove> };
+/**
+ * A fix as planned: the rule's choice, the parents that let npm lock it where an override would be needed, and notes
+ * on why a parent couldn't (for the PR).
+ */
+export type FixWork = SecurityFix & { readonly parents?: ReadonlyArray<ParentMove>; readonly notes?: ReadonlyArray<string> };
 
 export type PlanKind = "routine" | "major" | "malware" | "floor-removal";
 
@@ -322,7 +325,8 @@ export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, 
   const severity = work.map((fix) => fix.severity).reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
   const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");
   const topic = unit?.topic ?? (kind === "malware" ? "malware" : kind === "routine" ? "security" : `${work[0]!.name}-major`);
-  return { kind, topic, malware, packages, moves, severity, ...(coupled.length === 0 ? {} : { coupled }) };
+  const notes = [...new Set(work.flatMap((fix) => fix.notes ?? []))];
+  return { kind, topic, malware, packages, moves, severity, ...(coupled.length === 0 ? {} : { coupled }), ...(notes.length === 0 ? {} : { notes }) };
 }
 
 /**
@@ -330,7 +334,7 @@ export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, 
  * chosen version) aren't made: overriding a carrier would need floor records of what it carries. Such a fix gets a
  * blocker, so it's reported instead of planned.
  */
-export function withUnsupportedCarriers(fixes: ReadonlyArray<SecurityFix>, lockfiles: ReadonlyMap<string, unknown>): SecurityFix[] {
+export function withUnsupportedCarriers<T extends SecurityFix>(fixes: ReadonlyArray<T>, lockfiles: ReadonlyMap<string, unknown>): T[] {
   return fixes.map((fix) => {
     if (fix.ecosystem !== "npm" || fix.carries === undefined || fix.to === undefined) return fix;
     const to = fix.to;

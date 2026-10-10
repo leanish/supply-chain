@@ -56,8 +56,10 @@ const brace = (to = "1.2.4"): SecurityFix => ({
   to: { version: to, line: "1", aged: true, major: false, blockers: [] }, problem: undefined,
 });
 
-const parents = (registry: Registry, options: { affected?: Record<string, string[]>; locks?: ReadonlyMap<string, unknown> } = {}) =>
-  withParents([brace()], { lockfiles: options.locks ?? lockfiles(), env: environment(registry, options.affected), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+async function parents(registry: Registry, options: { affected?: Record<string, string[]>; locks?: ReadonlyMap<string, unknown> } = {}) {
+  const fixes = await withParents([brace()], { lockfiles: options.locks ?? lockfiles(), env: environment(registry, options.affected), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+  return { fixes, notes: fixes.flatMap((fix) => fix.notes ?? []) };
+}
 
 const PARENT = {
   "1.0.0": { time: OLD, dependencies: { brace: "~1.1.0" } },
@@ -123,5 +125,80 @@ describe("moving a parent instead of overriding its range", () => {
   it("keeps the override, with the reason, when the registry can't be read", async () => {
     const result = await parents({});
     expect(result.notes).toEqual([expect.stringContaining("searching parent failed")]);
+  });
+});
+
+describe("npm parents, regressions", () => {
+  const fixOf = (name: string, from: string, to: string, location = `node_modules/${name}`): SecurityFix => ({
+    ecosystem: "npm", name, from, locations: [location], targets: [`GHSA-${name}`], unfixable: [], malicious: false, severity: "HIGH",
+    to: { version: to, line: to.split(".")[0]!, aged: true, major: false, blockers: [] }, problem: undefined,
+  });
+  const twoChildren = () => new Map([["package-lock.json", { lockfileVersion: 3, packages: {
+    "": { name: "app", dependencies: { parent: "^1.0.0" } },
+    "node_modules/parent": { version: "1.0.0", dependencies: { x: "~1.0.0", y: "~1.0.0" } },
+    "node_modules/x": { version: "1.0.0" },
+    "node_modules/y": { version: "1.0.0" },
+  } }]]);
+  const run = (fixes: SecurityFix[], registry: Registry, locks: ReadonlyMap<string, unknown>) =>
+    withParents(fixes, { lockfiles: locks, env: environment(registry), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+
+  it("gives one parent occurrence one version admitting every copy it must", async () => {
+    const registry: Registry = { parent: {
+      "1.0.0": { time: OLD, dependencies: { x: "~1.0.0", y: "~1.0.0" } },
+      "1.1.0": { time: OLD, dependencies: { x: "^1.1.0", y: "~1.0.0" } },
+      "1.2.0": { time: OLD, dependencies: { x: "^1.1.0", y: "^1.1.0" } },
+    } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0"), fixOf("y", "1.0.0", "1.1.0")], registry, twoChildren());
+    expect(fixes.map((fix) => fix.parents?.map((parent) => parent.to))).toEqual([["1.2.0"], ["1.2.0"]]);
+    const plan = await planFor(fixes, { named: undefined, lockfiles: twoChildren(), gradle: undefined, tagCommit: async () => undefined });
+    expect(plan.moves.filter((move) => move.name === "parent")).toEqual([expect.objectContaining({ to: "1.2.0", locations: ["node_modules/parent"] })]);
+  });
+
+  it("parents only through the version the parent's own fix takes", async () => {
+    const registry: Registry = { parent: {
+      "1.0.0": { time: OLD, dependencies: { x: "~1.0.0", y: "~1.0.0" } },
+      "1.1.0": { time: OLD, dependencies: { x: "^1.1.0", y: "~1.0.0" } },
+      "1.2.0": { time: OLD, dependencies: { x: "^1.1.0", y: "~1.0.0" } },
+    } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0"), fixOf("parent", "1.0.0", "1.2.0")], registry, twoChildren());
+    expect(fixes[0]!.parents?.map((parent) => parent.to)).toEqual(["1.2.0"]);
+  });
+
+  it("reads the range of the edge that installs the copy, not a peer's", async () => {
+    const locks = new Map([["package-lock.json", { lockfileVersion: 3, packages: {
+      "": { name: "app", dependencies: { parent: "^1.0.0" } },
+      "node_modules/parent": { version: "1.0.0", dependencies: { x: "~1.0.0" } },
+      "node_modules/parent/node_modules/x": { version: "1.0.0" },
+    } }]]);
+    const registry: Registry = { parent: {
+      "1.0.0": { time: OLD, dependencies: { x: "~1.0.0" } },
+      "1.1.0": { time: OLD, dependencies: { x: "~1.0.0" } },
+      "1.2.0": { time: OLD, dependencies: { x: "^1.1.0" } },
+    } };
+    // 1.1.0 also asks for x as a peer admitting the fix, but its own nested copy stays ~1.0.0.
+    const environmentWithPeer = environment(registry);
+    const fetch = environmentWithPeer.fetch;
+    const withPeer: typeof environmentWithPeer = { ...environmentWithPeer, fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      if (url !== "https://registry.npmjs.org/parent") return response;
+      const body = await response.json() as { versions: Record<string, Record<string, unknown>> };
+      body.versions["1.1.0"]!["peerDependencies"] = { x: "^1.1.0" };
+      return { ...response, json: async () => body, text: async () => JSON.stringify(body) };
+    } };
+    const fixes = await withParents([fixOf("x", "1.0.0", "1.1.0", "node_modules/parent/node_modules/x")], { lockfiles: locks, env: withPeer, config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+    expect(fixes[0]!.parents?.map((parent) => parent.to)).toEqual(["1.2.0"]);
+  });
+
+  it("moves a transitive parent too, locked inside its own parent's range", async () => {
+    const locks = new Map([["package-lock.json", { lockfileVersion: 3, packages: {
+      "": { name: "app", dependencies: { holder: "^1.0.0" } },
+      "node_modules/holder": { version: "1.0.0", dependencies: { parent: "^1.0.0" } },
+      "node_modules/parent": { version: "1.0.0", dependencies: { x: "~1.0.0" } },
+      "node_modules/x": { version: "1.0.0" },
+    } }]]);
+    const registry: Registry = { parent: { "1.0.0": { time: OLD, dependencies: { x: "~1.0.0" } }, "1.1.0": { time: OLD, dependencies: { x: "^1.1.0" } } } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0")], registry, locks);
+    const plan = await planFor(fixes, { named: undefined, lockfiles: locks, gradle: undefined, tagCommit: async () => undefined });
+    expect(plan.moves.map((move) => [move.name, move.mechanism, move.to])).toEqual([["x", "npm-lock", "1.1.0"], ["parent", "npm-lock", "1.1.0"]]);
   });
 });

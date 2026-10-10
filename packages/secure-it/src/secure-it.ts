@@ -48,7 +48,7 @@ import { withParents } from "./npm-parents.ts";
 import { requiredNpmPlan } from "./npm-required-plan.ts";
 import { npmWindowFor } from "./npm-window.ts";
 import { planDigest, planOf, planSection, withPlanSection } from "./plan-block.ts";
-import { type ChangePlan, coupledWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit, withUnsupportedCarriers } from "./plan.ts";
+import { type ChangePlan, coupledWork, type FixWork, HELD_TOPIC, packageKey, planFor, type PlannedHold, type SecurityUnit, withUnsupportedCarriers } from "./plan.ts";
 import { namedProblems, retryWithoutNamed, type ProblemMoves } from "./retry.ts";
 import { staleScanStatus, type StaleScan } from "./stale-scan.ts";
 import { referencePlan, verifyPlan, type VerifyInputs } from "./verify.ts";
@@ -233,7 +233,7 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   const found = await deps.candidates(tree, env, { head: base.gradle });
   const report = { staleScan, gaps: found.gaps.length };
   if (found.incomplete.length > 0) return { ...report, outcome: "incomplete", incomplete: found.incomplete };
-  const selection = await coupledWork(withUnsupportedCarriers(found.fixes, await lockfilesOf(tree)), found.npmPeers);
+  const selection = await coupledWork(await parentsFirst(found.fixes, base, env, inventories), found.npmPeers);
   const waiting = selection.blocked.flatMap((group) => group.reasons);
 
   const execution = { context, deps, env, inventories, publication: publicationOf(context, deps), npmFiles: new Map<string, string>() };
@@ -260,6 +260,22 @@ async function run(context: ToolRunContext, deps: SecureItDeps): Promise<Readonl
   }
   if (results.length === 0) return { ...report, outcome: "nothing-to-fix", waiting, blocked: selection.blocked, units: [] };
   return { ...report, ...(results.length === 1 ? results[0]! : { outcome: "completed" }), waiting, blocked: selection.blocked, units: results };
+}
+
+/**
+ * Parents first, on every fix of the run before it's split into units (a parent's own fix may land in another unit
+ * otherwise): npm parents where an override would be needed, Gradle parents where a floor would; then npm carriers
+ * that would need an override are blocked.
+ */
+async function parentsFirst(fixes: ReadonlyArray<SecurityFix>, base: PlanBase, env: GateEnvironment, inventories: GradleInventories): Promise<FixWork[]> {
+  const lockfiles = await lockfilesOf(base.tree);
+  const { config, exceptions } = await readSettings(base.tree);
+  let work = await withParents(fixes, { lockfiles, env, config, exceptions });
+  if (base.gradle !== undefined) {
+    const sources = await gradleSourceIndex(base.tree);
+    work = await withGradleParents(work, { base: base.tree, gradle: base.gradle, named: sources.named, inventories, env, config });
+  }
+  return withUnsupportedCarriers(work, lockfiles);
 }
 
 async function computeRemoval(execution: Execution, base: PlanBase): Promise<ComputedRemoval> {
@@ -337,14 +353,7 @@ async function planUnit(execution: Execution, unit: SecurityUnit, base: PlanBase
   const actions = new ActionsGitHub(execution.env.fetch, execution.env.githubToken);
   const sources = base.gradle === undefined ? undefined : await gradleSourceIndex(base.tree);
   const lockfiles = await lockfilesOf(base.tree);
-  const { config, exceptions } = await readSettings(base.tree);
-  const parented = await withParents(unit.work, { lockfiles, env: execution.env, config, exceptions });
-  const gradleParented = base.gradle === undefined || sources === undefined
-    ? { fixes: parented.fixes, notes: [] }
-    : await withGradleParents(parented.fixes, { base: base.tree, gradle: base.gradle, named: sources.named, inventories: execution.inventories, env: execution.env, config });
-  const planned = await planFor(gradleParented.fixes, { lockfiles, gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
-  const notes = [...parented.notes, ...gradleParented.notes];
-  const plan = notes.length === 0 ? planned : { ...planned, notes: [...(planned.notes ?? []), ...notes] };
+  const plan = await planFor(unit.work, { lockfiles, gradle: base.gradle, named: sources?.named, tagCommit: (action, tag) => actions.tagCommit(action, tag) }, unit);
   return execution.deps.requiredNpm(base.tree, plan, execution.env);
 }
 

@@ -26,10 +26,11 @@
 import { ActionsGitHub } from "../../ci/src/actions-github.ts";
 import type { CarriedPackage } from "../../ci/src/carrier-candidates.ts";
 import type { Config } from "../../ci/src/config.ts";
+import { severityRank } from "../../ci/src/candidates.ts";
 import { type GateEnvironment, snapshotOptions, versionCatalogs } from "../../ci/src/gate.ts";
 import { type GradleConfiguration, type GradleInventory, gradleLocation } from "../../ci/src/gradle.ts";
 import type { PackageVersion } from "../../ci/src/package-version.ts";
-import { takeSnapshot } from "../../ci/src/take-snapshot.ts";
+import { type SnapshotOptions, takeSnapshot } from "../../ci/src/take-snapshot.ts";
 import type { Tree } from "../../ci/src/tree.ts";
 import { versionScheme } from "../../ci/src/versions.ts";
 import { compatibleLine, fixes, movesFrom, targetsOf } from "../../ci/src/young-fixes.ts";
@@ -52,22 +53,22 @@ export interface GradleParentInputs {
   readonly config: Config;
 }
 
-/** `work` with each Gradle fix a parent can carry folded into that parent's move, and notes on the rest. */
-export async function withGradleParents(work: ReadonlyArray<FixWork>, inputs: GradleParentInputs): Promise<{ readonly fixes: FixWork[]; readonly notes: string[] }> {
+/**
+ * `work` (every fix of the run, before it's split into units) with each Gradle fix a parent can carry folded into
+ * that parent's move, and a note on each fix that keeps its floor.
+ */
+export async function withGradleParents(work: ReadonlyArray<FixWork>, inputs: GradleParentInputs): Promise<FixWork[]> {
   let fixesNow = [...work];
-  const notes: string[] = [];
   for (const fix of work) {
     if (fix.ecosystem !== "Maven" || fix.to === undefined || fix.malicious || fix.carries !== undefined) continue;
     const floored = fix.locations.filter((location) => gradleMechanism(inputs, fix.name, location) === "gradle-floor");
     if (floored.length === 0) continue;
     const found = await parentFor(fix, floored, fixesNow, inputs).catch((error: unknown) => `searching its parents failed: ${error instanceof Error ? error.message : String(error)}`);
-    if (typeof found === "string") {
-      notes.push(`${fix.name}@${fix.from} gets a floor: ${found}`);
-      continue;
-    }
-    fixesNow = fold(fixesNow, fix, floored, found);
+    fixesNow = typeof found === "string"
+      ? fixesNow.map((entry) => (entry === fix ? { ...fix, notes: [...(fix.notes ?? []), `${fix.name}@${fix.from} gets a floor: ${found}`] } : entry))
+      : fold(fixesNow, fix, floored, found);
   }
-  return { fixes: fixesNow, notes };
+  return fixesNow;
 }
 
 interface Parent {
@@ -76,7 +77,8 @@ interface Parent {
   readonly to: string;
   readonly line: string;
   readonly locations: ReadonlyArray<string>;
-  readonly carried: CarriedPackage;
+  /** Everything the move now carries, re-proved together: earlier claims and the new one. */
+  readonly carries: ReadonlyArray<CarriedPackage>;
 }
 
 /** `work` with X's floored locations carried by the parent's move (merged into the parent's own fix when it has one). */
@@ -85,8 +87,8 @@ function fold(work: ReadonlyArray<FixWork>, fix: FixWork, floored: ReadonlyArray
   const own = work.find((entry) => entry.ecosystem === "Maven" && entry.name === parent.name);
   const to = { version: parent.to, line: parent.line, aged: true, major: false, blockers: [] };
   const carrier: FixWork = own === undefined
-    ? { ecosystem: "Maven", name: parent.name, from: parent.from, locations: parent.locations, targets: [], unfixable: [], malicious: false, severity: fix.severity, to, problem: undefined, carries: [parent.carried] }
-    : { ...own, locations: [...new Set([...own.locations, ...parent.locations])], to, carries: [...(own.carries ?? []), parent.carried] };
+    ? { ecosystem: "Maven", name: parent.name, from: parent.from, locations: parent.locations, targets: [], unfixable: [], malicious: false, severity: fix.severity, to, problem: undefined, carries: parent.carries }
+    : { ...own, locations: [...new Set([...own.locations, ...parent.locations])], to, carries: parent.carries };
   return work.flatMap((entry) => {
     if (entry === fix) return rest.length === 0 ? [] : [{ ...fix, locations: rest }];
     if (entry === own) return [carrier];
@@ -100,7 +102,10 @@ async function parentFor(fix: FixWork, floored: ReadonlyArray<string>, work: Rea
   if (configurations.some((entry) => entry!.configuration.edges === undefined)) return "the inventory doesn't record who brings it";
   const roots = rootsOf(fix.name, configurations.map((entry) => entry!.configuration), inputs.named);
   if (roots.length === 0) return `no declared dependency brings it in every vulnerable configuration (${floored.join(", ")})`;
-  const ordered = roots.map((name) => ({ name, reach: reachOf(inputs.gradle, name) })).sort((a, b) => a.reach.length - b.reach.length || (a.name < b.name ? -1 : 1));
+  // A root that's a failing fix itself first (the most severe first): one move fixes more. Then the smallest reach.
+  const ownSeverity = (name: string) => severityRank(work.find((entry) => entry.ecosystem === "Maven" && entry.name === name && entry.targets.length > 0)?.severity);
+  const ordered = roots.map((name) => ({ name, reach: reachOf(inputs.gradle, name), severity: ownSeverity(name) }))
+    .sort((a, b) => b.severity - a.severity || a.reach.length - b.reach.length || (a.name < b.name ? -1 : 1));
   let budget = PARENT_PROBES;
   const reasons: string[] = [];
   for (const { name, reach } of ordered) {
@@ -120,11 +125,16 @@ async function tryRoot(fix: FixWork, floored: ReadonlyArray<string>, root: strin
   const parent = { ecosystem: "Maven" as const, name: root };
   const own = work.find((entry) => entry.ecosystem === "Maven" && entry.name === root && entry.to !== undefined);
   const ownTargets = own === undefined ? [] : own.targets.filter((target) => !own.unfixable.includes(target));
+  // What the move must carry: what it already carries for earlier modules, and this one; every candidate proves them all.
+  const claims: CarriedPackage[] = [
+    ...(own?.carries ?? []),
+    { name: fix.name, from: [fix.from], to: [], locations: [...floored].sort(), advisories: fix.targets.filter((target) => !fix.unfixable.includes(target)) },
+  ];
   const catalogs = versionCatalogs(config, env, new ActionsGitHub(env.fetch, env.githubToken));
   const listed = await catalogs.Maven.versions(parent);
   if (listed === undefined) return "its versions can't be listed";
   const line = (version: string) => compatibleLine(config, parent, version);
-  const floor = own?.to?.version;
+  const floor = own !== undefined && own.carries === undefined ? own.to?.version : undefined;
   const scheme = versionScheme("Maven");
   const aged: string[] = [];
   for (const version of movesFrom(parent, from, listed, "above")) {
@@ -143,21 +153,35 @@ async function tryRoot(fix: FixWork, floored: ReadonlyArray<string>, root: strin
     const reference = await inputs.inventories.ofCommit(inputs.base, { transform: referenceTransform(moves, []) });
     const landed = referenceProblems(inputs.gradle, reference, moves, []);
     if (reference === undefined || landed.length > 0) return `${version} can't be applied faithfully: ${landed.join("; ") || "no inventory"}`;
-    const brought = [...new Set(floored.flatMap((location) => {
-      const resolved = resolvedAt(reference, location, fix.name);
-      return resolved === undefined ? [] : [resolved];
-    }))];
-    const packages: PackageVersion[] = [{ ecosystem: "Maven", name: fix.name, version: fix.from }, ...brought.map((resolved): PackageVersion => ({ ecosystem: "Maven", name: fix.name, version: resolved }))];
-    const snapshot = await takeSnapshot(packages, options);
-    const targets = new Set(fix.targets.filter((target) => !fix.unfixable.includes(target)).map((target) => snapshot.group(target)));
-    const left = brought.filter((resolved) => targetsOf(snapshot, { ecosystem: "Maven", name: fix.name, version: resolved }).some((group) => targets.has(group)));
-    if (left.length > 0) continue;
-    return {
-      name: root, from, to: version, line: line(version), locations: reach,
-      carried: { name: fix.name, from: [fix.from], to: brought.sort(), locations: [...floored].sort(), advisories: fix.targets.filter((target) => !fix.unfixable.includes(target)) },
-    };
+    // Absence counts as removal only where everything resolved.
+    const checked = [...new Set([...reach, ...claims.flatMap((claim) => claim.locations)])];
+    if (checked.some((location) => !resolvedWhole(reference, location))) continue;
+    const proved = await claimsHold(claims, reference, options);
+    if (proved === undefined) continue;
+    return { name: root, from, to: version, line: line(version), locations: reach, carries: proved };
   }
-  return `no version past the wait brings ${fix.name} without ${fix.targets.join(", ")}`;
+  return `no version past the wait brings ${claims.map((claim) => claim.name).join(", ")} without ${claims.flatMap((claim) => claim.advisories).join(", ")}`;
+}
+
+/** The claims with what the reference resolves for each, when none of their targets is left there; else undefined. */
+async function claimsHold(claims: ReadonlyArray<CarriedPackage>, reference: GradleInventory, options: SnapshotOptions): Promise<CarriedPackage[] | undefined> {
+  const brought = claims.map((claim) => [...new Set(claim.locations.flatMap((location) => {
+    const resolved = resolvedAt(reference, location, claim.name);
+    return resolved === undefined ? [] : [resolved];
+  }))].sort());
+  const packages: PackageVersion[] = claims.flatMap((claim, at) => [...claim.from, ...brought[at]!].map((version): PackageVersion => ({ ecosystem: "Maven", name: claim.name, version })));
+  const snapshot = await takeSnapshot(packages, options);
+  const held = claims.every((claim, at) => {
+    const targets = new Set(claim.advisories.map((advisory) => snapshot.group(advisory)));
+    return brought[at]!.every((version) => !targetsOf(snapshot, { ecosystem: "Maven", name: claim.name, version }).some((group) => targets.has(group)));
+  });
+  return held ? claims.map((claim, at) => ({ ...claim, to: brought[at]! })) : undefined;
+}
+
+/** Whether a configuration resolved completely in an inventory. */
+function resolvedWhole(gradle: GradleInventory, location: string): boolean {
+  const found = configurationAt(gradle, location);
+  return found !== undefined && found.configuration.unresolved.length === 0 && found.configuration.error === undefined;
 }
 
 /** Source-named, versioned declarations whose resolved node reaches `name` in every configuration. */

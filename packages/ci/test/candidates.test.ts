@@ -493,6 +493,20 @@ describe("securityCandidates, bundled copies", () => {
     expect(found.fixes).toEqual([expect.objectContaining({ name: "carrier", targets: ["GHSA-forever"], unfixable: ["GHSA-forever"], to: expect.objectContaining({ version: "1.1.0" }) })]);
   });
 
+  it("brings a carrier's choice into the peer closure, so a peer it needs moves with it", async () => {
+    const peerRegistry: Registry = { ...registry, host: { "1.0.0": OLD, "1.5.0": OLD } };
+    const manifests = { ...carrierManifests, "carrier@1.0.0": { ...carrierManifests["carrier@1.0.0"], peerDependencies: { host: "^1.0.0" } }, "carrier@1.1.0": { ...carrierManifests["carrier@1.1.0"], peerDependencies: { host: "^1.5.0" } } };
+    const root = { name: "app", dependencies: { carrier: "^1.0.0", host: "^1.0.0" } };
+    const withHost = await tree({ host: "1.0.0" }, {}, root, {
+      "node_modules/carrier": { version: "1.0.0", resolved: carrierTarball("1.0.0"), integrity: archives["1.0.0"].integrity, peerDependencies: { host: "^1.0.0" } },
+      "node_modules/carrier/node_modules/brace": { version: "5.0.9", inBundle: true },
+    });
+    const found = await securityCandidates(withHost, withArchives(environment({ "brace@5.0.9": ["GHSA-brace"] }, peerRegistry, [], manifests)));
+    const carrier = found.fixes.find((fix) => fix.name === "carrier")!;
+    const peers = await found.npmPeers!.resolve([{ ...carrier, to: carrier.to!.version }]);
+    expect(peers.additions).toEqual([expect.objectContaining({ name: "host", to: "1.5.0" })]);
+  });
+
   it("reports a carrier it can't decide on, without failing the rest", async () => {
     const env = withArchives(environment({ "brace@5.0.9": ["GHSA-brace"] }, registry, [], carrierManifests));
     // The carrier search's own advisory scans fail; the batch's don't include the carrier's candidates once it fails.
