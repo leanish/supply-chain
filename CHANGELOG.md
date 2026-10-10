@@ -10,6 +10,11 @@
   repeated through a YAML alias is new and must be pinned, while the unchanged
   ones stay reported gaps. Before, the subdirectory was ignored, copies were
   merged, and an aliased step was read once.
+- The daily rescan re-judges the cooldown under the base's current policy and
+  posts it as a status named like the required cooldown check (new
+  `required-cooldown-check` input, default `supply-chain / cooldown`; bridge
+  callers such as this repository's own CI pass `gate / cooldown`). Before, a
+  PR that went green under a 7-day wait stayed green when the base raised it.
 
 ## 0.2.2 - 2026-10-09
 

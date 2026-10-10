@@ -20,7 +20,9 @@
  * only the gate's cooldown failing, leaves it a draft. Once every held version
  * has aged, the draft is retired before anything else, and the tool's next run
  * plans again from scratch, with fresh checks. A person who marked it ready
- * owns it: the tick leaves it alone.
+ * owns it: the tick leaves it alone. Any other PR that only the gate's
+ * cooldown holds (the daily rescan, after the base's wait grew) waits as a
+ * draft too: no adaptation can make a version older.
  *
  * Steps 1 and 3 need no model.
  */
@@ -174,6 +176,8 @@ async function reviewOne(context: ReviewContext, steps: ReviewSteps, pr: GitHubP
   if (ci === "none") return result("no-checks", "no check has passed or failed on the head yet");
   // Green, or red only because the gate's cooldown holds it: waiting, not ready and not broken.
   if (cooldown !== undefined && (ci === "success" || onlyCooldownHolds(checks))) return result("held", `until ${cooldown.until}`);
+  // Held by the gate although it took nothing young itself: the base's wait grew past one of its versions.
+  if (onlyCooldownHolds(checks)) return result("held", "by the gate's cooldown under the base's current wait");
   if (ci === "success") {
     if (!pr.isDraft) return result("already-ready");
     await markReady(publication, pr.number, pr.headSha);

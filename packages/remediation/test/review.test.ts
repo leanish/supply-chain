@@ -237,6 +237,23 @@ describe("reviewOpenPullRequests", () => {
       }
     });
 
+    it("stays a draft when the daily rescan holds it, its own cooldown green, held or untracked, with no model and no adaptation", async () => {
+      const rescanHeld = { ...CI_HOLDING, checkRuns: [CI_HOLDING.checkRuns[0]!, { name: "supply-chain / cooldown", status: "completed", conclusion: "success" }], statuses: [{ context: "supply-chain / cooldown", state: "failure" }] };
+      for (const [checks, tracked] of [[rescanHeld, true], [rescanHeld, false], [{ ...CI_HOLDING, statuses: rescanHeld.statuses }, true]] as const) {
+        const github = new FakeGitHub(ownPr());
+        github.checks = checks;
+        const calls: string[] = [];
+        const entry = (await reviewOpenPullRequests(context(github), tracked ? holding("waiting", calls) : steps(calls)))[0];
+        expect(entry?.outcome).toBe("held");
+        expect(calls).toEqual([]);
+        expect(stateOf(github.prs.get(7)!.body)?.adaptations ?? 0).toBe(0);
+      }
+      // A cooldown the rescan couldn't evaluate is broken, not waiting.
+      const github = new FakeGitHub(ownPr());
+      github.checks = { ...rescanHeld, statuses: [{ context: "supply-chain / cooldown", state: "error" }] };
+      expect((await reviewOpenPullRequests(context(github), steps()))[0]?.outcome).not.toBe("held");
+    });
+
     it("adapts as usual when the cooldown failed without an evaluation, or something else failed", async () => {
       const broken = { ...CI_HOLDING, checkRuns: [CI_HOLDING.checkRuns[0]!, { ...CI_HOLDING.checkRuns[1]!, steps: [step(COOLDOWN_STEPS.evaluate, "failure")] }] };
       for (const checks of [broken, RED]) {
