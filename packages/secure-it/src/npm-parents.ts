@@ -80,6 +80,20 @@ export async function withParents(fixes: ReadonlyArray<FixWork>, inputs: ParentI
       blockedBy.set(`${fix.name}|${location}`, keys);
     }
   }
+  // An occurrence must also keep admitting every other planned copy it supplies, even one its range admits today.
+  for (const [key, entry] of occurrences) {
+    for (const fix of fixes) {
+      if (fix.ecosystem !== "npm" || fix.to === undefined || fix.carries !== undefined || fix.malicious) continue;
+      for (const location of fix.locations) {
+        if (entry.obligations.some((obligation) => obligation.fix === fix && obligation.location === location)) continue;
+        if (lockfilePathOf(inputs.lockfiles, location) !== entry.lockfile) continue;
+        if (dependentsOf(inputs.lockfiles, location).dependents.some((dependent) => dependent.path === entry.dependent.path)) {
+          entry.obligations.push({ fix, location, name: fix.name, to: fix.to.version });
+        }
+      }
+    }
+    occurrences.set(key, entry);
+  }
   const chosen = new Map<string, ParentMove[] | string>();
   for (const [key, { dependent, lockfile, obligations }] of occurrences) {
     const own = fixes.find((fix) => fix.ecosystem === "npm" && fix.name === dependent.name && fix.to !== undefined);
@@ -88,7 +102,7 @@ export async function withParents(fixes: ReadonlyArray<FixWork>, inputs: ParentI
       .catch((error: unknown) => `searching ${dependent.name} failed: ${error instanceof Error ? error.message : String(error)}`);
     chosen.set(key, typeof move === "string" ? move : obligations.map((obligation) => ({ ...move, unblocks: obligation.location })));
   }
-  return fixes.map((fix) => {
+  const result = fixes.map((fix) => {
     const parents: ParentMove[] = [];
     const notes: string[] = [];
     for (const location of fix.locations) {
@@ -105,6 +119,27 @@ export async function withParents(fixes: ReadonlyArray<FixWork>, inputs: ParentI
     if (parents.length === 0 && notes.length === 0) return fix;
     return { ...fix, ...(parents.length === 0 ? {} : { parents }), ...(notes.length === 0 ? {} : { notes: [...(fix.notes ?? []), ...notes] }) };
   });
+  return [...result, ...parentFixes(result)];
+}
+
+/**
+ * Each chosen parent that has no fix of its own, as a fix with no targets: so it's coupled to the copies it unblocks
+ * before the batch splits into units, and it anchors the direct-peer closure like any move.
+ */
+function parentFixes(fixes: ReadonlyArray<FixWork>): FixWork[] {
+  const byName = new Map<string, FixWork>();
+  for (const fix of fixes) {
+    for (const parent of fix.parents ?? []) {
+      if (fixes.some((other) => other.ecosystem === "npm" && other.name === parent.name)) continue;
+      const existing = byName.get(parent.name);
+      const locations = [...new Set([...(existing?.locations ?? []), parent.location])].sort();
+      byName.set(parent.name, existing !== undefined ? { ...existing, locations } : {
+        ecosystem: "npm", name: parent.name, from: parent.from, locations, targets: [], unfixable: [], malicious: false, severity: fix.severity,
+        to: { version: parent.to, line: parent.line, aged: true, major: false, blockers: [] }, problem: undefined,
+      });
+    }
+  }
+  return [...byName.values()];
 }
 
 class ParentSearch {
@@ -163,7 +198,7 @@ class ParentSearch {
       if (pinned === undefined && !fixes(snapshot, parent, from, [], version)) continue;
       if ((await this.#identity.problems({ ...parent, version: from }, version)).length > 0) continue;
       if (!movable.declaredByWorkspace && !(movable.dependents.length > 0 && movable.dependents.every((entry) => satisfies(version, entry.spec)))) continue;
-      return { name: dependent.name, from, to: version, location: parentLocation };
+      return { name: dependent.name, from, to: version, location: parentLocation, line: line(version) };
     }
     return `no ${dependent.name} version admitting ${wanted} is free of new advisories, keeps its publisher, and moves without an override itself`;
   }

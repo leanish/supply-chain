@@ -19,9 +19,9 @@
  *   3. none of the targeted advisories affects any version of a planned
  *      package left in the tree (a swap for another vulnerable version would
  *      pass `compare` as inherited, not here), using compare's head snapshot,
- *      nor, on any package (a replacement coordinate too), an advisory a carrier
- *      move carries (from a bundled npm copy, or the Gradle module a moved
- *      parent brings); and each npm carrier's
+ *      nor an advisory a carrier move carries: on the carried npm package, or
+ *      on any Gradle coordinate (a replacement such as okio-jvm keeps it too);
+ *      and each npm carrier's
  *      head copies lock the registry's archive of its target and record exactly
  *      the bundle that archive ships;
  *   4. no direct npm dependency outside the planned packages changed version,
@@ -106,8 +106,10 @@ export async function verifyPlan(inputs: VerifyInputs): Promise<string[]> {
   for (const finding of compared.headFindings) {
     // By alias group, as the comparison groups them: the same advisory can come back under another id.
     const isTarget = (advisory: string) => compared.group(advisory) === finding.advisory;
-    // On any package: a replacement coordinate (okio → okio-jvm) can keep the advisory a move carried away.
-    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && (move.carries ?? []).some((carried) => carried.advisories.some(isTarget)));
+    // npm targets a package + group, as its findings do. Gradle checks any coordinate too: a replacement (okio →
+    // okio-jvm) can keep the advisory a parent move carried away.
+    const carriers = plan.moves.filter((move) => move.ecosystem === finding.ecosystem &&
+      (move.carries ?? []).some((carried) => (move.ecosystem !== "npm" || carried.name === finding.name) && carried.advisories.some(isTarget)));
     if (carriers.length > 0) problems.push(`${finding.name}@${finding.version} still has ${finding.advisory}, which moving ${carriers.map((move) => move.name).join(", ")} was to fix`);
     if (!planned.has(packageKey(finding))) continue;
     const targeted = plan.moves.filter((move) => move.ecosystem === finding.ecosystem && move.name === finding.name && move.advisories.some(isTarget));
@@ -136,11 +138,13 @@ async function carriersShipped(plan: ChangePlan, head: Tree, reader: BundleReade
   const problems: string[] = [];
   const locks = await lockfilesOf(head);
   for (const move of plan.moves.filter((move) => move.ecosystem === "npm" && move.carries !== undefined)) {
-    const published = await registryIntegrity(registry, move.name, move.to);
+    let published: string | undefined;
     for (const location of move.locations) {
       const { lock, key } = lockfileOf(locks, location);
       const copy = lockedPackages(lock).find((pkg) => pkg.path === key);
+      // A copy that didn't land is `landed`'s to report.
       if (copy === undefined || copy.version !== move.to) continue;
+      published ??= await registryIntegrity(registry, move.name, move.to);
       if (published === undefined || copy.integrity !== published) {
         problems.push(`${move.name} at ${location} doesn't lock the registry's ${move.to} archive`);
         continue;

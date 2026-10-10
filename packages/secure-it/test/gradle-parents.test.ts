@@ -217,6 +217,16 @@ describe("Gradle parents, regressions", () => {
     expect(fixes).toEqual([{ ...fix, notes: [expect.stringContaining("no declared dependency brings it in every vulnerable configuration")] }]);
   });
 
+  it("keeps the floor when the root's own blocked fix can't be fixed by the same move", async () => {
+    const brings: Brings = { "1.0": { x: "1.0" }, "1.1": { x: "2.0" }, "1.2": { x: "2.0" } };
+    // d has two advisories: 1.1 fixes only A, 1.2 only B; no version fixes both, so its own fix is blocked.
+    const affected = { "g:x@1.0": ["GHSA-x"], "g:d@1.0": ["GHSA-a", "GHSA-b"], "g:d@1.1": ["GHSA-b"], "g:d@1.2": ["GHSA-a"] };
+    const blocked: SecurityFix = { ...fixOf(D, "1.0", "GHSA-a"), targets: ["GHSA-a", "GHSA-b"], to: undefined, problem: "no single version above 1.0 fixes all of GHSA-a, GHSA-b" };
+    const fixes = await run([fixOf(X, "1.0", "GHSA-x"), blocked], brings, affected);
+    expect(fixes.find((fix) => fix.name === D)).toEqual(blocked);
+    expect(fixes.find((fix) => fix.name === X)?.notes).toEqual([expect.stringContaining("brings an advisory of its own or leaves its own")]);
+  });
+
   it("tries a root that's a failing fix itself first, and shares one probe budget across roots", async () => {
     const E = "g:e";
     const versions = ["1.0", "1.1", "1.2", "1.3", "1.4"];

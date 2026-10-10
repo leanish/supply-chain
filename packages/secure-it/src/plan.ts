@@ -47,6 +47,8 @@ export interface PlannedMove {
   readonly commitSha: string | undefined;
   /** npm: the key it's installed and declared under when that isn't its name (an `npm:` alias). */
   readonly declaredAs: string | undefined;
+  /** npm: a parent move, with the gate locations of the copies it lets lock inside its range. */
+  readonly unblocks?: ReadonlyArray<string>;
   /** A carrier move: the packages it replaces (bundled npm copies, or the Gradle module a parent brings), each with its advisories. */
   readonly carries?: ReadonlyArray<CarriedPackage>;
 }
@@ -56,6 +58,8 @@ export interface ParentMove {
   readonly name: string;
   readonly from: string;
   readonly to: string;
+  /** `to`'s compatible line (its own: parents never cross one). */
+  readonly line: string;
   /** Its own gate location. */
   readonly location: string;
   /** The copy's location it lets lock. */
@@ -170,10 +174,12 @@ async function completedWork(fixes: ReadonlyArray<SecurityFix>, peers?: NpmPeerP
   for (const unit of selected.units) {
     const result = await peers.resolve(unit.work.filter((fix) => fix.ecosystem === "npm").map((fix) => ({ ...fix, to: fix.to!.version })));
     const omitted = new Set(result.blocked.flatMap((group) => group.moves.map((move) => move.name)));
-    // Copies of a package and their connected companions remain indivisible across lockfiles too.
+    // Copies of a package and their connected companions remain indivisible across lockfiles too, as do a copy and
+    // the parents (or carriers) it's tied to.
+    const tied = (unit.coupled ?? []).map((set) => set.filter((key) => key.startsWith("npm|")).map((key) => key.slice("npm|".length)));
     for (;;) {
       const size = omitted.size;
-      for (const set of result.sets) {
+      for (const set of [...result.sets, ...tied]) {
         if (set.some((name) => omitted.has(name))) for (const name of set) omitted.add(name);
       }
       if (omitted.size === size) break;
@@ -241,11 +247,16 @@ export function selectWork(fixes: ReadonlyArray<SecurityFix>): Selection {
 
 /**
  * For each package a carrier move carries: the carriers that carry it and the package's own fix, when there's more
- * than one of them.
+ * than one of them; and each npm copy with the parents that let it lock.
  */
-function carriedSets(fixes: ReadonlyArray<SecurityFix>): string[][] {
+function carriedSets(fixes: ReadonlyArray<FixWork>): string[][] {
   const byPackage = new Map<string, Set<string>>();
   for (const fix of fixes) {
+    // A copy and the parents that let it lock land together.
+    for (const parent of fix.parents ?? []) {
+      const key = `npm|${parent.name}`;
+      if (fixes.some((other) => packageKey(other) === key)) byPackage.set(`parent:${packageKey(fix)}:${key}`, new Set([packageKey(fix), key]));
+    }
     for (const carried of fix.carries ?? []) {
       const key = `${fix.ecosystem}|${carried.name}`;
       const set = byPackage.get(key) ?? new Set<string>();
@@ -297,30 +308,22 @@ export async function planFor(work: ReadonlyArray<FixWork>, inputs: PlanInputs, 
       const found =
         fix.ecosystem === "npm" ? npmMechanism(inputs.lockfiles, fix.name, location, to.version) : { mechanism: gradleMechanism(inputs, fix.name, location), declaredAs: undefined };
       // Parents that admit the target turn an override into a lock inside their own ranges.
-      const lifted = found.mechanism === "npm-override" && (fix.parents ?? []).some((parent) => parent.unblocks === location);
+      // Parents that admit the target, moving in the same unit, turn an override into a lock inside their own ranges.
+      const lifted = found.mechanism === "npm-override" && (fix.parents ?? []).some((parent) => parent.unblocks === location &&
+        work.some((other) => other.ecosystem === "npm" && other.name === parent.name && other.to?.version === parent.to && other.locations.includes(parent.location)));
       const { mechanism, declaredAs } = lifted ? { ...found, mechanism: "npm-lock" as const } : found;
       const key = `${mechanism}|${declaredAs ?? ""}`;
       const entry = byMechanism.get(key) ?? { mechanism, declaredAs, locations: [] };
       entry.locations.push(location);
       byMechanism.set(key, entry);
     }
+    const unblocks = work.flatMap((other) => (other.parents ?? []).filter((parent) => parent.name === fix.name && parent.to === to.version).map((parent) => parent.unblocks));
     for (const [, { mechanism, declaredAs, locations }] of [...byMechanism.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-      moves.push({ ...base, mechanism, locations, commitSha: undefined, declaredAs });
+      moves.push({ ...base, mechanism, locations, commitSha: undefined, declaredAs, ...(unblocks.length === 0 ? {} : { unblocks: [...new Set(unblocks)].sort() }) });
     }
   }
   const coupled = [...(unit?.coupled ?? [])];
-  for (const fix of work) {
-    const parents = (fix.parents ?? []).filter((parent) => moves.some((move) => move.name === fix.name && move.mechanism === "npm-lock" && move.locations.includes(parent.unblocks)));
-    for (const parent of parents) {
-      const { mechanism } = npmMechanism(inputs.lockfiles, parent.name, parent.location, parent.to);
-      if (mechanism === "npm-override") throw new Error(`${parent.name}@${parent.to} at ${parent.location} would need an override itself`);
-      const same = moves.find((move) => move.name === parent.name && move.to === parent.to && move.mechanism === mechanism);
-      if (same !== undefined && !same.locations.includes(parent.location)) (same.locations as string[]).push(parent.location);
-      else if (same === undefined) moves.push({ ecosystem: "npm", name: parent.name, from: parent.from, to: parent.to, mechanism, locations: [parent.location], advisories: [], major: false, commitSha: undefined, declaredAs: undefined });
-    }
-    if (parents.length > 0) coupled.push([...new Set([packageKey(fix), ...parents.map((parent) => `npm|${parent.name}`)])].sort());
-  }
-  const packages = [...new Set([...work.map(packageKey), ...moves.map((move) => `${move.ecosystem}|${move.name}`)])].sort();
+  const packages = [...new Set(work.map(packageKey))].sort();
   const malware = work.some((fix) => fix.malicious);
   const severity = work.map((fix) => fix.severity).reduce<string | undefined>((best, next) => (severityRank(next) > severityRank(best) ? next : best), undefined);
   const kind = unit?.kind ?? (malware ? "malware" : moves.some((move) => move.major) ? "major" : "routine");

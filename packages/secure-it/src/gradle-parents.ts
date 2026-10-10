@@ -123,7 +123,9 @@ async function tryRoot(fix: FixWork, floored: ReadonlyArray<string>, root: strin
   if (declared.length !== 1) return `declared at ${declared.length === 0 ? "no version" : declared.sort().join(", ")}, not one version to move`;
   const from = declared[0]!;
   const parent = { ecosystem: "Maven" as const, name: root };
-  const own = work.find((entry) => entry.ecosystem === "Maven" && entry.name === root && entry.to !== undefined);
+  // The root's own fix, actionable or not: a move of the root must fix its own fixable targets too (a blocked fix
+  // whose targets no one version fixes leaves the floor).
+  const own = work.find((entry) => entry.ecosystem === "Maven" && entry.name === root);
   const ownTargets = own === undefined ? [] : own.targets.filter((target) => !own.unfixable.includes(target));
   // What the move must carry: what it already carries for earlier modules, and this one; every candidate proves them all.
   const claims: CarriedPackage[] = [

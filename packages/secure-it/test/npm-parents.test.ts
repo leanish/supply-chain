@@ -9,7 +9,7 @@ import type { GateEnvironment } from "../../ci/src/gate.ts";
 import { runProcess, type RunProcess } from "../../ci/src/process.ts";
 import { fakeFetch } from "../../ci/test/fake-fetch.ts";
 import { withParents } from "../src/npm-parents.ts";
-import { planFor } from "../src/plan.ts";
+import { coupledWork, planFor } from "../src/plan.ts";
 
 const NOW = new Date("2026-10-10T12:00:00Z");
 const OLD = "2026-01-01T00:00:00Z";
@@ -73,13 +73,14 @@ describe("moving a parent instead of overriding its range", () => {
   it("takes the parent's lowest aged version in its line that admits the target, and plans the copy as a lock", async () => {
     const result = await parents({ parent: PARENT });
     expect(result.notes).toEqual([]);
-    expect(result.fixes[0]!.parents).toEqual([{ name: "parent", from: "1.0.0", to: "1.2.0", location: "node_modules/parent", unblocks: "node_modules/brace" }]);
+    expect(result.fixes[0]!.parents).toEqual([{ name: "parent", from: "1.0.0", to: "1.2.0", line: "1", location: "node_modules/parent", unblocks: "node_modules/brace" }]);
     const plan = await planFor(result.fixes, { named: undefined, lockfiles: lockfiles(), gradle: undefined, tagCommit: async () => undefined });
     expect(plan.moves.map((move) => [move.name, move.mechanism, move.to, move.advisories])).toEqual([
       ["brace", "npm-lock", "1.2.4", ["GHSA-brace"]],
       ["parent", "npm-direct", "1.2.0", []],
     ]);
-    expect(plan.coupled).toEqual([["npm|brace", "npm|parent"]]);
+    const { units } = await coupledWork(result.fixes);
+    expect(units.map((unit) => [unit.work.map((fix) => fix.name).sort(), unit.coupled])).toEqual([[["brace", "parent"], [["npm|brace", "npm|parent"]]]]);
     expect(plan.packages).toEqual(["npm|brace", "npm|parent"]);
   });
 
@@ -149,7 +150,7 @@ describe("npm parents, regressions", () => {
       "1.2.0": { time: OLD, dependencies: { x: "^1.1.0", y: "^1.1.0" } },
     } };
     const fixes = await run([fixOf("x", "1.0.0", "1.1.0"), fixOf("y", "1.0.0", "1.1.0")], registry, twoChildren());
-    expect(fixes.map((fix) => fix.parents?.map((parent) => parent.to))).toEqual([["1.2.0"], ["1.2.0"]]);
+    expect(fixes.filter((fix) => fix.parents !== undefined).map((fix) => fix.parents!.map((parent) => parent.to))).toEqual([["1.2.0"], ["1.2.0"]]);
     const plan = await planFor(fixes, { named: undefined, lockfiles: twoChildren(), gradle: undefined, tagCommit: async () => undefined });
     expect(plan.moves.filter((move) => move.name === "parent")).toEqual([expect.objectContaining({ to: "1.2.0", locations: ["node_modules/parent"] })]);
   });
@@ -200,5 +201,52 @@ describe("npm parents, regressions", () => {
     const fixes = await run([fixOf("x", "1.0.0", "1.1.0")], registry, locks);
     const plan = await planFor(fixes, { named: undefined, lockfiles: locks, gradle: undefined, tagCommit: async () => undefined });
     expect(plan.moves.map((move) => [move.name, move.mechanism, move.to])).toEqual([["x", "npm-lock", "1.1.0"], ["parent", "npm-lock", "1.1.0"]]);
+  });
+});
+
+describe("npm parents, second round", () => {
+  const fixOf = (name: string, from: string, to: string, aged = true): SecurityFix => ({
+    ecosystem: "npm", name, from, locations: [`node_modules/${name}`], targets: [`GHSA-${name}`], unfixable: [], malicious: false, severity: "HIGH",
+    to: { version: to, line: to.split(".")[0]!, aged, major: false, blockers: [] }, problem: undefined,
+  });
+  const locks = (ranges: Record<string, string>) => new Map([["package-lock.json", { lockfileVersion: 3, packages: {
+    "": { name: "app", dependencies: { parent: "^1.0.0", q: "^1.0.0" } },
+    "node_modules/parent": { version: "1.0.0", dependencies: ranges },
+    "node_modules/x": { version: "1.0.0" },
+    "node_modules/y": { version: "1.0.0" },
+    "node_modules/q": { version: "1.0.0" },
+  } }]]);
+  const run = (fixes: SecurityFix[], registry: Registry, lockfiles: ReadonlyMap<string, unknown>) =>
+    withParents(fixes, { lockfiles, env: environment(registry), config: parseConfig({}), exceptions: NO_EXCEPTIONS });
+
+  it("keeps admitting the copies the parent's range already admits", async () => {
+    const registry: Registry = { parent: {
+      "1.0.0": { time: OLD, dependencies: { x: "^1.0.0", y: "~1.0.0" } },
+      "1.1.0": { time: OLD, dependencies: { x: "~1.0.0", y: "^1.1.0" } },
+      "1.2.0": { time: OLD, dependencies: { x: "^1.1.0", y: "^1.1.0" } },
+    } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0"), fixOf("y", "1.0.0", "1.1.0")], registry, locks({ x: "^1.0.0", y: "~1.0.0" }));
+    expect(fixes.find((fix) => fix.name === "y")?.parents?.map((parent) => parent.to)).toEqual(["1.2.0"]);
+  });
+
+  it("ties a copy to its parent's own young fix, in one held unit", async () => {
+    const registry: Registry = { parent: {
+      "1.0.0": { time: OLD, dependencies: { x: "~1.0.0" } },
+      "1.1.0": { time: YOUNG, dependencies: { x: "^1.1.0" } },
+    } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0"), fixOf("parent", "1.0.0", "1.1.0", false)], registry, locks({ x: "~1.0.0" }));
+    const { units } = await coupledWork(fixes);
+    expect(units.map((unit) => [unit.topic, unit.work.map((fix) => fix.name).sort()])).toEqual([["security-cooldown", ["parent", "x"]]]);
+  });
+
+  it("anchors the direct-peer closure on a chosen parent", async () => {
+    const registry: Registry = { parent: { "1.0.0": { time: OLD, dependencies: { x: "~1.0.0" } }, "1.1.0": { time: OLD, dependencies: { x: "^1.1.0" } } } };
+    const fixes = await run([fixOf("x", "1.0.0", "1.1.0")], registry, locks({ x: "~1.0.0" }));
+    const anchors: string[] = [];
+    await coupledWork(fixes, { resolve: async (moves) => {
+      anchors.push(...moves.map((move) => `${move.name}@${move.to}`));
+      return { additions: [], blocked: [], sets: [] };
+    } });
+    expect(anchors.sort()).toEqual(["parent@1.1.0", "x@1.1.0"]);
   });
 });

@@ -74,6 +74,7 @@ function fixesLabel(plan: ChangePlan, move: PlannedMove): string {
     const inside = move.carries.map((entry) => `${entry.advisories.join(", ")} ${where} \`${entry.name}\`${brought} ${entry.from.join(", ")} → ${entry.to.length === 0 ? "removed" : entry.to.join(", ")}`);
     return [...(own.length === 0 ? [] : [own.join(", ")]), ...inside].join("; ");
   }
+  if (move.unblocks !== undefined && move.advisories.length === 0) return `a range admitting the fix at ${move.unblocks.map((location) => `\`${location}\``).join(", ")}`;
   if (move.advisories.length > 0 || plan.malware) return move.advisories.join(", ");
   if (plan.requiredNpm?.some((target) => target.name === move.name && target.version === move.to)) return "required dependency compatibility";
   const coupled = plan.coupled?.some((set) => set.includes(`${move.ecosystem}|${move.name}`));
