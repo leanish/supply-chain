@@ -49,7 +49,7 @@ import { pluginDriven } from "../../remediation/src/plugin-driven.ts";
 
 import { preservedFloors } from "./floor-checks.ts";
 import { verifyRemovalEdit } from "./floor-verification.ts";
-import { type ChangePlan, lockfileOf, packageKey } from "./plan.ts";
+import { type ChangePlan, lockfileOf, packageKey, type PlannedMove } from "./plan.ts";
 
 export interface VerifyInputs {
   readonly npmFiles?: ReadonlyMap<string, string>;
@@ -126,13 +126,11 @@ async function landed(plan: ChangePlan, head: Tree, baseGradle: GradleInventory 
         const entry = ((lock ?? {}) as { packages?: Record<string, { version?: string; name?: string }> }).packages?.[key];
         if (entry?.version !== move.to) problems.push(`${move.name} at ${location} is ${entry?.version ?? "gone"}, not ${move.to}`);
       } else if (move.ecosystem === "Maven") {
-        // Exactly the planned edit: `from` declared as `to`, or a floor's `to` added next to what was there; nothing else.
         const was = declaredAt(baseGradle, location, move.name);
-        const expected = (move.mechanism === "gradle-floor" ? [...was, move.to] : was.map((version) => version === move.from ? move.to : version)).sort();
-        const declared = declaredAt(gradle, location, move.name).sort();
+        const declared = declaredAt(gradle, location, move.name);
         const resolved = resolvedAt(gradle, location, move.name);
-        if (JSON.stringify(declared) !== JSON.stringify(expected)) {
-          problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : declared.join(", ")}, not exactly ${expected.join(", ")}`);
+        if (!plannedDeclarations(was, declared, move)) {
+          problems.push(`${location} declares ${move.name} ${declared.length === 0 ? "nowhere" : [...declared].sort().join(", ")} (was ${was.length === 0 ? "nothing" : [...was].sort().join(", ")}), not just ${move.mechanism === "gradle-floor" ? `${move.to} added` : `one version declared as ${move.to}`}`);
         }
         if (resolved === undefined) problems.push(`${location} no longer resolves ${move.name}`);
         else if (versionScheme("Maven").compare(resolved, move.to) < 0) problems.push(`${location} resolves ${move.name} ${resolved}, below ${move.to}`);
@@ -140,6 +138,29 @@ async function landed(plan: ChangePlan, head: Tree, baseGradle: GradleInventory 
     }
   }
   return problems;
+}
+
+/**
+ * Whether a configuration's declarations changed exactly as planned: a floor adds one `to` and removes nothing; a
+ * declaration move turns the copies of one version (the one that resolved to `from`, which needn't equal it) into
+ * `to`, adding and removing nothing else.
+ */
+function plannedDeclarations(was: ReadonlyArray<string>, now: ReadonlyArray<string>, move: PlannedMove): boolean {
+  const added = without(now, was);
+  const removed = without(was, now);
+  if (added.length === 0 || added.some((version) => version !== move.to)) return false;
+  if (move.mechanism === "gradle-floor") return added.length === 1 && removed.length === 0;
+  return removed.length === added.length && removed.every((version) => version === removed[0]);
+}
+
+/** `from` with one copy of each of `minus`'s entries taken out (multisets). */
+function without(from: ReadonlyArray<string>, minus: ReadonlyArray<string>): string[] {
+  const left = [...from];
+  for (const version of minus) {
+    const at = left.indexOf(version);
+    if (at !== -1) left.splice(at, 1);
+  }
+  return left;
 }
 
 function pinsOf(plan: ChangePlan): PlannedPin[] {
